@@ -1,0 +1,21 @@
+Third-Party Notices
+===================
+
+Kept out of LICENSE so that GitHub and other licence scanners can detect the
+MIT licence. A LICENSE file with anything appended after the MIT text is
+reported as NOASSERTION, which reads as "unlicensed" to tooling.
+
+MetadataScrubber ships no third-party code: no libraries, no packages, no
+content delivery network. Every script it runs is Stormberry AS's own and is
+published in this repository. The one third-party item it ships is a typeface.
+
+-------------------
+
+Inter (fonts/inter/)
+  Licence:   SIL Open Font License 1.1 (OFL-1.1)
+  Author:    Rasmus Andersson
+  Source:    https://rsms.me/inter/
+  Copyright (c) 2016 The Inter Project Authors
+
+  This Font Software is licensed under the SIL Open Font License, Version 1.1.
+  Full licence text: https://scripts.sil.org/OFL

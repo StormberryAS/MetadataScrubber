@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <circle cx="32" cy="32" r="14" fill="url(#flareGrad)"/>
+  <path d="M32 10C35 5 45 8 42 16C46 12 55 18 48 24C56 22 58 35 50 38C58 45 45 55 38 48C40 58 25 58 22 48C15 55 5 45 12 38C5 35 5 22 14 24C5 18 15 12 20 16C20 8 30 5 32 10Z" fill="url(#flareGrad)" opacity="0.6">
+    <animateTransform attributeName="transform" type="rotate" from="0 32 32" to="360 32 32" dur="20s" repeatCount="indefinite" />
+  </path>
+  <defs>
+    <radialGradient id="flareGrad" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fff176"/>
+      <stop offset="50%" stop-color="#ff8c42"/>
+      <stop offset="100%" stop-color="#ff3b30"/>
+    </radialGradient>
+  </defs>
+</svg>

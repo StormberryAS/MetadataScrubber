@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <!-- Screen bezel -->
+  <rect x="20" y="25" width="60" height="40" rx="4" fill="none" stroke="#90909a" stroke-width="4"/>
+  <!-- Screen glow shifting from blue (day) to amber (night mode) -->
+  <rect x="24" y="29" width="52" height="32" rx="2" fill="#00aaff" filter="url(#glow)">
+    <animate attributeName="fill" values="#00aaff; #ffaa00; #00aaff" keyTimes="0; 0.5; 1" dur="8s" repeatCount="indefinite" />
+  </rect>
+  <!-- Stand -->
+  <path d="M40 75 L60 75 L55 65 L45 65 Z" fill="#90909a"/>
+  <!-- Base -->
+  <rect x="35" y="75" width="30" height="4" rx="2" fill="#90909a"/>
+</svg>

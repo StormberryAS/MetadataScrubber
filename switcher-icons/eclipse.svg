@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Sun Corona -->
+  <circle cx="50" cy="50" r="36" fill="#fdfca3" opacity="0.6" filter="url(#glow)"/>
+  <circle cx="50" cy="50" r="31" fill="#ffffff" filter="url(#glow)"/>
+  
+  <!-- Moon sweeping across -->
+  <circle cx="0" cy="50" r="32" fill="#080c18">
+    <animate attributeName="cx" values="-20; 50; 50; 50; 120" keyTimes="0; 0.4; 0.5; 0.6; 1" dur="8s" repeatCount="indefinite" />
+  </circle>
+  
+  <!-- Diamond Ring Flare at totality edge -->
+  <circle cx="21" cy="40" r="4" fill="#ffffff" filter="url(#glow)" opacity="0">
+    <animate attributeName="opacity" values="0; 1; 1; 0" keyTimes="0; 0.38; 0.45; 0.5" dur="8s" repeatCount="indefinite" />
+  </circle>
+</svg>

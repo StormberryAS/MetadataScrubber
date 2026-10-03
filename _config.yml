@@ -1,0 +1,31 @@
+# GitHub Pages serves metadata.stormberry.as from this repository root.
+#
+# Without this file Jekyll publishes the WHOLE repository, so the tooling scripts, the
+# README and the licence were all reachable from the live site. Nothing here was secret,
+# these repos are public, but source and tooling have no business being served next to
+# the product.
+#
+# Same rules as the estate-wide sweep of 2026-09-05, which followed finding
+# scheduler.stormberry.as/index.dev.html live, a second working rendering of that app.
+#
+# Jekyll's `exclude` REPLACES its defaults rather than adding to them, which is why
+# node_modules/ and package files are listed even though nothing installs them: the
+# shipped app has no dependencies, and the test runner is Node's own.
+#
+# disclaimer.html and privacy.html are deliberately NOT excluded: they are the published
+# pages the footer links to.
+#
+# DISCLAIMER.md is deliberately NOT excluded either, unlike in the apps without a gate:
+# gate.js links to it by name ("Read the full disclaimer"), and excluding a file that a
+# script references as a string turns that link into a 404.
+#
+# src/ is NOT excluded: app.js imports the scrubbing engine from it at runtime.
+exclude:
+  - LICENSE
+  - NOTICE
+  - README.md
+  - bump_assets.py
+  - tests/
+  - package.json
+  - package-lock.json
+  - node_modules/

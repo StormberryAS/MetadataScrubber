@@ -1,0 +1,6 @@
+# Local and generated files that must never be published.
+node_modules/
+__pycache__/
+*.pyc
+*.bak*
+.DS_Store

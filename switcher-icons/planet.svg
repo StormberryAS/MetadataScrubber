@@ -1,0 +1,11 @@
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="planetGrad" x1="0" y1="24" x2="24" y2="0">
+      <stop offset="0%" stop-color="#9d4edd" />
+      <stop offset="100%" stop-color="#e0aaff" />
+    </linearGradient>
+  </defs>
+  <rect width="24" height="24" rx="6" fill="#080c18" />
+  <path d="M4 17C3.5 17 2 16.5 2 15C2 11 10 7 20 8C21 8 22 8.5 22 10C22 13 10 16 4 17Z" stroke="url(#planetGrad)" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="12" cy="12" r="5" fill="#080c18" stroke="url(#planetGrad)" stroke-width="1.5"/>
+</svg>

@@ -1,0 +1,25 @@
+# Stormberry Labs Apps - robots.txt
+# Policy: allow search engines and AI assistants to read, index, and cite the app.
+# Content signals are advisory (honoured by compliant crawlers): https://contentsignals.org
+#   search   = appear in search indexes and results
+#   ai-input = be read in real time to answer / cite (RAG, grounding, AI search)
+#   ai-train = be used to train or fine-tune AI models
+
+User-agent: *
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
+Allow: /
+
+# OpenAI / ChatGPT Specific Directives (September 2026 Standard)
+# Allowing search indexing and live fetches for ChatGPT citations
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: GPTBot
+Allow: /
+
+# Single exception: a crawler that ignores rate limits and crawls abusively.
+User-agent: Bytespider
+Disallow: /

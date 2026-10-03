@@ -1,0 +1,1246 @@
+/* ================================================================
+   METADATASCRUBBER: GLOBAL STYLESHEET
+   Page chrome and design tokens. Dark glassmorphism in the Stormberry
+   Labs house style, Inter typography, orchid accent.
+
+   CSP note: the page forbids inline styles (style-src 'self'), so every
+   rule lives here. Setting element.style from JavaScript is still
+   allowed and is the way to position things at runtime.
+================================================================ */
+
+/* ---- Design tokens ------------------------------------------------ */
+:root {
+  color-scheme: dark;
+
+  /* Background palette: near-black with a violet cast */
+  --bg-base:        #0c0a12;
+  --bg-surface:     #15111d;
+  --bg-card:        rgba(28, 21, 40, 0.72);
+  --bg-card-hover:  rgba(40, 30, 58, 0.85);
+  /* Opaque equivalent of --bg-card over --bg-base, for anything that
+     cannot be translucent (canvas fills, contrast checks). */
+  --bg-card-solid:  #181222;
+
+  /* Accent: orchid. Chosen because no other Labs app uses it and it
+     sits clear of the red, amber and green tiers below. */
+  --accent-primary: #e879f9;   /* 7.4:1 on cards, 8.0:1 on the page */
+  --accent-strong:  #d946ef;   /* 5.3:1 on cards */
+  --accent-soft:    rgba(232, 121, 249, 0.14);
+  --grad-primary:   linear-gradient(135deg, #f0abfc 0%, #d946ef 100%);
+  --on-accent:      #0c0a12;   /* text on the accent: 5.7:1 at its darkest */
+
+  /* Text, all at least WCAG AA (4.5:1) on --bg-base and on cards */
+  --text-primary:   #f5f1fa;   /* 16.4:1 on cards */
+  --text-secondary: #b9afcb;   /*  8.8:1 on cards */
+  --text-muted:     #9a91ae;   /*  6.1:1 on cards */
+
+  /* Borders */
+  --border:         rgba(255, 255, 255, 0.08);
+  --border-active:  rgba(232, 121, 249, 0.40);
+
+  /* Tiers. The plain token is for dots, borders and fills (all above
+     3:1 against the page, the WCAG floor for graphics). The -text token
+     is for words set in that colour, above 8:1 on cards and on the
+     tier's own tinted background. Never use colour alone: pair it with
+     the tier's word (Remove, Think about it, Harmless). */
+  --tier-red:          #f05252;
+  --tier-red-text:     #fda4a4;
+  --tier-red-bg:       rgba(240, 82, 82, 0.14);
+  --tier-red-border:   rgba(240, 82, 82, 0.45);
+
+  --tier-amber:        #f2a516;
+  --tier-amber-text:   #fcd34d;
+  --tier-amber-bg:     rgba(242, 165, 22, 0.14);
+  --tier-amber-border: rgba(242, 165, 22, 0.45);
+
+  --tier-green:        #2fbf71;
+  --tier-green-text:   #86efac;
+  --tier-green-bg:     rgba(47, 191, 113, 0.14);
+  --tier-green-border: rgba(47, 191, 113, 0.45);
+
+  /* Spacing scale */
+  --sp-xs:  0.25rem;
+  --sp-sm:  0.5rem;
+  --sp-md:  1rem;
+  --sp-lg:  1.5rem;
+  --sp-xl:  2rem;
+  --sp-2xl: 3rem;
+
+  /* Typography */
+  --font-sans: 'InterVariable', 'Inter', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  /* Radii */
+  --r-sm:   6px;
+  --r-md:   12px;
+  --r-lg:   20px;
+  --r-full: 9999px;
+
+  /* Shadows */
+  --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --shadow-glow: 0 0 40px rgba(232, 121, 249, 0.14);
+
+  /* Transitions */
+  --t-fast: 150ms ease;
+  --t-med:  280ms cubic-bezier(0.4, 0, 0.2, 1);
+  --t-slow: 420ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Layout */
+  --content-max: 960px;
+  --gutter:      var(--sp-md);
+}
+
+/* ---- Reset and base ----------------------------------------------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-base);
+  background-image:
+    radial-gradient(ellipse at 12% -8%, rgba(232, 121, 249, 0.12) 0%, transparent 55%),
+    radial-gradient(ellipse at 92% 108%, rgba(226, 30, 38, 0.07) 0%, transparent 50%);
+  background-attachment: fixed;
+  color: var(--text-primary);
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1, h2, h3, h4 {
+  color: var(--text-primary);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+img, svg, canvas { display: block; max-width: 100%; }
+
+a { color: var(--accent-primary); text-underline-offset: 2px; }
+a:hover { color: var(--text-primary); }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+
+/* Visible keyboard focus (WCAG 2.4.7) */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Hidden on screen, still read aloud */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The hidden attribute must win over any display rule below */
+[hidden] { display: none !important; }
+
+/* ---- Main area and hero ------------------------------------------- */
+.main-content {
+  flex: 1;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: var(--sp-xl) var(--gutter) var(--sp-2xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xl);
+}
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-md);
+  text-align: center;
+}
+
+.hero-icon {
+  width: 64px;
+  height: 64px;
+  filter: drop-shadow(0 0 14px rgba(232, 121, 249, 0.45));
+}
+
+.hero-title {
+  font-size: clamp(1.9rem, 7vw, 3.2rem);
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.hero-lede {
+  max-width: 34rem;
+  color: var(--text-secondary);
+  font-size: 1.05rem;
+  line-height: 1.55;
+}
+
+.noscript {
+  padding: var(--sp-md);
+  border: 1px solid var(--tier-amber-border);
+  border-radius: var(--r-md);
+  background: var(--tier-amber-bg);
+  color: var(--tier-amber-text);
+  text-align: center;
+}
+
+/* ---- Shared building blocks for the app UI ------------------------ */
+.card {
+  position: relative;
+  width: 100%;
+  padding: var(--sp-lg) var(--sp-md);
+  background: var(--bg-card);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+
+/* Same top hairline the other Labs cards carry */
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
+  pointer-events: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-sm);
+  min-height: 44px;
+  padding: 0.7rem 1.25rem;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform var(--t-fast), filter var(--t-fast), background var(--t-fast), border-color var(--t-fast);
+}
+
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: scale(0.98); }
+.btn:disabled,
+.btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.btn-primary {
+  background: var(--grad-primary);
+  color: var(--on-accent);
+}
+.btn-primary:hover { filter: brightness(1.08); color: var(--on-accent); }
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+.btn-secondary:hover { background: rgba(255, 255, 255, 0.12); color: var(--text-primary); }
+
+.btn-secondary[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--border-active);
+}
+
+/* Tier marker. Use with data-tier="red|amber|green" and always with a
+   word inside, so the tier never depends on colour alone. */
+.tier-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.15em 0.6em;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.tier-badge::before {
+  content: '';
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+[data-tier="red"]   { --tier: var(--tier-red);   --tier-text: var(--tier-red-text);   --tier-bg: var(--tier-red-bg);   --tier-border: var(--tier-red-border); }
+[data-tier="amber"] { --tier: var(--tier-amber); --tier-text: var(--tier-amber-text); --tier-bg: var(--tier-amber-bg); --tier-border: var(--tier-amber-border); }
+[data-tier="green"] { --tier: var(--tier-green); --tier-text: var(--tier-green-text); --tier-bg: var(--tier-green-bg); --tier-border: var(--tier-green-border); }
+
+.tier-badge[data-tier] {
+  color: var(--tier-text);
+  background: var(--tier-bg);
+  border-color: var(--tier-border);
+}
+
+/* ---- App switcher carousel ---------------------------------------- */
+/* Mechanics as in the other Labs apps: the track holds TEN identical
+   sets of cards and slides by exactly one set (10%), so the loop is
+   seamless. Change the number of sets and the -10% together. */
+.app-switcher-container {
+  padding: var(--sp-2xl) 0;
+  margin-top: var(--sp-xl);
+  text-align: center;
+  border-top: 1px solid var(--border);
+}
+
+.switcher-title {
+  margin-bottom: var(--sp-lg);
+  padding: 0 var(--gutter);
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  color: var(--text-secondary);
+}
+
+.app-switcher-marquee {
+  display: flex;
+  width: 100%;
+  overflow: hidden;
+  padding: 0.5rem var(--gutter) 1.5rem;
+}
+
+.app-switcher-track {
+  display: flex;
+  width: max-content;
+  animation: marquee 32s linear infinite;
+}
+
+.app-switcher-marquee:hover .app-switcher-track,
+.app-switcher-marquee:focus-within .app-switcher-track { animation-play-state: paused; }
+
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-10%); }
+}
+
+.switcher-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  margin-right: 1rem;
+  padding: 1rem 1.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-primary);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform 0.2s, background 0.2s, box-shadow 0.2s;
+}
+
+.switcher-card:hover {
+  transform: translateY(-3px);
+  background: var(--bg-card-hover);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  color: var(--text-primary);
+}
+
+/* Replaces the inline style="width:32px;height:32px;opacity:0.9" the
+   sibling apps carry, which this page's CSP would refuse. */
+.switcher-card img {
+  width: 32px;
+  height: 32px;
+  opacity: 0.9;
+}
+
+/* ---- Footer -------------------------------------------------------- */
+.site-footer {
+  margin-top: auto;
+  padding: 4rem 1.5rem 2rem;
+  background: var(--bg-base);
+  border-top: 1px solid var(--border);
+}
+
+.footer-inner {
+  max-width: 680px;
+  margin: 0 auto 3rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 2rem;
+}
+
+.footer-brand { max-width: 320px; }
+
+.footer-logo {
+  display: inline-block;
+  margin-bottom: 0.5rem;
+  font-family: var(--font-sans);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.footer-logo:hover { color: var(--text-primary); }
+.footer-dot { color: var(--accent-primary); }
+
+.footer-tagline {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.footer-powered p {
+  max-width: 250px;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.6;
+}
+
+.footer-bottom {
+  max-width: 680px;
+  margin: 0 auto;
+  padding-top: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  text-align: center;
+}
+
+.footer-social { display: flex; flex-wrap: wrap; justify-content: center; gap: 1.25rem; }
+.footer-social a { color: var(--text-muted); transition: color var(--t-fast), transform var(--t-fast); }
+.footer-social a:hover { color: var(--text-primary); transform: translateY(-2px); }
+.footer-social svg { display: block; }
+
+.footer-bottom p { color: var(--text-muted); font-size: 0.85rem; }
+
+/* Footer legibility, as fixed across the estate on 2026-09-05: links take
+   the app's own accent (8.0:1 here) instead of the browser default blue,
+   and keep their underline, because colour alone must not be the only
+   thing marking a link. */
+.footer-bottom p a {
+  color: var(--accent-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color var(--t-fast);
+}
+
+.footer-bottom p a:hover { color: var(--text-primary); }
+
+/* The public test of the privacy claim */
+.footer-bottom .footer-offline {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* Kept readable: 5.0:1 at this opacity */
+.footer-privacy, .footer-ai { opacity: 0.85; }
+
+/* ---- Wider screens ------------------------------------------------- */
+@media (min-width: 720px) {
+  :root { --gutter: var(--sp-xl); }
+
+  .main-content { padding-top: var(--sp-2xl); }
+
+  .card { padding: var(--sp-xl); }
+
+  .footer-powered p { text-align: right; }
+}
+
+/* ---- Reduced motion ------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+
+  /* No sliding: the carousel becomes a row the reader scrolls. */
+  .app-switcher-track { animation: none; }
+  .app-switcher-marquee { overflow-x: auto; }
+
+  .btn,
+  .switcher-card,
+  .footer-social a { transition: none; }
+
+  .btn:hover,
+  .btn:active,
+  .switcher-card:hover,
+  .footer-social a:hover { transform: none; }
+}
+
+/* ================================================================
+   APP INTERFACE
+   Everything below styles the scrubber itself, inside <main>. It
+   uses the tokens above and leaves the footer and carousel alone.
+   Prefix: ms-. Sizes and positions that change at runtime (the
+   preview stage, the crop frame) are set from app.js through
+   element.style, which the page policy allows.
+================================================================ */
+
+/* ---- Cards and headings ------------------------------------------- */
+.ms-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-md);
+}
+
+.ms-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm) var(--sp-md);
+}
+
+.ms-card-title {
+  font-size: 1.25rem;
+  font-weight: 650;
+}
+
+.ms-help {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.ms-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.ms-btn-small {
+  min-height: 40px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.88rem;
+}
+
+.ms-plain-list {
+  display: grid;
+  gap: var(--sp-xs);
+  padding-left: 1.2rem;
+  color: var(--text-secondary);
+}
+
+/* ---- Notices ------------------------------------------------------ */
+.ms-notice {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 0.93rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ms-notice[data-tier] {
+  border-color: var(--tier-border);
+  background: var(--tier-bg);
+  color: var(--tier-text);
+}
+
+.ms-notice > * + * { margin-top: var(--sp-sm); }
+
+.ms-notes {
+  display: grid;
+  gap: var(--sp-sm);
+  list-style: none;
+}
+
+.ms-note {
+  position: relative;
+  padding: 0.55rem 0.8rem 0.55rem 1.6rem;
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ms-note::before {
+  content: '';
+  position: absolute;
+  left: 0.7rem;
+  top: 1.05em;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: var(--accent-primary);
+}
+
+.ms-note[data-tier] {
+  background: var(--tier-bg);
+  color: var(--tier-text);
+}
+
+.ms-note[data-tier]::before { background: var(--tier); }
+
+/* ---- Drop zone ---------------------------------------------------- */
+.ms-drop {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-xl) var(--sp-md);
+  border: 2px dashed rgba(232, 121, 249, 0.42);
+  border-radius: var(--r-lg);
+  background: rgba(232, 121, 249, 0.04);
+  text-align: center;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+.ms-drop.is-over {
+  border-color: var(--accent-primary);
+  background: var(--accent-soft);
+}
+
+.ms-drop-icon { color: var(--accent-primary); }
+
+.ms-drop-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.ms-drop-hint {
+  max-width: 32rem;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* Once pictures are loaded the drop zone shrinks: it is still there to
+   replace them, but the work below matters more. */
+.ms-card.is-loaded .ms-drop { padding: var(--sp-md); }
+.ms-card.is-loaded .ms-drop-icon,
+.ms-card.is-loaded .ms-drop-hint { display: none; }
+
+/* ---- Workspace layout --------------------------------------------- */
+/* One column on every screen, in the order a person works (Marcos,
+   2026-10-02): the picture and its crop, what the file reveals, size,
+   format and name, then the one button. Reading order, tab order and
+   visual order are the same. */
+.ms-workspace {
+  display: grid;
+  gap: var(--sp-lg);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* ---- Preview and crop --------------------------------------------- */
+.ms-file-summary {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.ms-preview-wrap {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Checks behind the picture show where it is see-through. */
+.ms-stage {
+  position: relative;
+  margin: 0 auto;
+  max-width: 100%;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background-color: #2a2433;
+  background-image:
+    linear-gradient(45deg, #3a3345 25%, transparent 25%),
+    linear-gradient(-45deg, #3a3345 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #3a3345 75%),
+    linear-gradient(-45deg, transparent 75%, #3a3345 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.ms-preview-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+}
+
+.ms-preview-canvas.is-pixelated { image-rendering: pixelated; }
+
+.ms-crop-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.ms-crop-box {
+  position: absolute;
+  box-shadow: 0 0 0 9999px rgba(8, 6, 12, 0.62);
+  outline: 2px solid #ffffff;
+  outline-offset: 0;
+  border-radius: 0;
+  cursor: move;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  background-image:
+    linear-gradient(to right, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px), transparent calc(66.67% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.67% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.67% + 0.5px), transparent calc(66.67% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% - 0.5px), rgba(255, 255, 255, 0.35) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px), transparent calc(66.67% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.67% - 0.5px), rgba(255, 255, 255, 0.35) calc(66.67% + 0.5px), transparent calc(66.67% + 0.5px));
+}
+
+.ms-crop-box:focus-visible {
+  outline: 3px solid var(--accent-primary);
+  outline-offset: 0;
+  border-radius: 0;
+}
+
+/* Handles sit just inside the frame, so they stay whole and reachable
+   when the frame touches the edge of the picture. */
+.ms-handle {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--accent-strong);
+  border-radius: 4px;
+  background: #ffffff;
+  touch-action: none;
+}
+
+/* A larger invisible target, for fingers. */
+.ms-handle::before {
+  content: '';
+  position: absolute;
+  inset: -12px;
+}
+
+.ms-handle[data-handle="nw"] { left: 0;   top: 0;    cursor: nwse-resize; }
+.ms-handle[data-handle="ne"] { right: 0;  top: 0;    cursor: nesw-resize; }
+.ms-handle[data-handle="se"] { right: 0;  bottom: 0; cursor: nwse-resize; }
+.ms-handle[data-handle="sw"] { left: 0;   bottom: 0; cursor: nesw-resize; }
+.ms-handle[data-handle="n"]  { left: 50%; top: 0;    margin-left: -7px; cursor: ns-resize; }
+.ms-handle[data-handle="s"]  { left: 50%; bottom: 0; margin-left: -7px; cursor: ns-resize; }
+.ms-handle[data-handle="e"]  { right: 0;  top: 50%;  margin-top: -7px;  cursor: ew-resize; }
+.ms-handle[data-handle="w"]  { left: 0;   top: 50%;  margin-top: -7px;  cursor: ew-resize; }
+
+.ms-handle-edge {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+}
+
+.ms-crop-box.is-locked .ms-handle-edge { display: none; }
+
+.ms-crop-controls,
+.ms-crop-options {
+  display: grid;
+  gap: var(--sp-sm);
+}
+
+.ms-readout {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Several files: a list instead of one big preview */
+.ms-file-list {
+  display: grid;
+  gap: var(--sp-sm);
+  list-style: none;
+}
+
+.ms-file {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  padding: var(--sp-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.03);
+  min-width: 0;
+}
+
+.ms-thumb {
+  flex-shrink: 0;
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  border-radius: var(--r-sm);
+  background: #2a2433;
+}
+
+.ms-thumb-none {
+  display: grid;
+  place-items: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.ms-file-text { min-width: 0; }
+
+.ms-file-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ms-file-number { color: var(--text-secondary); font-weight: 500; }
+
+.ms-file-meta {
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+/* ---- Chips, checkboxes, radios ------------------------------------ */
+.ms-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.ms-chip {
+  min-height: 40px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.86rem;
+}
+
+.ms-check-row,
+.ms-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.ms-check-row input,
+.ms-radio input,
+.ms-check {
+  flex-shrink: 0;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin: 0;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+/* ---- Metadata list ------------------------------------------------ */
+.ms-legend {
+  display: grid;
+  gap: var(--sp-sm);
+  list-style: none;
+  padding: var(--sp-md);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ms-legend-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-sm);
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.ms-legend-item .tier-badge { margin-top: 0.05rem; min-width: 4.6rem; justify-content: center; }
+.ms-legend-text strong { color: var(--text-primary); font-weight: 600; }
+
+.ms-count {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.ms-groups {
+  display: grid;
+  gap: var(--sp-lg);
+}
+
+.ms-group {
+  display: grid;
+  gap: var(--sp-sm);
+  min-width: 0;
+  border: 0;
+}
+
+.ms-group-title {
+  font-size: 1.02rem;
+  font-weight: 650;
+  color: var(--text-primary);
+  padding: 0;
+}
+
+.ms-group-desc {
+  margin-top: calc(-1 * var(--sp-xs));
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.ms-items {
+  display: grid;
+  gap: var(--sp-sm);
+  list-style: none;
+  min-width: 0;
+}
+
+.ms-item-li { min-width: 0; }
+
+.ms-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--tier);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+.ms-item:hover { background: rgba(255, 255, 255, 0.06); }
+
+.ms-item.is-ticked {
+  background: var(--tier-bg);
+  border-color: var(--tier-border);
+  border-left-color: var(--tier);
+}
+
+.ms-item .ms-check { margin-top: 0.2rem; }
+
+.ms-item:has(.ms-check:focus-visible) {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.ms-item-static { cursor: default; }
+.ms-item-static:hover { background: rgba(255, 255, 255, 0.025); }
+
+.ms-item-body {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Name on the left, tier and source on the right; they wrap under the
+   name when the line is short. */
+.ms-item-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.2rem 0.6rem;
+  min-width: 0;
+}
+
+.ms-item-label {
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.ms-item-value {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ms-item-note {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.ms-item-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ms-source {
+  padding: 0.05em 0.5em;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* ---- Size and format ---------------------------------------------- */
+.ms-fieldset {
+  display: grid;
+  gap: var(--sp-xs);
+  min-width: 0;
+  border: 0;
+}
+
+.ms-fieldset > legend { margin-bottom: var(--sp-xs); }
+
+/* Each option with a number keeps its field on the line below, indented
+   under the option's words, at every width. */
+.ms-radio-row {
+  display: grid;
+  gap: 0;
+}
+
+.ms-inline-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 0 0 var(--sp-xs) 1.8rem;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
+.ms-field {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.ms-input,
+.ms-select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.ms-input:hover,
+.ms-select:hover { border-color: rgba(255, 255, 255, 0.32); }
+
+.ms-input:focus-visible,
+.ms-select:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+  border-color: var(--accent-primary);
+}
+
+.ms-input:disabled,
+.ms-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.ms-input-short { width: 6.5rem; }
+.ms-select-short { width: auto; }
+
+.ms-colour {
+  width: 4rem;
+  height: 44px;
+  padding: 0.2rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  cursor: pointer;
+}
+
+.ms-field-error {
+  color: var(--tier-red-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* ---- Prepare the new file ------------------------------------------ */
+.ms-mode {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  border: 1px solid var(--tier-border, var(--border));
+  border-radius: var(--r-md);
+  background: var(--tier-bg, transparent);
+}
+
+.ms-mode-line {
+  font-weight: 600;
+  color: var(--tier-text, var(--text-primary));
+}
+
+.ms-mode .ms-note { background: rgba(12, 10, 18, 0.35); }
+
+.ms-name-preview {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.ms-go {
+  width: 100%;
+  min-height: 52px;
+  font-size: 1.05rem;
+}
+
+/* ---- Results ------------------------------------------------------ */
+.ms-results:focus { outline: none; }
+.ms-results:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 4px; }
+
+.ms-result-list {
+  display: grid;
+  gap: var(--sp-lg);
+}
+
+.ms-result {
+  display: grid;
+  gap: var(--sp-md);
+  padding: var(--sp-md);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: rgba(255, 255, 255, 0.025);
+  min-width: 0;
+}
+
+/* Flex rather than grid, so a hidden preview leaves no empty column. */
+.ms-result-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-md);
+  min-width: 0;
+}
+
+.ms-result-preview {
+  flex: 0 1 auto;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: var(--r-sm);
+}
+
+.ms-result-main {
+  flex: 1 1 18rem;
+  display: grid;
+  gap: var(--sp-sm);
+  min-width: 0;
+  justify-items: start;
+}
+
+.ms-result-from {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.ms-result-title {
+  font-size: 1.1rem;
+  overflow-wrap: anywhere;
+}
+
+.ms-result-name { font-family: var(--font-mono); font-weight: 600; }
+
+.ms-result-facts {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
+.ms-word-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--tier-border);
+  border-radius: var(--r-md);
+  background: var(--tier-bg);
+}
+
+.ms-word {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+}
+
+.ms-word-text {
+  color: var(--tier-text);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+
+.ms-word-warning {
+  color: var(--tier-red-text);
+  font-weight: 700;
+}
+
+/* A block on phones, so a long file name wraps inside the button instead
+   of squeezing the word Download. */
+.ms-download {
+  display: block;
+  width: 100%;
+  text-align: center;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.ms-download-name { font-family: var(--font-mono); }
+
+.ms-readback {
+  display: grid;
+  gap: var(--sp-md);
+  min-width: 0;
+}
+
+.ms-readback-title {
+  font-size: 1.02rem;
+}
+
+.ms-readback > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 0.4rem 0;
+}
+
+/* ---- Wider screens ------------------------------------------------ */
+@media (min-width: 720px) {
+  .ms-result { padding: var(--sp-lg); }
+
+  .ms-result-preview { max-width: 280px; }
+
+  .ms-download {
+    display: inline-block;
+    width: auto;
+    max-width: 100%;
+  }
+}
+
+/* ---- Reduced motion ----------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .ms-drop,
+  .ms-item { transition: none; }
+}

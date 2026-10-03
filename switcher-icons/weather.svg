@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <!-- Cloud -->
+  <path d="M30 65 Q20 65 20 55 Q20 45 30 45 Q35 30 50 30 Q65 30 68 42 Q80 42 80 55 Q80 65 65 65 Z" fill="none" stroke="#5a6080" stroke-width="4" stroke-linecap="round"/>
+  <!-- Thermometer/Gradient Drop -->
+  <rect x="45" y="40" width="10" height="30" rx="5" fill="#00aaff" filter="url(#glow)">
+    <animate attributeName="fill" values="#00aaff; #ff5500; #00aaff" dur="8s" repeatCount="indefinite" />
+  </rect>
+  <circle cx="50" cy="70" r="8" fill="#ff5500" filter="url(#glow)">
+    <animate attributeName="fill" values="#00aaff; #ff5500; #00aaff" dur="8s" repeatCount="indefinite" />
+  </circle>
+</svg>

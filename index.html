@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'; worker-src 'self'">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!--
+    Stormberry Labs - MetadataScrubber
+    Removes hidden information from photos, entirely in the browser.
+
+    The policy above is the page's own and is stricter than the one the
+    zone sends; browsers enforce both. It forbids every network request
+    (connect-src 'none'), inline scripts and inline styles. Keep it the
+    first element in head, and keep this page free of style attributes,
+    style blocks and inline scripts, or the browser will refuse them.
+  -->
+
+  <title>MetadataScrubber | Stormberry Labs</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <meta name="description" content="Remove hidden information from photos before you share them: location, serial numbers, names and dates. Runs entirely on your device, so your files are never uploaded." />
+  <meta name="theme-color" content="#0c0a12" />
+  <link rel="canonical" href="https://metadata.stormberry.as/" />
+
+  <!-- Open Graph / Twitter -->
+  <meta property="og:title" content="MetadataScrubber | Remove hidden information from photos, on your device" />
+  <meta property="og:description" content="See what a photo reveals, from GPS position to camera serial number, and remove it before you share. JPEG, PNG, WebP and HEIC. Runs entirely in your browser: no uploads, no network, MIT licensed." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://metadata.stormberry.as/" />
+  <meta property="og:image" content="https://metadata.stormberry.as/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="MetadataScrubber" />
+  <meta property="og:site_name" content="Stormberry Labs" />
+  <meta property="og:locale" content="en_GB" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="MetadataScrubber | Remove hidden information from photos, on your device" />
+  <meta name="twitter:description" content="See what a photo reveals, from GPS position to camera serial number, and remove it before you share. JPEG, PNG, WebP and HEIC. Runs entirely in your browser: no uploads, no network, MIT licensed." />
+  <meta name="twitter:image" content="https://metadata.stormberry.as/og-image.png" />
+
+  <!-- Local Fonts: Inter -->
+  <link rel="stylesheet" href="fonts/inter/inter.css?v=868d674e" />
+  <link rel="stylesheet" href="style.css?v=e32d1dfc" />
+  <link rel="stylesheet" href="gate.css?v=9f2087d3" />
+  <script src="gate.js?v=d516d809" defer></script>
+</head>
+<body>
+
+  <main class="main-content" id="main">
+<!-- APP-UI:START -->
+    <section class="hero" aria-labelledby="app-title">
+      <img src="favicon.svg" alt="" class="hero-icon" width="64" height="64" />
+      <h1 class="hero-title" id="app-title">MetadataScrubber</h1>
+      <p class="hero-lede">See what your photos reveal, choose what to remove, and check the result before you share. Everything happens on your device.</p>
+    </section>
+
+    <!-- Step 1: pick or drop files. The file input is hidden and opened by the
+         button, so there is one tab stop and one clear label. -->
+    <section class="card ms-card" id="pick-card" aria-labelledby="pick-title">
+      <h2 class="ms-card-title" id="pick-title">Choose pictures</h2>
+      <div class="ms-drop" id="drop-zone">
+        <svg class="ms-drop-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>
+        <p class="ms-drop-title">Drop pictures here</p>
+        <button type="button" class="btn btn-primary" id="choose-btn">Choose pictures</button>
+        <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.jpe,.png,.webp,.heic,.heif" multiple hidden />
+        <p class="ms-drop-hint">JPEG, PNG, WebP or HEIC. You can choose several at once. Nothing is uploaded: this page reads the files on your device.</p>
+      </div>
+      <div class="ms-notice" id="pick-errors" data-tier="red" role="alert" hidden></div>
+    </section>
+
+    <!-- Steps 2 to 5. Hidden until a file is loaded. One column on every
+         screen, in the order a person works: the picture and its crop, what
+         the file reveals, size, format and name, then one button. The button
+         is neutral ("Prepare picture"): a person may only want to crop or
+         resize, and removing nothing is a valid choice. -->
+    <div class="ms-workspace" id="workspace" hidden>
+
+      <section class="card ms-card" id="preview-card" aria-labelledby="preview-title">
+        <div class="ms-card-head">
+          <h2 class="ms-card-title" id="preview-title">Your picture</h2>
+          <button type="button" class="btn btn-secondary ms-btn-small" id="reset-btn">Start again</button>
+        </div>
+        <p class="ms-file-summary" id="file-summary"></p>
+        <div class="ms-preview-wrap" id="preview-wrap">
+          <div class="ms-stage" id="stage" hidden>
+            <canvas id="preview-canvas" class="ms-preview-canvas" role="img" aria-label="Preview of your picture"></canvas>
+            <div class="ms-crop-layer" id="crop-layer" hidden>
+              <div class="ms-crop-box" id="crop-box" tabindex="0" role="application" aria-roledescription="crop frame" aria-label="Crop frame" aria-describedby="crop-help crop-readout">
+                <span class="ms-handle ms-handle-corner" data-handle="nw"></span>
+                <span class="ms-handle ms-handle-edge" data-handle="n"></span>
+                <span class="ms-handle ms-handle-corner" data-handle="ne"></span>
+                <span class="ms-handle ms-handle-edge" data-handle="e"></span>
+                <span class="ms-handle ms-handle-corner" data-handle="se"></span>
+                <span class="ms-handle ms-handle-edge" data-handle="s"></span>
+                <span class="ms-handle ms-handle-corner" data-handle="sw"></span>
+                <span class="ms-handle ms-handle-edge" data-handle="w"></span>
+              </div>
+            </div>
+          </div>
+          <p class="ms-notice" id="preview-missing" data-tier="amber" hidden></p>
+          <ul class="ms-file-list" id="file-list" hidden></ul>
+        </div>
+        <div class="ms-crop-controls" id="crop-controls">
+          <label class="ms-check-row" for="crop-toggle">
+            <input type="checkbox" id="crop-toggle" />
+            <span>Crop the picture</span>
+          </label>
+          <div class="ms-crop-options" id="crop-options" hidden>
+            <div class="ms-chips" role="group" aria-label="Shape of the crop" id="crop-ratios">
+              <button type="button" class="btn btn-secondary ms-chip" data-ratio="free" aria-pressed="true">Free</button>
+              <button type="button" class="btn btn-secondary ms-chip" data-ratio="1:1" aria-pressed="false">1:1</button>
+              <button type="button" class="btn btn-secondary ms-chip" data-ratio="4:5" aria-pressed="false">4:5</button>
+              <button type="button" class="btn btn-secondary ms-chip" data-ratio="16:9" aria-pressed="false">16:9</button>
+              <button type="button" class="btn btn-secondary ms-chip" data-ratio="1.91:1" aria-pressed="false">1.91:1 (LinkedIn)</button>
+            </div>
+            <p class="ms-help" id="crop-help">Drag the frame or its corners. With the keyboard, move to the frame, then use the arrow keys to move it and Shift with the arrow keys to change its size.</p>
+            <p class="ms-readout" id="crop-readout"></p>
+          </div>
+          <p class="ms-help" id="crop-multi" hidden>Cropping works on one picture at a time. Choose a single picture to crop it.</p>
+        </div>
+      </section>
+
+      <section class="card ms-card" id="meta-card" aria-labelledby="meta-title">
+        <h2 class="ms-card-title" id="meta-title">What the file reveals</h2>
+        <p class="ms-help" id="meta-intro">Ticked items will be removed. Red items are ticked to start with.</p>
+        <ul class="ms-legend" id="tier-legend" aria-label="What the colours mean"></ul>
+        <div class="ms-chips" role="group" aria-label="Quick choices" id="quick">
+          <button type="button" class="btn btn-secondary ms-chip" data-preset="red" aria-pressed="true">Red only</button>
+          <button type="button" class="btn btn-secondary ms-chip" data-preset="amber" aria-pressed="false">Red and amber</button>
+          <button type="button" class="btn btn-secondary ms-chip" data-preset="all" aria-pressed="false">Select all</button>
+          <button type="button" class="btn btn-secondary ms-chip" data-preset="none" aria-pressed="false">None</button>
+        </div>
+        <p class="ms-count" id="select-count"></p>
+        <div class="ms-groups" id="meta-groups"></div>
+        <p class="ms-notice" id="meta-empty" data-tier="green" hidden></p>
+        <ul class="ms-notes" id="meta-warnings" hidden></ul>
+      </section>
+
+      <section class="card ms-card" id="edit-card" aria-labelledby="edit-title">
+        <h2 class="ms-card-title" id="edit-title">Size, format and name</h2>
+        <p class="ms-notice" id="edit-unavailable" data-tier="amber" hidden></p>
+        <fieldset class="ms-fieldset" id="resize-set">
+          <legend class="ms-label">Size</legend>
+          <label class="ms-radio">
+            <input type="radio" name="resize" value="none" checked />
+            <span>Keep the size</span>
+          </label>
+          <div class="ms-radio-row">
+            <label class="ms-radio">
+              <input type="radio" name="resize" value="percent" />
+              <span>Scale to a percentage</span>
+            </label>
+            <span class="ms-inline-field">
+              <label class="visually-hidden" for="resize-percent">Percentage of the original size</label>
+              <input type="text" class="ms-input ms-input-short" id="resize-percent" inputmode="decimal" autocomplete="off" value="50" />
+              <span aria-hidden="true">%</span>
+            </span>
+          </div>
+          <div class="ms-radio-row">
+            <label class="ms-radio">
+              <input type="radio" name="resize" value="edge" />
+              <span>Limit the longest side</span>
+            </label>
+            <span class="ms-inline-field">
+              <label class="visually-hidden" for="resize-edge">Longest side in pixels</label>
+              <input type="text" class="ms-input ms-input-short" id="resize-edge" inputmode="numeric" autocomplete="off" value="2048" />
+              <span aria-hidden="true">pixels</span>
+            </span>
+          </div>
+          <div class="ms-radio-row">
+            <label class="ms-radio">
+              <input type="radio" name="resize" value="size" />
+              <span>Limit the file size</span>
+            </label>
+            <span class="ms-inline-field">
+              <label class="visually-hidden" for="resize-size">Largest file size</label>
+              <input type="text" class="ms-input ms-input-short" id="resize-size" inputmode="decimal" autocomplete="off" value="1" />
+              <label class="visually-hidden" for="resize-unit">Unit</label>
+              <select class="ms-select ms-select-short" id="resize-unit">
+                <option value="1000000" selected>MB</option>
+                <option value="1000">KB</option>
+              </select>
+            </span>
+          </div>
+          <p class="ms-field-error" id="resize-error" hidden></p>
+        </fieldset>
+        <div class="ms-field" id="format-field">
+          <label class="ms-label" for="format-select">Format of the new file</label>
+          <select class="ms-select" id="format-select">
+            <option value="same">Same as the original</option>
+            <option value="jpeg">JPEG</option>
+            <option value="png">PNG</option>
+            <option value="webp">WebP</option>
+          </select>
+        </div>
+        <div class="ms-field" id="background-field" hidden>
+          <label class="ms-label" for="background-input">Colour for see-through areas</label>
+          <input type="color" class="ms-colour" id="background-input" value="#ffffff" />
+        </div>
+        <ul class="ms-notes" id="edit-notes" hidden></ul>
+        <div class="ms-field" id="name-field">
+          <label class="ms-label" for="name-input">File name</label>
+          <input type="text" class="ms-input" id="name-input" value="image" maxlength="80" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="name-help name-preview" />
+          <p class="ms-help" id="name-help">The privacy word and the file type are added for you. Avoid names with dates or phone models in them: they can give back what you removed.</p>
+          <p class="ms-name-preview" id="name-preview"></p>
+        </div>
+      </section>
+
+      <!-- Step 5: the only button that makes the new file. Above it, what
+           pressing it will do; below it, why nothing was made when nothing
+           would change. -->
+      <section class="card ms-card ms-action" id="action-card" aria-labelledby="action-title">
+        <h2 class="visually-hidden" id="action-title">Prepare the new file</h2>
+        <div class="ms-mode" id="mode-box">
+          <p class="ms-mode-line" id="mode-line"></p>
+          <ul class="ms-notes" id="mode-reasons" hidden></ul>
+        </div>
+        <button type="button" class="btn btn-primary ms-go" id="go-btn">Prepare picture</button>
+        <p class="ms-notice" id="go-nothing" hidden></p>
+        <p class="ms-help" id="go-stale" hidden>Your choices have changed, so the new file was cleared. Press Prepare picture to make it again.</p>
+      </section>
+    </div>
+
+    <!-- Step 6: the new file and its read-back. Filled after the button is pressed. -->
+    <section class="card ms-card ms-results" id="results" aria-labelledby="results-title" tabindex="-1" hidden>
+      <h2 class="ms-card-title" id="results-title">Your new file</h2>
+      <div class="ms-result-list" id="results-list"></div>
+    </section>
+
+    <section class="card ms-card ms-limits" aria-labelledby="limits-title">
+      <h2 class="ms-card-title" id="limits-title">What no tool can remove</h2>
+      <ul class="ms-plain-list">
+        <li>Anything you can see in the picture: faces, street signs, reflections, screens.</li>
+        <li>The file name, unless you use the neutral name this page suggests.</li>
+        <li>A camera's sensor fingerprint, which can link photos to one camera.</li>
+        <li>Invisible watermarks woven into the pixels, for example in some AI-generated images.</li>
+      </ul>
+      <p class="ms-help">Check the read-back list before you share a file.</p>
+    </section>
+
+    <div class="visually-hidden" id="announcer" role="status" aria-live="polite"></div>
+<!-- APP-UI:END -->
+    <noscript>
+      <p class="noscript">MetadataScrubber needs JavaScript to read your photos. It never uploads them either way.</p>
+    </noscript>
+  </main>
+
+  <section class="app-switcher-container" aria-labelledby="switcher-title">
+    <h3 class="switcher-title" id="switcher-title">Explore the Stormberry Ecosystem</h3>
+    <div class="app-switcher-marquee">
+      <div class="app-switcher-track">
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+        <a href="https://stormberry.as/labs.html" class="switcher-card"><img src="/switcher-icons/labs.svg" alt="Labs" width="32" height="32"> <span>Stormberry Labs</span></a>
+        <a href="https://scheduler.stormberry.as" class="switcher-card"><img src="/switcher-icons/scheduler.svg" alt="ServiceScheduler" width="32" height="32"> <span>ServiceScheduler</span></a>
+        <a href="https://username.stormberry.as" class="switcher-card"><img src="/switcher-icons/username.svg" alt="UsernameGenerator" width="32" height="32"> <span>UsernameGenerator</span></a>
+        <a href="https://sun.stormberry.as" class="switcher-card"><img src="/switcher-icons/sun.svg" alt="SunApp" width="32" height="32"> <span>SunApp</span></a>
+        <a href="https://moon.stormberry.as" class="switcher-card"><img src="/switcher-icons/moon.svg" alt="MoonApp" width="32" height="32"> <span>MoonApp</span></a>
+        <a href="https://photo.stormberry.as" class="switcher-card"><img src="/switcher-icons/photo.svg" alt="PhotoTimer" width="32" height="32"> <span>PhotoTimer</span></a>
+        <a href="https://garden.stormberry.as" class="switcher-card"><img src="/switcher-icons/garden.svg" alt="LunarGarden" width="32" height="32"> <span>LunarGarden</span></a>
+        <a href="https://planet.stormberry.as" class="switcher-card"><img src="/switcher-icons/planet.svg" alt="PlanetPulse" width="32" height="32"> <span>PlanetPulse</span></a>
+        <a href="https://star.stormberry.as" class="switcher-card"><img src="/switcher-icons/star.svg" alt="StarMap" width="32" height="32"> <span>StarMap</span></a>
+        <a href="https://tide.stormberry.as" class="switcher-card"><img src="/switcher-icons/tide.svg" alt="TideTracker" width="32" height="32"> <span>TideTracker</span></a>
+        <a href="https://astro.stormberry.as" class="switcher-card"><img src="/switcher-icons/astro.svg" alt="AstroQuiz" width="32" height="32"> <span>AstroQuiz</span></a>
+        <a href="https://beer.stormberry.as" class="switcher-card"><img src="/switcher-icons/beer.svg" alt="CheapBeer" width="32" height="32"> <span>CheapBeer</span></a>
+        <a href="https://flare.stormberry.as" class="switcher-card"><img src="/switcher-icons/flare.svg" alt="SolarFlare" width="32" height="32"> <span>SolarFlare</span></a>
+        <a href="https://meteor.stormberry.as" class="switcher-card"><img src="/switcher-icons/meteor.svg" alt="MeteorWatch" width="32" height="32"> <span>MeteorWatch</span></a>
+        <a href="https://eclipse.stormberry.as" class="switcher-card"><img src="/switcher-icons/eclipse.svg" alt="EclipseTracker" width="32" height="32"> <span>EclipseTracker</span></a>
+        <a href="https://nightmode.stormberry.as" class="switcher-card"><img src="/switcher-icons/nightmode.svg" alt="NightModeScheduler" width="32" height="32"> <span>NightModeScheduler</span></a>
+        <a href="https://weather.stormberry.as" class="switcher-card"><img src="/switcher-icons/weather.svg" alt="WeatherWhisper" width="32" height="32"> <span>WeatherWhisper</span></a>
+        <a href="https://eco.stormberry.as" class="switcher-card"><img src="/switcher-icons/eco.svg" alt="EcoCompass" width="32" height="32"> <span>EcoCompass</span></a>
+        <a href="https://metadata.stormberry.as" class="switcher-card"><img src="/switcher-icons/metadata.svg" alt="MetadataScrubber" width="32" height="32"> <span>MetadataScrubber</span></a>
+      </div>
+    </div>
+  </section>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <a href="https://stormberry.as" target="_blank" rel="noopener" class="footer-logo">
+          Stormberry<span class="footer-dot">.</span>
+        </a>
+        <p class="footer-tagline">Smarter sales. Global culture. AI-driven strategy.</p>
+      </div>
+      <div class="footer-powered">
+        <p>Powered by your own browser and our own code. No libraries, no uploads.</p>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="footer-social">
+        <a href="https://linkedin.com/company/StormberryAS" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/><rect width="4" height="12" x="2" y="9"/><circle cx="4" cy="4" r="2"/></svg></a>
+        <a href="https://github.com/StormberryAS" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.26c3 0 6-2 6-6a4.6 4.6 0 0 0-1.39-3.23 4.1 4.1 0 0 0 0-3.24s-1.1-.35-3.5 1.25a11.3 11.3 0 0 0-6 0c-2.4-1.6-3.5-1.25-3.5-1.25a4.1 4.1 0 0 0 0 3.24A4.6 4.6 0 0 0 2 10.74c0 4 3 6 6 6a4.8 4.8 0 0 0-1 3.26v4"/><path d="M9 20c-4.1 1.4-5-2.5-5-2.5"/></svg></a>
+        <a href="nostr:npub1zz9w77p2jkn95t0st9tcuea8zdn2vknf0ctrwyd4g46w3kswdccqesr0pa" target="_blank" rel="noopener noreferrer" aria-label="Nostr" title="Nostr: npub1zz9w77p2jkn95t0st9tcuea8zdn2vknf0ctrwyd4g46w3kswdccqesr0pa"><svg width="24" height="24" viewBox="0 0 875 875" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="m684.72,485.57c.22,12.59-11.93,51.47-38.67,81.3-26.74,29.83-56.02,20.85-58.42,20.16s-3.09-4.46-7.89-3.77-9.6,6.17-18.86,7.2-17.49,1.71-26.06-1.37c-4.46.69-5.14.71-7.2,2.24s-17.83,10.79-21.6,11.47c0,7.2-1.37,44.57,0,55.89s3.77,25.71,7.54,36c3.77,10.29,2.74,10.63,7.54,9.94s13.37.34,15.77,4.11c2.4,3.77,1.37,6.51,5.49,8.23s60.69,17.14,99.43,19.2c26.74.69,42.86,2.74,52.12,19.54,1.37,7.89,7.54,13.03,11.31,14.06s8.23,2.06,12,5.83,1.03,8.23,5.49,11.66c4.46,3.43,14.74,8.57,25.37,13.71,10.63,5.14,15.09,13.37,15.77,16.11s1.71,10.97,1.71,10.97c0,0-8.91,0-10.97-2.06s-2.74-5.83-2.74-5.83c0,0-6.17,1.03-7.54,3.43s.69,2.74-7.89.69-11.66-3.77-18.17-8.57c-6.51-4.8-16.46-17.14-25.03-16.8,4.11,8.23,5.83,8.23,10.63,10.97s8.23,5.83,8.23,5.83l-7.2,4.46s-4.46,2.06-14.74-.69-11.66-4.46-12.69-10.63,0-9.26-2.74-14.4-4.11-15.77-22.29-21.26c-18.17-5.49-66.52-21.26-100.12-24.69s-22.63-2.74-28.11-1.37-15.77,4.46-26.4-1.37c-10.63-5.83-16.8-13.71-17.49-20.23s-1.71-10.97,0-19.2,3.43-19.89,1.71-26.74-14.06-55.89-19.89-64.12c-13.03,1.03-50.74-.69-50.74-.69,0,0-2.4-.69-17.49,5.83s-36.48,13.76-46.77,19.93-14.4,9.7-16.12,13.13c.12,3-1.23,7.72-2.79,9.06s-12.48,2.42-12.48,2.42c0,0-5.85,5.86-8.25,9.97-6.86,9.6-55.2,125.14-66.52,149.83-13.54,32.57-9.77,27.43-37.71,27.43s-8.06.3-8.06.3c0,0-12.34,5.88-16.8,5.88s-18.86-2.4-26.4,0-16.46,9.26-23.31,10.29-4.95-1.34-8.38-3.74c-4-.21-14.27-.12-14.27-.12,0,0,1.74-6.51,7.91-10.88,8.23-5.83,25.37-16.11,34.63-21.26s17.49-7.89,23.31-9.26,18.51-6.17,30.51-9.94,19.54-8.23,29.83-31.54c10.29-23.31,50.4-111.43,51.43-116.23.63-2.96,3.73-6.48,4.8-15.09.66-5.35-2.49-13.04,1.71-22.63,10.97-25.03,21.6-20.23,26.4-20.23s17.14.34,26.4-1.37,15.43-2.74,24.69-7.89,11.31-8.91,11.31-8.91l-19.89-3.43s-18.51.69-25.03-4.46-15.43-15.77-15.43-15.77l-7.54-7.2,1.03,8.57s-5.14-8.91-6.51-10.29-8.57-6.51-11.31-11.31-7.54-25.03-7.54-25.03l-6.17,13.03-1.71-18.86-5.14,7.2-2.74-16.11-4.8,8.23-3.43-14.4-5.83,4.46-2.4-10.29-5.83-3.43s-14.06-9.26-16.46-9.6-4.46,3.43-4.46,3.43l1.37,12-12.2-6.27-7-11.9s2.36,4.01-9.62,7.53c-20.55,0-21.89-2.28-24.93-3.94-1.31-6.56-5.57-10.11-5.57-10.11h-20.57l-.34-6.86-7.89,3.09.69-10.29h-14.06l1.03-11.31h-8.91s3.09-9.26,25.71-22.97,25.03-16.46,46.29-17.14c21.26-.69,32.91,2.74,46.29,8.23s38.74,13.71,43.89,17.49c11.31-9.94,28.46-19.89,34.29-19.89,1.03-2.4,6.19-12.33,17.96-17.6,35.31-15.81,108.13-34,131.53-35.54,31.2-2.06,7.89-1.37,39.09,2.06,31.2,3.43,54.17,7.54,69.6,12.69,12.58,4.19,25.03,9.6,34.29,2.06,4.33-1.81,11.81-1.34,17.83-5.14,30.69-25.09,34.72-32.35,43.63-41.95s20.14-24.91,22.54-45.14,4.46-58.29-10.63-88.12-28.8-45.26-34.63-69.26c-5.83-24-8.23-61.03-6.17-73.03,2.06-12,5.14-22.29,6.86-30.51s9.94-14.74,19.89-16.46c9.94-1.71,17.83,1.37,22.29,4.8,4.46,3.43,11.65,6.28,13.37,10.29.34,1.71-1.37,6.51,8.23,8.23,9.6,1.71,16.05,4.16,16.05,4.16,0,0,15.64,4.29,3.11,7.73-12.69,2.06-20.52-.71-24.29,1.69s-7.21,10.08-9.61,11.1-7.2.34-12,4.11-9.6,6.86-12.69,14.4-5.49,15.77-3.43,26.74,8.57,31.54,14.4,43.2c5.83,11.66,20.23,40.8,24.34,47.66s15.77,29.49,16.8,53.83,1.03,44.23,0,54.86-10.84,51.65-35.53,85.94c-8.16,14.14-23.21,31.9-24.67,35.03-1.45,3.13-3.02,4.88-1.61,7.65,4.62,9.05,12.87,22.13,14.71,29.22,2.29,6.64,6.99,16.13,7.22,28.72Z"/></svg></a>
+        <a href="http://stormberryr7fz5xdopi7f265d7id27bgizc6uxeliaepzstompcfpyd.onion" target="_blank" rel="noopener noreferrer" aria-label="Tor onion site" title="Tor (.onion): stormberryr7fz5xdopi7f265d7id27bgizc6uxeliaepzstompcfpyd.onion"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 4.7c.4-1.4 1.8-2.1 3.1-1.7-.1 1.4-1.4 2.3-2.7 2Z"/><path d="M12 4.6C8.2 7.9 5 11.2 5 15.1a7 7 0 0 0 14 0c0-3.9-3.2-7.2-7-10.5Z"/></svg></a>
+      </div>
+      <p class="footer-offline">Your files never leave this device. Disconnect and try it.</p>
+      <p>&copy; 2026 Stormberry AS · <a href="https://virksomhet.brreg.no/nb/oppslag/enheter/937751249" target="_blank" rel="noopener noreferrer" title="Brønnøysundregistrene: Stormberry AS">Org.nr. NO 937 751 249</a> · Askøy, Norway · <a href="https://stormberry.as/privacy.html" target="_blank" rel="noopener noreferrer">Privacy</a> &middot; <a href="disclaimer.html">Disclaimer</a></p>
+      <p class="footer-privacy">Privacy First: We do not collect cookies or personal data.</p>
+      <p class="footer-ai">Proudly powered by sovereign AI agents.</p>
+    </div>
+  </footer>
+
+  <script type="module" src="app.js?v=451a59a2"></script>
+</body>
+</html>

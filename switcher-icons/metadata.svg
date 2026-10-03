@@ -1,0 +1,33 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- A photo with its hidden extras swept away: the frame is cut open where the sparkles sit -->
+  <g mask="url(#cut)">
+    <!-- Photo frame -->
+    <rect x="4" y="15" width="47" height="41" rx="8" fill="#1b1226" stroke="url(#frameGrad)" stroke-width="3.5"/>
+    <!-- Landscape: sun and two hills -->
+    <circle cx="17" cy="28" r="4.5" fill="#f5d0fe"/>
+    <path d="M8 52.5 L21 37 L29.5 45.5 L37 36 L47 52.5 Z" fill="url(#hillGrad)"/>
+  </g>
+  <!-- Large sparkle, the clean file -->
+  <path d="M50 3 Q50 14 61 14 Q50 14 50 25 Q50 14 39 14 Q50 14 50 3 Z" fill="url(#sparkGrad)" stroke="#c026d3" stroke-width="1" stroke-linejoin="round"/>
+  <!-- Small sparkle -->
+  <path d="M58 30 Q58 34 62 34 Q58 34 58 38 Q58 34 54 34 Q58 34 58 30 Z" fill="#f5d0fe" stroke="#c026d3" stroke-width="0.8" stroke-linejoin="round"/>
+  <defs>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+      <rect x="0" y="0" width="64" height="64" fill="#fff"/>
+      <circle cx="50" cy="14" r="11.5" fill="#000"/>
+      <circle cx="58" cy="34" r="5.5" fill="#000"/>
+    </mask>
+    <linearGradient id="frameGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#f0abfc"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="hillGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#e879f9"/>
+      <stop offset="100%" stop-color="#9333ea"/>
+    </linearGradient>
+    <linearGradient id="sparkGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f0abfc"/>
+    </linearGradient>
+  </defs>
+</svg>

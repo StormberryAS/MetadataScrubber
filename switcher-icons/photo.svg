@@ -1,0 +1,22 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="32" cy="32" r="26" stroke="url(#brandGrad)" stroke-width="4" stroke-linecap="round" />
+  <circle cx="32" cy="32" r="20" stroke="url(#gradAccent)" stroke-width="2" opacity="0.5" />
+  <circle cx="32" cy="32" r="12" fill="url(#brandGrad)" />
+  <g stroke="#1a0a2e" stroke-width="3" stroke-linecap="round">
+    <line x1="22" y1="20" x2="38" y2="26" />
+    <line x1="44" y1="22" x2="38" y2="38" />
+    <line x1="42" y1="44" x2="26" y2="38" />
+    <line x1="20" y1="42" x2="26" y2="26" />
+  </g>
+  <defs>
+    <linearGradient id="brandGrad" x1="0" y1="0" x2="64" y2="64">
+      <stop offset="0%" stop-color="#FFD700" />
+      <stop offset="50%" stop-color="#FF8C42" />
+      <stop offset="100%" stop-color="#9d4edd" />
+    </linearGradient>
+    <linearGradient id="gradAccent" x1="0" y1="64" x2="64" y2="0">
+      <stop offset="0%" stop-color="#e0aaff" />
+      <stop offset="100%" stop-color="#ff9e00" />
+    </linearGradient>
+  </defs>
+</svg>

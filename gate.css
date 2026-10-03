@@ -1,0 +1,203 @@
+/* ================================================================
+   STORMBERRY FIRST-RUN GATE (styling)
+   MetadataScrubber, dismissible tier.
+
+   GENERATED FILE. Do not edit this copy: it is overwritten. Edit
+   build-gates.py at the root of the GitHub folder and re-run it, so
+   every app stays in step.
+================================================================ */
+
+/* The gate borrows this app's own tokens. Nothing here invents a colour, so
+   the modal follows the palette wherever the app takes it, including the
+   apps that recolour themselves at runtime. */
+.sb-gate-overlay {
+  --sb-gate-accent:    var(--accent-primary);
+  --sb-gate-accent-bg: var(--grad-primary);
+  --sb-gate-anim:      var(--t-slow);
+  --sb-gate-btn-fg:    var(--on-accent);
+
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-md);
+  /* Flat scrim first for older engines, then the same shade mixed from the
+     app's own background so the gate never looks foreign. */
+  background: rgba(0, 0, 0, 0.72);
+  background: color-mix(in srgb, var(--bg-base) 78%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  overscroll-behavior: contain;
+  animation: sb-gate-fade 220ms ease both;
+}
+
+html.sb-gate-open,
+html.sb-gate-open body { overflow: hidden; }
+
+.sb-gate-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-lg);
+  width: min(34rem, 100%);
+  max-height: min(88vh, 46rem);
+  overflow: hidden;
+  padding: var(--sp-xl);
+  background: var(--bg-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  /* These apps are dark only, so the browser's own furniture, the scrollbar in
+     the prose region above all, should be dark too. */
+  color-scheme: dark;
+  animation: sb-gate-rise var(--sb-gate-anim) both;
+}
+
+/* Same top hairline the app's own cards carry. */
+.sb-gate-dialog::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+}
+
+.sb-gate-dialog:focus { outline: none; }
+
+.sb-gate-kicker {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sb-gate-accent);
+}
+
+.sb-gate-title {
+  margin: calc(var(--sp-sm) * -1) 0 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text-primary);
+}
+
+/* Only the prose scrolls, so the button stays reachable on a short screen. */
+.sb-gate-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: var(--sp-sm);
+  scrollbar-width: thin;
+}
+
+.sb-gate-body p {
+  margin: 0 0 var(--sp-md);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.sb-gate-body p:last-child { margin-bottom: 0; }
+.sb-gate-body strong { color: var(--text-primary); font-weight: 600; }
+
+.sb-gate-body a {
+  color: var(--sb-gate-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sb-gate-ack {
+  margin: 0;
+  padding: var(--sp-sm) 0 var(--sp-sm) var(--sp-md);
+  border-left: 3px solid var(--sb-gate-accent);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+
+.sb-gate-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-sm);
+}
+
+.sb-gate-btn {
+  width: 100%;
+  padding: 0.8rem 1.5rem;
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--sb-gate-accent-bg);
+  color: var(--sb-gate-btn-fg);
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: transform var(--t-fast), box-shadow var(--t-fast);
+}
+
+.sb-gate-btn:hover { transform: translateY(-1px); }
+.sb-gate-btn:active { transform: scale(0.98); }
+
+.sb-gate-link {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color var(--t-fast);
+}
+
+.sb-gate-link:hover { color: var(--sb-gate-accent); }
+
+.sb-gate-btn:focus-visible,
+.sb-gate-link:focus-visible,
+.sb-gate-body a:focus-visible {
+  outline: 2px solid var(--sb-gate-accent);
+  outline-offset: 3px;
+}
+
+/* Refused dismissal. The border flash carries the message on its own, which is
+   why it sits outside the reduced-motion block. */
+.sb-gate-dialog.is-nudged { border-color: var(--sb-gate-accent); }
+
+@keyframes sb-gate-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes sb-gate-rise {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes sb-gate-nudge {
+  0%, 100% { transform: none; }
+  20%      { transform: translateX(-6px); }
+  40%      { transform: translateX(6px); }
+  60%      { transform: translateX(-4px); }
+  80%      { transform: translateX(4px); }
+}
+
+.sb-gate-dialog.is-nudged { animation: sb-gate-nudge 340ms ease both; }
+
+@media (max-width: 480px) {
+  .sb-gate-dialog { padding: var(--sp-lg); gap: var(--sp-md); }
+  .sb-gate-title  { font-size: 1.2rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sb-gate-overlay,
+  .sb-gate-dialog,
+  .sb-gate-dialog.is-nudged { animation: none; }
+  .sb-gate-btn,
+  .sb-gate-link { transition: none; }
+  .sb-gate-btn:hover,
+  .sb-gate-btn:active { transform: none; }
+}
