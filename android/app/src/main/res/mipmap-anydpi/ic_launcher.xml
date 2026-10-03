@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 7.0 and 7.1 have no adaptive icons; this is the same mark on the same dark tile. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#FF0C0A12" android:pathData="M12,0 H96 A12,12 0 0 1 108,12 V96 A12,12 0 0 1 96,108 H12 A12,12 0 0 1 0,96 V12 A12,12 0 0 1 12,0 Z" />
+    <group
+        android:scaleX="1.2"
+        android:scaleY="1.2"
+        android:translateX="15.48"
+        android:translateY="17.52">
+
+        <!-- favicon.svg, translated path for path. The SVG mask that cuts the frame open
+             where the sparkles sit becomes a clip-path: the full square, minus two circles
+             wound the other way, so nonzero filling leaves them as holes. -->
+        <group android:name="frame">
+            <clip-path android:pathData="M0,0 H64 V64 H0 Z M38.5,14 A11.5,11.5 0 1,0 61.5,14 A11.5,11.5 0 1,0 38.5,14 Z M52.5,34 A5.5,5.5 0 1,0 63.5,34 A5.5,5.5 0 1,0 52.5,34 Z" />
+            <path
+                android:fillColor="#FF1B1226"
+                android:strokeWidth="3.5"
+                android:pathData="M12,15 H43 A8,8 0 0 1 51,23 V48 A8,8 0 0 1 43,56 H12 A8,8 0 0 1 4,48 V23 A8,8 0 0 1 12,15 Z">
+                <aapt:attr name="android:strokeColor">
+                    <gradient android:type="linear" android:startX="4" android:startY="15" android:endX="51" android:endY="56">
+                        <item android:offset="0" android:color="#FFF0ABFC" />
+                        <item android:offset="1" android:color="#FFA855F7" />
+                    </gradient>
+                </aapt:attr>
+            </path>
+            <path
+                android:fillColor="#FFF5D0FE"
+                android:pathData="M12.5,28 A4.5,4.5 0 1,0 21.5,28 A4.5,4.5 0 1,0 12.5,28 Z" />
+            <path android:pathData="M8,52.5 L21,37 L29.5,45.5 L37,36 L47,52.5 Z">
+                <aapt:attr name="android:fillColor">
+                    <gradient android:type="linear" android:startX="0" android:startY="36" android:endX="0" android:endY="52.5">
+                        <item android:offset="0" android:color="#FFE879F9" />
+                        <item android:offset="1" android:color="#FF9333EA" />
+                    </gradient>
+                </aapt:attr>
+            </path>
+        </group>
+        <path
+            android:strokeColor="#FFC026D3"
+            android:strokeWidth="1"
+            android:strokeLineJoin="round"
+            android:pathData="M50,3 Q50,14 61,14 Q50,14 50,25 Q50,14 39,14 Q50,14 50,3 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient android:type="linear" android:startX="39" android:startY="3" android:endX="61" android:endY="25">
+                    <item android:offset="0" android:color="#FFFFFFFF" />
+                    <item android:offset="1" android:color="#FFF0ABFC" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <path
+            android:fillColor="#FFF5D0FE"
+            android:strokeColor="#FFC026D3"
+            android:strokeWidth="0.8"
+            android:strokeLineJoin="round"
+            android:pathData="M58,30 Q58,34 62,34 Q58,34 58,38 Q58,34 54,34 Q58,34 58,30 Z" />
+    </group>
+</vector>

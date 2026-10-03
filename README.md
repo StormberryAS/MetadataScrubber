@@ -119,6 +119,89 @@ python3 bump_assets.py          # stamp pages and module imports
 python3 bump_assets.py --check  # exits 1 if any page or module is stale
 ```
 
+## Android app
+
+The Android app (package `no.stormberry.metadatascrubber`) runs **the same files as the website**. There is no second engine: at build time Gradle copies the files GitHub Pages publishes from this repository root into the APK, and the app shows them in a WebView, offline. Each `android-v*` tag runs the release workflow, which publishes `MetadataScrubber-v<version>.apk` on GitHub Releases with a `.sha256` file and a build provenance attestation; the release is then listed on Zapstore with `zsp publish zapstore.yaml`.
+
+### The engine is the website's, byte for byte
+
+- `:app:prepareWebAssets` copies the web files (everything Pages serves, minus `android/`, `fastlane/`, `tests/`, `.github/`, `zapstore.yaml`, `CNAME`, `README.md` and the other entries in `_config.yml`) into generated assets. It fails the build if any file that `index.html`, `disclaimer.html`, the stylesheets or the ES modules refer to is missing from the copy, or if the web root holds a file type the app does not serve.
+- `:app:verifyWebAssets` runs before every build and in `check`. It fails unless every bundled file is byte-identical to its source. The one permitted difference is a single line in `index.html`, `<script src="android-bridge.js"></script>`, placed before `gate.js` and the app module. Its report is `android/app/build/reports/webAssets/verify.txt`.
+- `:app:checkWebSourcesTracked` runs before every build and fails if a file that would be bundled is not tracked by git or comes in through a symbolic link. The repository sits in a synced notes folder, so a pasted screenshot, a note or a sync-conflict copy next to the web files stops the build instead of shipping.
+- `:app:verifyWebAssetsCommitted` runs before every release build and fails unless every bundled file equals its copy in the commit `HEAD` points at (for `index.html`, once the injected line is taken out). An uncommitted edit to the page or the engine is fine for a debug build but stops a release, so a signed APK carries only what Pages serves from that commit.
+- `android/web-overlay/android-bridge.js` exists only in the APK. It never fetches anything, so the page's own policy (`connect-src 'none'`) stays intact.
+
+### Zero permissions
+
+The APK declares no permissions at all, not even internet access, so the WebView cannot reach the network whatever the page did. Check any APK yourself:
+
+```bash
+aapt dump permissions MetadataScrubber-v0.0.1.apk   # the only line is the package name
+```
+
+Pictures come in through the system file picker (Storage Access Framework) or a share from another app; both hand over a one-off read grant, so the original bytes, including GPS, are read without a storage permission. Backup is off (`allowBackup="false"`, and both rule files exclude everything). The WebView's metrics reporting and Safe Browsing lookups are switched off in the manifest.
+
+### How sharing works
+
+- **Into the app.** Share one or several JPEG, PNG, WebP or HEIC pictures from a gallery or file manager. Once the first-run notice is dismissed, the app hands them to the page in chunks, the page rebuilds them as files and puts them in its own file input, and the normal flow takes over. Only `content:` addresses are read; `file:` addresses and the app's own files are refused.
+- **Out of the app.** The page's Download link is caught by the bridge, which reads the new file in the page and passes it to the app in chunks. The app then offers **Save to a folder** (the system save screen, with the page's name, for example `image.public.jpg`) or **Share** (the system share sheet, through a `FileProvider` limited to the app's `cache/outgoing/` folder). A file is deleted from that folder once it has been saved; copies handed to another app stay until the app next starts fresh, so the receiving app can still read them. A second tap on Download while a file is being handed over does nothing, and a short notice says the file is being prepared.
+- The bridge is `WebViewCompat.addWebMessageListener`, injected only into pages from the app's own origin, `https://appassets.androidplatform.net`. Tapping a link to any other web address opens it in your browser, and `mailto:` and `nostr:` links go to a mail app or a Nostr client. A link only leaves the app when it was tapped; every other kind of address is refused.
+
+HEIC metadata can be removed in the app, but cropping, resizing and converting a HEIC picture are not available, because Android's web engine cannot open HEIC.
+
+### Build and verify
+
+Requirements: JDK 21 and the Android SDK with platform 37.1. From `android/`:
+
+```bash
+./gradlew :app:testDebugUnitTest :app:assembleDebug        # unit tests and a debug APK
+./gradlew :app:verifyWebAssets                              # prove the bundled web app matches
+```
+
+A signed release needs the release key, which never enters this repository. `android/keystore.properties` (gitignored) names the key file, its type and the alias, and holds no passwords; those come from the environment:
+
+```bash
+RELEASE_STORE_PASSWORD="$(secret-tool lookup service android-keystore app metadatascrubber)" \
+RELEASE_KEY_PASSWORD="$RELEASE_STORE_PASSWORD" \
+./gradlew --no-configuration-cache :app:lintRelease :app:assembleRelease
+```
+
+`--no-configuration-cache` keeps the password out of Gradle's configuration cache. A release task without signing credentials fails rather than producing an unsigned APK.
+
+Verify a release APK:
+
+```bash
+apksigner verify --print-certs MetadataScrubber-v0.0.1.apk
+sha256sum -c MetadataScrubber-v0.0.1.apk.sha256
+gh attestation verify MetadataScrubber-v0.0.1.apk -R StormberryAS/MetadataScrubber
+```
+
+**Signing certificate SHA-256:** `30e916e7d44860a2c00c839ad2a6b5806e15d14d59b2811c962866959f3e3a98`
+
+The release workflow (`.github/workflows/android-release.yml`, on tags `android-v*`) runs the unit tests, the asset check and lint, builds and signs the APK, and refuses to publish unless the certificate matches that fingerprint and the APK declares zero permissions.
+
+R8 is on for the release build: the app reaches nothing by reflection, the bridge has no `@JavascriptInterface` class to strip, and androidx ships its own keep rules for what it needs. Obfuscation is off so crash reports stay readable.
+
+Licences travel inside the APK under `assets/licences/`, outside the bundled web app: the app's MIT licence (copied from `LICENSE` at build time), the full SIL Open Font License 1.1 for Inter, the Apache License 2.0, and `THIRD-PARTY.txt`, which lists the AndroidX and Kotlin libraries the release build compiles in. The list is taken from the resolved release dependencies, and the build fails on a library whose licence is not on record.
+
+The store icon (`fastlane/metadata/android/en-US/images/icon.png`) is rendered from `favicon.svg` by `android/tools/build-store-icon.py`, with the same composition as the launcher icon.
+
+### Toolchain and dependencies
+
+Every version is pinned exactly in `android/gradle/libs.versions.toml`.
+
+| Component | Version | Released | Notes |
+|---|---|---|---|
+| Android Gradle Plugin | 9.3.1 | | Same as UsernameGenerator; built-in Kotlin 2.2.10 |
+| Gradle wrapper | 9.5.0 | | Same as UsernameGenerator |
+| JDK toolchain | 21 | | Bytecode level 17 |
+| `androidx.webkit:webkit` | 1.17.0 | 12 August 2026 | Newest stable at least 14 days old on 3 October 2026 (1.17.1, 23 September 2026, was too recent) |
+| `androidx.activity:activity` | 1.13.0 | 11 March 2026 | Same release UsernameGenerator ships |
+| `androidx.core:core-ktx` | 1.19.0 | 3 June 2026 | Same release UsernameGenerator ships (1.19.1, 23 September 2026, was too recent) |
+| `junit:junit` | 4.13.2 | | Tests only |
+
+minSdk 24 (Android 7.0), targetSdk 36, compileSdk 37.1.
+
 ## Credits
 
 Built by [Stormberry AS](https://stormberry.as). Proudly powered by sovereign AI agents.

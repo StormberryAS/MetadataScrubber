@@ -1,0 +1,17 @@
+# Build output and machine-local files. keystore.properties names the release key and
+# must never be committed; local.properties holds this machine's SDK path.
+.gradle/
+build/
+app/build/
+local.properties
+keystore.properties
+*.jks
+*.p12
+*.keystore
+.idea/
+*.iml
+.env
+.env.*
+!.env.example
+.kotlin/
+captures/

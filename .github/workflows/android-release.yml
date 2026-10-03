@@ -1,0 +1,195 @@
+name: Android release
+
+# Tagged android-v* only. The repo also serves the web app at metadata.stormberry.as,
+# so the prefix keeps app releases from colliding with anything the site ever tags.
+on:
+  push:
+    tags: ["android-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # create the release
+  id-token: write        # sign the provenance attestation
+  attestations: write    # publish it
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+
+    # Every action is pinned to a full commit hash, with its release in the comment. A tag
+    # such as v6 can be moved to other code; a commit hash cannot. setup-gradle matters most:
+    # it installs an init script into every later Gradle run, including the signing build.
+    # To update a pin, resolve the new release with
+    #   git ls-remote https://github.com/<owner>/<repo>.git 'refs/tags/<tag>*'
+    # and take the ^{} line for an annotated tag.
+    steps:
+      # No credentials are left in .git/config for the build to find; the publish step
+      # passes its own token. Only HEAD is needed (the release check compares the bundled
+      # web files with the committed ones), so no history is fetched.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      # The runner ships an Android SDK, but not necessarily platform 37.1, and its
+      # bundled sdkmanager may be too old to know that package exists. Refresh
+      # cmdline-tools first, then install, and let the output show if it fails.
+      - name: Install SDK packages the runner may not have
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$(command -v sdkmanager)"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "cmdline-tools;latest" > /dev/null
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-37.1" "build-tools;36.0.0"
+
+      # Tests, the web asset checks and lint run with NO signing secrets in the
+      # environment and no key on disk: test JVMs and lint load third-party code.
+      # verifyWebAssets fails unless every bundled web file is byte-identical to the
+      # one the website serves (index.html may differ only by the single injected
+      # bridge line); verifyWebAssetsCommitted fails unless each also equals the copy
+      # in the tagged commit.
+      - name: Test, check the bundled web app and lint
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:verifyWebAssets :app:verifyWebAssetsCommitted :app:lintRelease
+
+      # The keystore is decoded into RUNNER_TEMP, which sits outside the workspace,
+      # so no artifact glob or accidental `git add` can ever pick it up. It is a
+      # PKCS12 file, which the store type below tells Gradle.
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.p12"
+
+      # Credentials reach Gradle as ORG_GRADLE_PROJECT_* env vars, which Gradle maps
+      # to project properties. Nothing is written to a file a build script might log,
+      # and --no-configuration-cache keeps them out of Gradle's cache (the build
+      # refuses to run with them set and the cache on).
+      - name: Build signed release APK
+        env:
+          ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: ${{ runner.temp }}/release.p12
+          ORG_GRADLE_PROJECT_RELEASE_STORE_TYPE: pkcs12
+          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
+
+      # Fails the release if signing went wrong, if the certificate is not the pinned
+      # one, or if the APK declares any permission at all.
+      - name: Verify signature, certificate and permissions
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+
+          # Newest build-tools that actually carries what this step needs. Taking the
+          # highest version blindly is not safe: a partial download, or a release that
+          # drops the legacy aapt, would fail the build for a reason that has nothing
+          # to do with the APK.
+          BUILD_TOOLS=""
+          for d in $(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -Vr); do
+            if [ -x "$d/apksigner" ] && { [ -x "$d/aapt2" ] || [ -x "$d/aapt" ]; }; then
+              BUILD_TOOLS="${d%/}"
+              break
+            fi
+          done
+          if [ -z "$BUILD_TOOLS" ]; then
+            echo "::error::no build-tools install carries both apksigner and aapt/aapt2"
+            ls -d "$ANDROID_HOME"/build-tools/*/ || true
+            exit 1
+          fi
+          echo "Using $BUILD_TOOLS"
+
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$APK"
+
+          # PIN THE SIGNING CERTIFICATE, do not merely check that one exists.
+          # apksigner's exit status catches an UNSIGNED apk, but an apk validly
+          # signed with the WRONG key passes it and reaches the release. Android
+          # enforces certificate continuity, so publishing under the wrong key
+          # permanently forks the install base: existing users would get
+          # INSTALL_FAILED_UPDATE_INCOMPATIBLE and the only fix is uninstalling.
+          EXPECTED_CERT=30e916e7d44860a2c00c839ad2a6b5806e15d14d59b2811c962866959f3e3a98
+          ACTUAL_CERT=$("$BUILD_TOOLS/apksigner" verify --print-certs "$APK" \
+            | grep -i 'certificate SHA-256 digest' | head -1 | awk '{print $NF}')
+          if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
+            echo "::error::signing certificate mismatch"
+            echo "  expected $EXPECTED_CERT"
+            echo "  actual   $ACTUAL_CERT"
+            exit 1
+          fi
+          echo "Signing certificate matches the pinned fingerprint."
+
+          # FAIL CLOSED. An app that declares nothing gets exactly one line from
+          # `dump permissions`: the package line. The output is compared whole, so any
+          # uses-permission or permission line fails, and so does an aapt that cannot
+          # read the APK (set -e stops on its exit status before the comparison).
+          AAPT="$BUILD_TOOLS/aapt2"
+          [ -x "$AAPT" ] || AAPT="$BUILD_TOOLS/aapt"
+          DUMP=$("$AAPT" dump permissions "$APK")
+          if [ "$DUMP" != "package: no.stormberry.metadatascrubber" ]; then
+            echo "::error::APK permissions are not exactly zero"
+            printf '%s\n' "$DUMP"
+            exit 1
+          fi
+          echo "Verified: zero permissions."
+
+          # A tag must match the version inside the APK, or the release would publish a
+          # misnamed binary that Zapstore and Obtainium cannot offer as an update.
+          BADGING=$("$AAPT" dump badging "$APK")
+          VERSION_NAME=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)
+          VERSION_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" | head -1)
+          echo "APK versionName $VERSION_NAME, versionCode $VERSION_CODE"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            if [ "v$VERSION_NAME" != "${GITHUB_REF_NAME#android-}" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match the APK's versionName $VERSION_NAME; bump versionName and versionCode in android/app/build.gradle.kts"
+              exit 1
+            fi
+            echo "Verified: tag matches versionName."
+          fi
+
+          # The bundled web app and the licence texts must be inside the APK, not just
+          # in the build tree.
+          for f in web/index.html web/app.js web/android-bridge.js web/src/scrub-core.js web/gate.js web/style.css \
+                   licences/Inter-OFL-1.1.txt licences/Apache-2.0.txt licences/MetadataScrubber-MIT.txt licences/THIRD-PARTY.txt; do
+            unzip -l "$APK" "assets/$f" > /dev/null || { echo "::error::assets/$f missing from the APK"; exit 1; }
+          done
+          echo "Verified: web app and licences bundled."
+
+      - name: Remove keystore
+        if: always()
+        run: shred -u "$RUNNER_TEMP/release.p12" || rm -f "$RUNNER_TEMP/release.p12"
+
+      # Lets anyone prove this exact binary came out of this repo and this run:
+      #   gh attestation verify MetadataScrubber-v1.0.0.apk -R StormberryAS/MetadataScrubber
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          subject-path: android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          # Strips only the "android-" prefix, so the tag android-v1.0.0 yields
+          # v1.0.0 and the asset carries the v. Keep this in step with the `match`
+          # pattern in zapstore.yaml.
+          VERSION="${GITHUB_REF_NAME#android-}"
+          cp "$APK" "MetadataScrubber-${VERSION}.apk"
+          sha256sum "MetadataScrubber-${VERSION}.apk" > "MetadataScrubber-${VERSION}.apk.sha256"
+          gh release create "$GITHUB_REF_NAME" \
+            "MetadataScrubber-${VERSION}.apk" \
+            "MetadataScrubber-${VERSION}.apk.sha256" \
+            --title "MetadataScrubber for Android ${VERSION}" \
+            --generate-notes

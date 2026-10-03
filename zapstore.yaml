@@ -1,0 +1,78 @@
+# Zapstore publishing manifest (https://zapstore.dev/docs/publish).
+#
+# `pubkey` is load-bearing, not decoration: on a first publish the Zapstore relay
+# fetches this file from the repository and whitelists the key it finds here, so
+# it must stay identical to the key `zsp` signs with (SIGN_WITH). It is the
+# Stormberry AS nostr identity, the same one behind nostr.json at stormberry.as.
+#
+# Publish a release with:
+#   SIGN_WITH=<nsec|bunker://...> zsp publish zapstore.yaml
+repository: https://github.com/StormberryAS/MetadataScrubber
+pubkey: npub1zz9w77p2jkn95t0st9tcuea8zdn2vknf0ctrwyd4g46w3kswdccqesr0pa
+
+name: MetadataScrubber
+summary: Remove location and other hidden details from photos, on your device
+description: |
+  MetadataScrubber shows what a photo carries besides the picture itself, lets
+  you choose what to remove, and then reads the new file back so you can see
+  what is left: GPS position, camera serial numbers, owner names, dates, a
+  built-in preview image and more.
+
+  It declares no Android permissions at all. There is no internet permission,
+  so it cannot send your photos anywhere, and no storage permission either:
+  pictures come in through the system file picker or a share from your
+  gallery, and go out through the system save screen or a share. Check it
+  yourself before installing:
+
+      aapt dump permissions <the APK you downloaded>
+
+  The only line you should see is the package name.
+
+  - Shows before it removes, grouped by what each item reveals.
+  - Red, amber and green tiers; red items are ticked by default.
+  - Lossless by default: only the metadata changes, not the picture.
+  - Crop, resize and convert JPEG, PNG and WebP when you need to.
+  - Reads the result back, so you see what remains before you share.
+  - Neutral file names such as image.public.jpg.
+  - Share a photo in from your gallery, then save or share the clean copy.
+
+  JPEG, PNG, WebP and HEIC. HEIC metadata can be removed, but cropping and
+  resizing HEIC are not available in the app, because Android's web engine
+  cannot open HEIC pictures.
+
+  It cannot remove anything visible in the picture, the file name you choose,
+  a camera's sensor fingerprint, or invisible watermarks in the pixels.
+
+  The app runs the same files as metadata.stormberry.as, bundled and offline.
+  The build checks that every one is byte for byte identical to the website's
+  copy, apart from one added line in index.html that loads a small Android
+  bridge for saving and sharing.
+
+tags:
+  - privacy
+  - photos
+  - metadata
+  - exif
+  - offline
+
+license: MIT
+website: https://metadata.stormberry.as
+
+# The APK ships no raster icon (the launcher icon is an adaptive-icon XML built
+# from vectors), and a store front-end without a bitmap shows an empty tile. So
+# the icon is supplied here, rendered from favicon.svg by
+# android/tools/build-store-icon.py with the same composition as the launcher.
+icon: ./fastlane/metadata/android/en-US/images/icon.png
+
+# Phone screenshots of the release build, captured on an API 36 emulator at
+# 1080x1920. zsp uploads these to Blossom and references them from the app event.
+images:
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/01-loaded.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/02-reveals.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/03-result.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/04-save-share.png
+
+# No release_source: zsp pulls the APK straight from the GitHub release, so the
+# asset URL in the nostr event points at the same signed binary the release page
+# serves and the attestation covers. The pattern keeps it off the .sha256 file.
+match: "MetadataScrubber-.*\\.apk$"

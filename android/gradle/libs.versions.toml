@@ -1,0 +1,17 @@
+[versions]
+# Pinned deliberately, every one an exact version. See the root README, section
+# "Toolchain and dependencies", before bumping anything here.
+agp = "9.3.1"            # AGP 9.3.x: Gradle 9.5.0, JDK 17 minimum, built-in Kotlin 2.2.10
+activity = "1.13.0"      # same release UsernameGenerator ships (activity-compose 1.13.0)
+coreKtx = "1.19.0"       # same release UsernameGenerator ships
+webkit = "1.17.0"        # 2026-08-12; 1.17.1 (2026-09-23) was under 14 days old at build time
+junit = "4.13.2"
+
+[libraries]
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

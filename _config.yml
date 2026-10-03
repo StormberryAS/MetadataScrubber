@@ -20,6 +20,10 @@
 # script references as a string turns that link into a 404.
 #
 # src/ is NOT excluded: app.js imports the scrubbing engine from it at runtime.
+#
+# android/, fastlane/ and zapstore.yaml are the Android app's build and store files. The
+# app bundles the web files from this root at build time; nothing in those folders is
+# part of the website. (.github/ needs no entry: Jekyll never publishes dot folders.)
 exclude:
   - LICENSE
   - NOTICE
@@ -29,3 +33,6 @@ exclude:
   - package.json
   - package-lock.json
   - node_modules/
+  - android/
+  - fastlane/
+  - zapstore.yaml

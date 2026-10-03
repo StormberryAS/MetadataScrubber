@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The WebView draws everything, so this theme only covers the window before the first
+      frame and the save-or-share dialog. The window background is the page's own colour, so
+      there is no white flash at launch.
+    -->
+    <style name="Theme.MetadataScrubber" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/page_background</item>
+        <item name="android:colorBackground">@color/page_background</item>
+        <item name="android:statusBarColor">@color/page_background</item>
+        <item name="android:navigationBarColor">@color/page_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 *.bak*
 .DS_Store
+# Signing material and machine-local Android files, wherever they land in the repo.
+# android/.gitignore covers the Gradle tree; these catch a key dropped anywhere else.
+*.p12
+*.jks
+*.keystore
+keystore.properties
+local.properties

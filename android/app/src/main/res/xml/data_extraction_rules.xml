@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 31 and above. `root` is the app's whole data directory, so nothing in it leaves the
+  device. cloud-backup is belt and braces on top of allowBackup="false"; device-transfer is
+  the one that matters, because that path is not governed by allowBackup at all.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+    </device-transfer>
+</data-extraction-rules>

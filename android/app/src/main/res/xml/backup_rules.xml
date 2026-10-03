@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 30 and below, where dataExtractionRules does not exist yet. Excludes everything:
+  `root` is the app's whole data directory (the WebView's storage, which holds only the
+  "seen the notice" flag, and the share cache). Redundant on top of allowBackup="false",
+  and that is the point.
+-->
+<full-backup-content>
+    <exclude domain="root" />
+    <exclude domain="external" />
+</full-backup-content>

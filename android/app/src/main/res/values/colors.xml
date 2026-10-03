@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The page's own background, bg-base in style.css. -->
+    <color name="page_background">#0C0A12</color>
+    <color name="icon_background">#0C0A12</color>
+</resources>

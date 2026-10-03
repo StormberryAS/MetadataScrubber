@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      This app declares NO permissions, on purpose.
+
+      Pictures come in through the system file picker (Storage Access Framework) or a share
+      from another app; both hand over a one-off read grant for the chosen files, so no
+      storage permission is needed. Saving goes through the system "create document"
+      screen, which needs none either. There is no INTERNET permission, so the WebView
+      cannot reach the network at all, whatever the page tried.
+
+      The entries below are explicit removals: if any dependency ever merges these in, the
+      build strips them back out. Verify with `aapt dump permissions` on the APK.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove" />
+
+    <!--
+      androidx.core declares a private signature permission for its registerReceiver
+      compatibility shim. It grants nothing to anyone but this app, yet it still shows up in
+      `aapt dump permissions`. This app registers no broadcast receivers, so both halves of
+      it are removed.
+    -->
+    <permission
+        android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        tools:node="remove" />
+    <uses-permission
+        android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+        tools:node="remove" />
+
+    <!--
+      NO BACKUP. allowBackup="false" disables cloud and adb backup; both rule files exclude
+      everything as well, because device-to-device transfer is not governed by allowBackup.
+    -->
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MetadataScrubber">
+
+        <!-- The WebView must not report usage metrics to Google. -->
+        <meta-data
+            android:name="android.webkit.WebView.MetricsOptOut"
+            android:value="true" />
+        <!--
+          Safe Browsing checks URLs against Google's lists, which means sending lookups off
+          the device. The WebView here can only load the bundled page and has no network
+          access, so the check has nothing to protect and is switched off.
+        -->
+        <meta-data
+            android:name="android.webkit.WebView.EnableSafeBrowsing"
+            android:value="false" />
+
+        <!--
+          configChanges keeps the activity, and with it the WebView and the picture the user
+          loaded, alive across rotation, resizing, keyboard, dark-mode, language, text-size
+          and bold-text changes. Recreating it would reload the page and lose the work.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection|fontWeightAdjustment|colorMode|touchscreen"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.MetadataScrubber">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Share one picture or several into the app from a gallery or file manager. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/jpeg" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="image/heic" />
+                <data android:mimeType="image/heif" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/jpeg" />
+                <data android:mimeType="image/png" />
+                <data android:mimeType="image/webp" />
+                <data android:mimeType="image/heic" />
+                <data android:mimeType="image/heif" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          androidx.profileinstaller adds an exported receiver for adb and benchmarking tools.
+          It is guarded by the DUMP permission, so no ordinary app could reach it, but it is
+          not needed either: the startup initialiser still installs the baseline profile.
+          Removing it keeps the exported surface to the launcher and the share targets.
+          Lint's MissingClass check looks at this source file, where the class name is
+          only a removal marker, so it is silenced for this one element.
+        -->
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            tools:ignore="MissingClass"
+            tools:node="remove" />
+
+        <!--
+          Shares the finished file with the app the user picks. Not exported: other apps get
+          a one-off read grant for one file, and the paths file limits it to cache/outgoing/.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.outgoing"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>
