@@ -50,11 +50,42 @@ mkdirSync(OUT, { recursive: true });
 const profile = mkdtempSync(join(OUT, 'profile-'));
 const downloads = mkdtempSync(join(OUT, 'downloads-'));
 
+// ---- The page as the Android app bundles it --------------------------------------------
+// The APK serves the same index.html with one line added on its own line before the first
+// <script> tag, which loads android/web-overlay/android-bridge.js (WebAssets.inject in
+// android/app/build.gradle.kts). Asked for as /?android, this server does the same.
+const BRIDGE_FILE = 'android-bridge.js';
+const BRIDGE_PATH = join(ROOT, 'android', 'web-overlay', BRIDGE_FILE);
+const BRIDGE_TAG = `<script src="${BRIDGE_FILE}"></script>`;
+function androidIndex(text) {
+  const first = text.indexOf('<script');
+  const lineStart = text.lastIndexOf('\n', first) + 1;
+  const indent = text.slice(lineStart, first);
+  if (first < 0 || indent.trim() || text.includes(BRIDGE_FILE)) throw new Error('index.html cannot take the bridge line the way the APK adds it');
+  return text.slice(0, lineStart) + indent + BRIDGE_TAG + '\n' + text.slice(lineStart);
+}
+const ZAPSTORE = 'https://zapstore.dev/apps/no.stormberry.metadatascrubber';
+
 // ---- Static server ---------------------------------------------------------------------
 const requests = [];
 const server = createServer((req, res) => {
-  const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  const url = new URL(req.url, 'http://x');
+  const path = decodeURIComponent(url.pathname);
   requests.push(path);
+  if (req.method === 'GET' && (path === `/${BRIDGE_FILE}` || (path === '/' && url.searchParams.has('android')))) {
+    let body;
+    try {
+      body = path === '/' ? androidIndex(readFileSync(join(ROOT, 'index.html'), 'utf8')) : readFileSync(BRIDGE_PATH);
+    } catch (err) {
+      check('the page can be served the way the APK serves it', false, String(err.message || err));
+      res.writeHead(500, { 'Content-Security-Policy': ZONE_CSP });
+      res.end('cannot inject the bridge');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': TYPES[path === '/' ? '.html' : '.js'], 'Content-Security-Policy': ZONE_CSP, 'Cache-Control': 'no-store' });
+    res.end(body);
+    return;
+  }
   const file = normalize(join(ROOT, path.endsWith('/') ? `${path}index.html` : path));
   if (req.method !== 'GET' || !file.startsWith(ROOT) || !existsSync(file) || !statSync(file).isFile()) {
     res.writeHead(404, { 'Content-Security-Policy': ZONE_CSP });
@@ -121,7 +152,9 @@ function pil(script, ...files) {
 }
 
 // ---- One page --------------------------------------------------------------------------
-async function openPage(width, height) {
+// android: load the page the way the APK does (see androidIndex), with a stand-in for the
+// app's message channel, window.MSBridge, that records what the bridge posts.
+async function openPage(width, height, { android = false } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext');
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
@@ -144,7 +177,10 @@ async function openPage(width, height) {
   await send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: downloads, eventsEnabled: true, browserContextId });
   await s('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 });
   await s('Page.addScriptToEvaluateOnNewDocument', { source: "window.__csp=[];document.addEventListener('securitypolicyviolation',e=>window.__csp.push(e.violatedDirective+' '+e.blockedURI),true);" });
-  await s('Page.navigate', { url: BASE });
+  if (android) {
+    await s('Page.addScriptToEvaluateOnNewDocument', { source: "window.__msPosted=[];window.MSBridge={postMessage:function(m){window.__msPosted.push(JSON.parse(m));},addEventListener:function(t,fn){window.__msListen=fn;}};" });
+  }
+  await s('Page.navigate', { url: android ? `${BASE}?android` : BASE });
   await sleep(1200);
   const ev = async (expression) => {
     const r = await s('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
@@ -205,12 +241,23 @@ async function openPage(width, height) {
     const r = await s('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: b[0], y: b[1], width: b[2], height: Math.min(6000, b[3]), scale: 1 } });
     writeFileSync(join(OUT, `${label}.png`), Buffer.from(r.data, 'base64'));
   };
+  // Sets each colour section's own tick box, the way a person would: one press, or two
+  // when the box is half-ticked and the colour must end up unticked. { red: true } ticks
+  // red and unticks amber and green.
+  const tick = (want) => ev(`(() => {
+    const want = ${JSON.stringify(want)};
+    for (const all of document.querySelectorAll('#meta-groups .ms-tier-check')) {
+      const on = !!want[all.dataset.tier];
+      if (all.indeterminate || all.checked !== on) all.click();
+      if (all.checked !== on) all.click();
+    }
+  })()`);
   const close = async () => {
     listeners.delete(onMsg);
     await send('Target.closeTarget', { targetId });
     await send('Target.disposeBrowserContext', { browserContextId });
   };
-  return { s, ev, load, press, pressIdle, download, shot, shotOf, close, log, waitFor };
+  return { s, ev, load, press, pressIdle, download, shot, shotOf, close, log, waitFor, tick, completed };
 }
 
 const LOSSLESS_PY = `
@@ -264,34 +311,124 @@ try {
     const p = await openPage(w, h);
     const tag = `w${w}`;
 
-    // A full JPEG, default choice: red removed, lossless.
+    // A full JPEG, default choice: red and amber removed, lossless.
     check(`${tag} page loads without errors`, p.log.errors.length === 0, p.log.errors);
+
+    // The Android app section at the foot of the page, on the website.
+    const app = await p.ev(`(() => {
+      const sec = document.querySelector('[data-web-only]');
+      if (!sec) return null;
+      const a = sec.querySelector('a');
+      const main = document.querySelector('main');
+      const r = sec.getBoundingClientRect();
+      return { id: sec.id, n: document.querySelectorAll('[data-web-only]').length, hidden: sec.hidden, shown: r.height > 0 && getComputedStyle(sec).display !== 'none', last: main.lastElementChild === sec,
+        href: a && a.getAttribute('href'), target: a && a.getAttribute('target'), rel: a && a.getAttribute('rel'), btn: !!a && a.matches('.btn.btn-secondary'), height: a ? a.getBoundingClientRect().height : 0,
+        text: a && a.textContent, extra: a && a.querySelector('.visually-hidden')?.textContent, line: sec.querySelector('p')?.textContent,
+        bridge: !!document.querySelector('script[src="${BRIDGE_FILE}"]') };
+    })()`);
+    check(`${tag} the Android app section is the last thing in main, marked data-web-only, and shown on the website`, !!app && app.id === 'android-app' && app.n === 1 && app.last && !app.hidden && app.shown && !app.bridge, app);
+    check(`${tag} it links to the Zapstore listing in a new tab`, !!app && app.href === ZAPSTORE && app.target === '_blank' && app.rel === 'noopener', app);
+    check(`${tag} the link is a button, says where it goes, and that it opens a new tab`, !!app && app.btn && app.height >= 44 && app.text === 'Get the Android app on Zapstore (opens in a new tab)' && app.extra === ' (opens in a new tab)', app);
+    check(`${tag} the line says what the app is`, !!app && app.line === 'Android app: the same tool on your phone, with no permissions and no internet. Share a photo into it straight from your gallery.', app && app.line);
+    await p.shotOf(`${tag}-0-android-app`, '#android-app');
     await p.load(['jpeg-everything.jpg']);
     const meta = await p.ev(`(() => {
-      const groups = [...document.querySelectorAll('#meta-groups .ms-group-title')].map(e => e.textContent);
+      const tiers = [...document.querySelectorAll('#meta-groups .ms-tier')].map(e => e.dataset.tier);
       const boxes = [...document.querySelectorAll('#meta-groups .ms-check')];
-      const rows = boxes.map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier, badge: b.closest('.ms-item').querySelector('.tier-badge').textContent }));
-      return { groups, rows, pressed: document.querySelector('#quick [aria-pressed="true"]')?.textContent, mode: document.getElementById('mode-line').textContent, webp: !!document.querySelector('#format-select option[value="webp"]') };
+      const rows = boxes.map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier, section: b.closest('.ms-tier').dataset.tier, group: b.closest('.ms-item').querySelector('.ms-group-word')?.textContent, badge: b.closest('.ms-item').querySelector('.tier-badge').textContent }));
+      return { tiers, rows, legend: !!document.getElementById('tier-legend'), quick: !!document.getElementById('quick') || !!document.querySelector('[data-preset]'), intro: document.getElementById('meta-intro').textContent, preview: document.getElementById('name-preview').textContent, mode: document.getElementById('mode-line').textContent, webp: !!document.querySelector('#format-select option[value="webp"]') };
     })()`);
     const src = await inspect(new Uint8Array(readFileSync(join(FIX, 'jpeg-everything.jpg'))));
-    check(`${tag} lists every item the engine finds`, meta.rows.length === src.items.length, [meta.rows.length, src.items.length]);
-    check(`${tag} groups follow the engine order`, meta.groups.join() === ['Where', 'Who', 'When', 'Device', 'Hidden extras', 'Technical'].filter((g) => meta.groups.includes(g)).join(), meta.groups);
-    check(`${tag} red items, and only red items, are ticked`, meta.rows.every((r) => r.checked === (r.tier === 'red')));
+    check(`${tag} lists every detail the engine finds`, meta.rows.length === src.items.length, [meta.rows.length, src.items.length]);
+    check(`${tag} sections are red, amber, green, in that order`, meta.tiers.join() === 'red,amber,green', meta.tiers);
+    check(`${tag} each detail sits in its own tier's section; red and amber name their group, green (all Technical) does not repeat it`, meta.rows.every((r) => r.section === r.tier && (r.tier === 'green' ? r.group === undefined : ['Where', 'Who', 'When', 'Device', 'Hidden extras'].includes(r.group))), meta.rows.filter((r) => r.section !== r.tier || (r.tier === 'green') === !!r.group).map((r) => [r.id, r.group]));
+    check(`${tag} the separate colour legend is gone`, !meta.legend);
+    check(`${tag} red and amber details are ticked to start with, green details are not`, meta.rows.every((r) => r.checked === (r.tier !== 'green')), meta.rows.filter((r) => r.checked !== (r.tier !== 'green')).map((r) => r.id));
     check(`${tag} every tier is shown in words`, meta.rows.every((r) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier]));
-    check(`${tag} "Red only" is the pressed quick choice`, meta.pressed === 'Red only', meta.pressed);
+    check(`${tag} the quick choice buttons are gone`, !meta.quick);
+    check(`${tag} the intro says red and amber are ticked to start with`, meta.intro === 'Ticked details will be removed. Red and amber details are ticked to start with.', meta.intro);
+    check(`${tag} the expected name uses the minimal word`, /Expected name: image\.minimal\.jpg\./.test(meta.preview), meta.preview);
     check(`${tag} lossless is announced`, /^Lossless/.test(meta.mode), meta.mode);
     const buttons = await p.ev("[...document.querySelectorAll('button')].filter(b => !b.closest('[hidden]') && /remove metadata|prepare/i.test(b.textContent)).map(b => b.textContent.trim())");
     check(`${tag} one action button, "Prepare picture"`, buttons.length === 1 && buttons[0] === 'Prepare picture', buttons);
     check(`${tag} WebP is offered when Chromium can save it`, meta.webp);
     await p.shot(`${tag}-1-loaded`);
-    await p.press();
+
+    // ---- Tier sections: tick boxes and arrows.
+    const tiers = () => p.ev(`Object.fromEntries([...document.querySelectorAll('#meta-groups .ms-tier')].map((sec) => {
+      const all = sec.querySelector('.ms-tier-check'); const btn = sec.querySelector('.ms-tier-toggle'); const list = sec.querySelector('.ms-tier-items');
+      const boxes = [...list.querySelectorAll('.ms-check')];
+      return [sec.dataset.tier, { checked: all.checked, mixed: all.indeterminate, expanded: btn.getAttribute('aria-expanded'), hidden: list.hidden, shown: list.getBoundingClientRect().height > 0, n: boxes.length, ticked: boxes.filter((b) => b.checked).length, count: sec.querySelector('.ms-tier-count').textContent }];
+    }))`);
+    const closed = (x) => ['red', 'amber', 'green'].every((k) => x[k].expanded === 'false' && x[k].hidden && !x[k].shown);
+    const countLine = () => p.ev("document.getElementById('select-count').textContent");
+    let t = await tiers();
+    check(`${tag} every section starts closed`, closed(t), t);
+    check(`${tag} red and amber tick boxes ticked, green not, with counts`, t.red.checked && t.amber.checked && !t.green.checked && !t.green.mixed
+      && t.red.count === `${t.red.n} details, ${t.red.n} ticked` && t.amber.count === `${t.amber.n} details, ${t.amber.n} ticked` && t.green.count === `${t.green.n} details, 0 ticked`, t);
+    check(`${tag} the count line says how many details are ticked`, await countLine() === `${t.red.n + t.amber.n} of ${t.red.n + t.amber.n + t.green.n} details ticked for removal.`, await countLine());
+    await p.ev("document.getElementById('m-tier-amber-toggle').click()");
+    t = await tiers();
+    check(`${tag} the amber arrow opens amber (aria-expanded true)`, t.amber.expanded === 'true' && t.amber.shown, t.amber);
+    await p.shotOf(`${tag}-1b-amber-open`, '#meta-card');
+    await p.ev("document.getElementById('m-tier-amber-toggle').click()");
+    t = await tiers();
+    check(`${tag} and closes it again (aria-expanded false)`, t.amber.expanded === 'false' && !t.amber.shown, t.amber);
+    await p.ev("document.getElementById('m-tier-amber-all').click()");
+    t = await tiers();
+    check(`${tag} the amber tick box unticks every amber detail while amber stays closed`, !t.amber.checked && !t.amber.mixed && t.amber.ticked === 0 && t.amber.expanded === 'false' && !t.amber.shown, t.amber);
+    await p.ev("document.getElementById('m-tier-amber-all').click()");
+    t = await tiers();
+    check(`${tag} and ticks them all again`, t.amber.checked && t.amber.ticked === t.amber.n, t.amber);
+    await p.ev("document.getElementById('m-tier-green-toggle').click()");
+    await p.ev("document.querySelector('#m-tier-green-list .ms-check').click()");
+    t = await tiers();
+    check(`${tag} one green detail ticked by hand: green half-ticked`, t.green.mixed && !t.green.checked && t.green.ticked === 1 && t.green.count === `${t.green.n} details, 1 ticked`, t.green);
+    await p.ev("document.getElementById('m-tier-green-all').click()");
+    t = await tiers();
+    check(`${tag} pressing the half-ticked green box ticks all green`, t.green.checked && !t.green.mixed && t.green.ticked === t.green.n, t.green);
+    await p.ev("document.getElementById('m-tier-green-toggle').click()");
+    await p.tick({});
+    t = await tiers();
+    check(`${tag} the three tick boxes untick everything`, !t.red.checked && !t.amber.checked && !t.green.checked && !t.red.mixed && !t.green.mixed && /^0 of /.test(await countLine()), t);
+    await p.tick({ red: true, amber: true, green: true });
+    t = await tiers();
+    check(`${tag} and tick everything`, t.red.checked && t.amber.checked && t.green.checked, t);
+
+    // Prepare removes exactly the ticked details: proved by the engine and the page read-back.
+    const ofTier = (...ts) => src.items.filter((i) => ts.includes(i.tier)).map((i) => i.id);
+    const exactly = async (label, want) => {
+      const ticked = await p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].filter((b) => b.checked).map((b) => b.dataset.id).sort()");
+      check(`${tag} ${label}: ticked details as meant`, ticked.join() === [...want].sort().join(), ticked);
+      await p.press();
+      const got = await p.download();
+      const n = Object.keys(got)[0];
+      if (!n) { check(`${tag} ${label}: a file was made`, false); return; }
+      const out = await inspect(got[n]);
+      const expect = src.items.map((i) => i.id).filter((id) => !want.includes(id)).sort();
+      check(`${tag} ${label}: the new file holds exactly the details not ticked (${expect.length})`, out.items.map((i) => i.id).sort().join() === expect.join(), out.items.map((i) => i.id));
+      const shown = await p.ev("[...document.querySelectorAll('#results-list .ms-readback .ms-item')].map((li) => li.dataset.id).sort()");
+      check(`${tag} ${label}: the page read-back names the same details`, shown.join() === expect.join(), shown);
+    };
+    await p.tick({ red: true });
+    await exactly('all red by the red tick box', ofTier('red'));
+    await p.tick({});
+    await p.ev("document.querySelector('#m-tier-amber-list .ms-check[data-id=\"exif:software\"]').click()");
+    await exactly('a single detail', ['exif:software']);
+    await p.tick({ red: true, amber: true });
+    await exactly('the default (red and amber, by their tick boxes)', ofTier('red', 'amber'));
+
+    // The default file is on screen now; the checks below download it once more.
     let files = await p.download();
     let name = Object.keys(files)[0];
-    check(`${tag} download is named image.public.jpg`, name === 'image.public.jpg', Object.keys(files));
+    check(`${tag} download is named image.minimal.jpg`, name === 'image.minimal.jpg', Object.keys(files));
     if (name) {
       const out = await inspect(files[name]);
-      check(`${tag} no red item is left`, !out.items.some((i) => i.tier === 'red'), out.items.filter((i) => i.tier === 'red').map((i) => i.id));
-      check(`${tag} privacy word matches the read-back`, privacyWord(out.items) === 'public');
+      check(`${tag} no red or amber detail is left`, !out.items.some((i) => i.tier !== 'green'), out.items.filter((i) => i.tier !== 'green').map((i) => i.id));
+      check(`${tag} privacy word matches the read-back`, privacyWord(out.items) === 'minimal');
+      check(`${tag} the description beside the download fits minimal`, await p.ev("document.querySelector('.ms-word-text').textContent") === 'Only technical data left: rotation, colour, size and exposure.');
+      const btn = await p.ev("(() => { const a = document.querySelector('#results-list .ms-download'); return a && { tag: a.tagName, text: a.textContent, blob: (a.getAttribute('href') || '').startsWith('blob:'), dl: a.hasAttribute('download') }; })()");
+      check(`${tag} the result button says "Save image.minimal.jpg" and is still an <a download> to a blob:`, btn && btn.text === 'Save image.minimal.jpg' && btn.tag === 'A' && btn.dl && btn.blob, btn);
       const shown = await p.ev("document.querySelectorAll('#results-list .ms-item').length");
       check(`${tag} read-back list shows what remains`, shown === out.items.length, [shown, out.items.length]);
       if (python) check(`${tag} lossless: decoded pixels identical`, pil(LOSSLESS_PY, join(FIX, 'jpeg-everything.jpg'), tmpFile(name, files[name])));
@@ -300,38 +437,45 @@ try {
 
     // The name field renames the link without making the file again.
     await p.ev("(() => { const i = document.getElementById('name-input'); i.value = 'holiday.jpg'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
-    check(`${tag} typed name is used, extension dropped`, await p.ev("document.querySelector('.ms-download').download") === 'holiday.public.jpg');
+    check(`${tag} typed name is used, extension dropped`, await p.ev("document.querySelector('.ms-download').download") === 'holiday.minimal.jpg');
     await p.ev("(() => { const i = document.getElementById('name-input'); i.value = 'image'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
 
-    // None alone changes nothing, so no file is made and the page says why.
-    await p.ev("document.querySelector('#quick [data-preset=none]').click()");
+    // Nothing ticked changes nothing, so no file is made and the page says why.
+    await p.tick({});
     check(`${tag} changing the choice clears the old file`, await p.ev("document.getElementById('results').hidden && !document.getElementById('go-stale').hidden"));
     const idle = await p.pressIdle();
-    check(`${tag} None with nothing else chosen makes no file and says why`, idle.results && !idle.links && idle.text === 'Nothing to change yet: tick something to remove, or choose a crop, size or format.' && idle.focus === 'go-btn', idle);
-    // None with a resize: everything kept, so the word is custom with the red warning.
+    check(`${tag} nothing ticked and nothing else chosen makes no file and says why`, idle.results && !idle.links && idle.text === 'Nothing to change yet: tick something to remove, or choose a crop, size or format.' && idle.focus === 'go-btn', idle);
+    // Nothing ticked with a resize: everything kept, so the word is custom with the red warning.
     await p.ev("(() => { const i = document.getElementById('resize-percent'); i.value = '50'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
     check(`${tag} choosing a size takes the message away`, await p.ev("document.getElementById('go-nothing').hidden"));
     await p.press();
-    check(`${tag} None with a resize gives custom and the red warning`, await p.ev("document.querySelector('.ms-word').textContent === 'custom' && !!document.querySelector('.ms-word-warning')"));
+    check(`${tag} nothing ticked with a resize gives custom and the red warning`, await p.ev("document.querySelector('.ms-word').textContent === 'custom' && !!document.querySelector('.ms-word-warning')"));
     await p.ev("document.querySelector('input[name=resize][value=none]').click()");
 
-    // Select all on a picture with normal rotation: still lossless.
-    await p.ev("document.querySelector('#quick [data-preset=all]').click()");
-    check(`${tag} Select all on normal rotation stays lossless`, /^Lossless/.test(await p.ev("document.getElementById('mode-line').textContent")));
+    // Everything ticked on a picture with normal rotation: still lossless.
+    await p.tick({ red: true, amber: true, green: true });
+    check(`${tag} everything ticked on normal rotation stays lossless`, /^Lossless/.test(await p.ev("document.getElementById('mode-line').textContent")));
     await p.press();
     files = await p.download();
     name = Object.keys(files)[0];
     if (name) {
       const out = await inspect(files[name]);
-      check(`${tag} Select all leaves ${out.items.length ? out.items.map((i) => i.id).join(', ') : 'nothing'}`, name === `image.${privacyWord(out.items)}.jpg`, name);
+      check(`${tag} everything ticked leaves ${out.items.length ? out.items.map((i) => i.id).join(', ') : 'nothing'}`, name === `image.${privacyWord(out.items)}.jpg`, name);
     }
 
-    // Rotation 6: Red only keeps the tag and stays lossless; Select all bakes it.
+    // Loading another file closes every section again and brings back the default ticks,
+    // whatever was open or ticked before.
+    await p.ev("document.getElementById('m-tier-amber-toggle').click(); document.getElementById('m-tier-green-toggle').click()");
+    await p.tick({ green: true });
+    // Rotation 6: the default keeps the tag and stays lossless; ticking green bakes it.
     await p.load(['jpeg-orientation-6.jpg']);
+    t = await tiers();
+    check(`${tag} a second file: every section closed again`, ['red', 'amber', 'green'].filter((k) => t[k]).every((k) => t[k].expanded === 'false' && !t[k].shown), t);
+    check(`${tag} a second file: red and amber ticked again, green not`, (!t.red || t.red.checked) && (!t.amber || t.amber.checked) && (!t.green || (!t.green.checked && !t.green.mixed)), t);
     const pre = await p.ev("({ summary: document.getElementById('file-summary').textContent, mode: document.getElementById('mode-line').textContent, canvas: [document.getElementById('preview-canvas').width, document.getElementById('preview-canvas').height] })");
     check(`${tag} sideways picture is shown upright`, pre.canvas[1] > pre.canvas[0] && /480 × 640/.test(pre.summary), pre);
     check(`${tag} rotation kept: lossless`, /^Lossless/.test(pre.mode), pre.mode);
-    await p.ev("document.querySelector('#quick [data-preset=all]').click()");
+    await p.tick({ red: true, amber: true, green: true });
     const bake = await p.ev("document.getElementById('mode-line').textContent + ' | ' + document.getElementById('mode-reasons').textContent");
     check(`${tag} removing rotation says the picture is re-saved and turned`, /re-saves the picture/.test(bake) && /right way up/.test(bake), bake);
     await p.press();
@@ -348,7 +492,7 @@ try {
     await p.shot(`${tag}-3-rotation`);
 
     // Crop with a fixed shape, then keyboard moves.
-    await p.ev("document.querySelector('#quick [data-preset=red]').click()");
+    await p.tick({ red: true, amber: true });
     await p.ev("document.getElementById('crop-toggle').click()");
     await p.ev("document.querySelector('#crop-ratios [data-ratio=\"1:1\"]').click()");
     const before = await p.ev("document.getElementById('crop-readout').textContent");
@@ -393,6 +537,8 @@ try {
 
     // Transparent PNG to JPEG on a chosen background.
     await p.load(['png-transparent.png']);
+    const pngTiers = await p.ev("[...document.querySelectorAll('#meta-groups .ms-tier')].map((s) => s.dataset.tier).join()");
+    check(`${tag} a file with no green details has no green section`, pngTiers === 'red,amber' && !(await p.ev("!!document.getElementById('m-tier-green')")), pngTiers);
     await p.ev("(() => { const s = document.getElementById('format-select'); s.value = 'jpeg'; s.dispatchEvent(new Event('change', { bubbles: true })); })()");
     check(`${tag} PNG to JPEG asks for a background colour`, await p.ev("!document.getElementById('background-field').hidden"));
     await p.press();
@@ -454,7 +600,7 @@ try {
     check(`${tag} HEIC download keeps its type`, /^image\.\w+\.heic$/.test(name || ''), name);
     if (name) {
       const out = await inspect(files[name]);
-      check(`${tag} HEIC: no red left`, !out.items.some((i) => i.tier === 'red'), out.items.map((i) => i.id));
+      check(`${tag} HEIC: no red or amber left`, !out.items.some((i) => i.tier !== 'green'), out.items.map((i) => i.id));
     }
     await p.shot(`${tag}-6-heic`);
 
@@ -464,10 +610,16 @@ try {
     check(`${tag} unsupported file gets a clear message`, /not-an-image\.pdf" is not a JPEG, PNG, WebP or HEIC picture/.test(multi.err), multi.err);
     check(`${tag} two pictures listed, crop off`, multi.files === 2 && multi.crop, multi);
     check(`${tag} the button says "Prepare pictures" for several`, await p.ev("document.getElementById('go-btn').textContent") === 'Prepare pictures');
+    t = await tiers();
+    check(`${tag} several files: every section closed, red and amber ticked for all of them, green not`, closed(t) && t.red.checked && t.red.ticked === t.red.n && t.amber.checked && t.amber.ticked === t.amber.n && !t.green.checked && t.green.ticked === 0, t);
     await p.press();
     files = await p.download();
     const names = Object.keys(files).sort();
     check(`${tag} numbered names`, names.length === 2 && /^image-1\.\w+\.jpg$/.test(names[0]) && /^image-2\.\w+\.webp$/.test(names[1]), names);
+    for (const nm of names) {
+      const out = await inspect(files[nm]);
+      check(`${tag} ${nm}: red and amber gone, word minimal`, !out.items.some((i) => i.tier !== 'green') && /\.minimal\./.test(nm), out.items.map((i) => i.tier + ':' + i.id));
+    }
     await p.shotOf(`${tag}-7-multi`, '#results');
 
     // Layout: nothing wider than the screen.
@@ -478,8 +630,9 @@ try {
     const plain = join(downloads, 'plain.png');
     writeFileSync(plain, plainPng(32, 24));
     await p.load([plain]);
-    const none = await p.ev("({ empty: !document.getElementById('meta-empty').hidden && document.getElementById('meta-empty').textContent, quick: document.getElementById('quick').hidden })");
-    check(`${tag} no metadata is said plainly`, none.empty === 'This file has no metadata. There is nothing hidden to remove.' && none.quick, none);
+    const none = await p.ev("({ empty: !document.getElementById('meta-empty').hidden && document.getElementById('meta-empty').textContent, intro: document.getElementById('meta-intro').hidden, count: document.getElementById('select-count').hidden })");
+    check(`${tag} no metadata is said plainly, with no intro or count`, none.empty === 'This file has no metadata. There is nothing hidden to remove.' && none.intro && none.count, none);
+    check(`${tag} no metadata: no tier sections at all`, await p.ev("document.querySelectorAll('#meta-groups .ms-tier').length === 0"));
     const plainIdle = await p.pressIdle();
     check(`${tag} no metadata and no change: no identical copy, and the reason`, plainIdle.results && !plainIdle.links && plainIdle.text === 'Nothing to change yet: this file has no metadata. Choose a crop, size or format.', plainIdle);
     // Only a resize, on a file with nothing to remove: a real change, and still clean.
@@ -497,6 +650,50 @@ try {
     check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
     await p.close();
   }
+
+  // The page as the Android app loads it: android-bridge.js first, then the page as usual.
+  {
+    const p = await openPage(360, 780, { android: true });
+    const tag = 'android';
+    const st = await p.ev(`(() => {
+      const sec = document.querySelector('[data-web-only]');
+      const r = sec ? sec.getBoundingClientRect() : null;
+      return { first: document.scripts[0]?.getAttribute('src'), sec: !!sec, hidden: !!sec && sec.hidden, gone: !!sec && r.height === 0 && getComputedStyle(sec).display === 'none', link: !!sec && sec.querySelector('a').getBoundingClientRect().height, hello: (window.__msPosted || []).map((m) => m.t) };
+    })()`);
+    check(`${tag} the bridge loads before every other script, as in the APK`, st.first === BRIDGE_FILE, st);
+    check(`${tag} page loads without errors`, p.log.errors.length === 0, p.log.errors);
+    check(`${tag} the bridge hides the Android app section (hidden, not displayed, link takes no space)`, st.sec && st.hidden && st.gone && st.link === 0, st);
+    check(`${tag} the bridge greets the app as before`, st.hello.join() === 'hello', st.hello);
+    // The page otherwise works: load, prepare, and Save hands the file to the app.
+    await p.load(['jpeg-everything.jpg']);
+    check(`${tag} the picture loads and the details are listed`, await p.ev("document.querySelectorAll('#meta-groups .ms-check').length > 0 && !document.getElementById('workspace').hidden"));
+    await p.press();
+    const link = await p.ev("(() => { const a = document.querySelector('.ms-download'); return a ? { name: a.download, text: a.textContent } : null; })()");
+    check(`${tag} the result offers Save image.minimal.jpg`, !!link && link.name === 'image.minimal.jpg' && link.text === 'Save image.minimal.jpg', link);
+    const before = p.completed.length;
+    await p.ev("document.querySelector('.ms-download').click()");
+    await p.waitFor("window.__msPosted.some((m) => m.t === 'out-begin')", 10000);
+    await sleep(500);
+    const begin = (await p.ev("window.__msPosted.find((m) => m.t === 'out-begin')")) || {};
+    check(`${tag} Save is caught by the bridge and offered to the app, not downloaded by the browser`, begin.name === 'image.minimal.jpg' && begin.mime === 'image/jpeg' && begin.size > 0 && begin.chunks >= 1 && p.completed.length === before, { begin, downloads: p.completed.length - before });
+    // Pull the chunks the way the app does and check the file that arrives.
+    const parts = [];
+    for (let i = 0; i < begin.chunks; i++) {
+      await p.ev(`window.__msListen({ data: JSON.stringify({ t: 'out-pull', id: ${begin.id}, index: ${i} }) })`);
+      const c = await p.ev(`window.__msPosted.filter((m) => m.t === 'out-chunk' && m.id === ${begin.id} && m.index === ${i}).pop()`);
+      parts.push(Buffer.from(c ? c.data : '', 'base64'));
+    }
+    await p.ev(`window.__msListen({ data: JSON.stringify({ t: 'out-done', id: ${begin.id} }) })`);
+    const got = new Uint8Array(Buffer.concat(parts));
+    const out = await inspect(got);
+    check(`${tag} the file handed to the app is whole and has no red or amber left`, got.length === begin.size && out.format === 'jpeg' && !out.items.some((i) => i.tier !== 'green'), { size: got.length, expected: begin.size, left: out.items.map((i) => i.tier + ':' + i.id) });
+    const csp = await p.ev('window.__csp');
+    check(`${tag} no policy violations`, csp.length === 0, csp);
+    check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
+    await p.shot(`${tag}-1-result`);
+    await p.close();
+  }
 } catch (err) {
   failures += 1;
   console.log(`FAIL harness: ${err.stack || err}`);
@@ -509,6 +706,6 @@ try {
   if (!KEEP) rmSync(downloads, { recursive: true, force: true });
 }
 
-const offsite = requests.filter((r) => !existsSync(join(ROOT, r)) && r !== '/');
+const offsite = requests.filter((r) => !existsSync(join(ROOT, r)) && r !== '/' && r !== `/${BRIDGE_FILE}`);
 console.log(`\n${passes} passed, ${failures} failed. Screenshots in ${OUT}${offsite.length ? `\nMissing files requested: ${[...new Set(offsite)].join(', ')}` : ''}`);
 process.exit(failures ? 1 : 0);

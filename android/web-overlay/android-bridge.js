@@ -4,13 +4,16 @@
  * adds one line to index.html that loads this script before gate.js and app.js; nothing
  * else in the page is changed. On the website this file is never loaded.
  *
- * It does two jobs, and both keep the page's own Content Security Policy intact
+ * It does three jobs, and all keep the page's own Content Security Policy intact
  * (connect-src 'none'): no fetch, no XHR, nothing leaves the device.
  *
+ *  0. WEBSITE-ONLY PARTS. Every element marked data-web-only (the "Get the Android app on
+ *     Zapstore" section, for one) is hidden once the page has been parsed.
+ *
  *  1. SAVING AND SHARING. A WebView cannot follow a download link to a blob: address, so a
- *     click on the page's "Download" link is caught here. The Blob behind it is read in the
+ *     click on the page's "Save" link is caught here. The Blob behind it is read in the
  *     page (Blob.arrayBuffer) and handed to the app in chunks, which then offers Save or
- *     Share. The file name is the page's own, for example image.public.jpg.
+ *     Share. The file name is the page's own, for example image.minimal.jpg.
  *
  *  2. PICTURES SHARED INTO THE APP. When a gallery shares a picture to the app, the app
  *     hands it over in chunks; this script rebuilds it as a File, puts it in the page's
@@ -23,6 +26,29 @@
  */
 (function () {
   'use strict';
+
+  /* ---------- 0. Website-only parts of the page ---------- */
+
+  /* This runs before the check for window.MSBridge below, on purpose: it depends only on
+     this file being loaded, which happens only inside the APK, so the website-only parts
+     stay hidden even on a WebView too old for the message channel. The script loads in the
+     head, before the body exists, so it waits for the end of parsing: readyState leaves
+     'loading' before the deferred gate.js and the app.js module run, whereas
+     DOMContentLoaded fires only after them. A page without any data-web-only element is
+     left as it is. */
+  function hideWebOnly() {
+    var els = document.querySelectorAll('[data-web-only]');
+    for (var i = 0; i < els.length; i++) els[i].hidden = true;
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('readystatechange', function onState() {
+      if (document.readyState === 'loading') return;
+      document.removeEventListener('readystatechange', onState);
+      hideWebOnly();
+    });
+  } else {
+    hideWebOnly();
+  }
 
   var bridge = window.MSBridge;
   if (!bridge || typeof bridge.postMessage !== 'function') return;
@@ -71,9 +97,8 @@
   var nextOutId = 1;
   var outQueue = [];
   var outCurrent = null;
-  /* Every Blob that is queued or on its way to the app. A second tap on the same Download
-     link while it is still being handed over does nothing, so one result never arrives
-     twice. */
+  /* Every Blob that is queued or on its way to the app. A second tap on the same Save link
+     while it is still being handed over does nothing, so one result never arrives twice. */
   var outPending = new Set();
 
   function startNextOut() {

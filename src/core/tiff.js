@@ -127,7 +127,7 @@ export const TIFF_ITEMS = {
   makernote: { group: 'hidden', tier: 'red', label: 'Manufacturer notes (may include serial numbers)', note: 'Private data the camera maker stores, often including serial numbers.' },
   'unique-id': { group: 'hidden', tier: 'red', label: 'Unique image ID', note: 'Can link copies of the picture back to the original file.' },
   embedded: { group: 'hidden', tier: 'red', label: 'Copy of XMP, IPTC or Photoshop data inside EXIF', note: 'May repeat names, places or serial numbers.' },
-  private: { group: 'hidden', tier: 'red', label: 'Unrecognised camera data', note: 'Fields this tool does not recognise. They may hold anything, so they are removed by default.' },
+  private: { group: 'hidden', tier: 'red', label: 'Unrecognised camera data', note: 'Data this tool does not recognise. It may hold anything, so it is removed by default.' },
   leftover: { group: 'hidden', tier: 'red', label: 'Leftover data inside EXIF', note: 'Bytes that no field uses, often left behind by an earlier edit. They can still hold old values.' },
   description: { group: 'hidden', tier: 'amber', label: 'Description and comments' },
   orientation: { group: 'technical', tier: 'green', label: 'Rotation' },

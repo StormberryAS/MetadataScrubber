@@ -15,9 +15,9 @@
 import { formatBytes, indexOfAscii, latin1, startsWith, subtractRanges, u16be, u32be, u64be, zeroRanges } from './bytes.js?v=b373c219';
 import { describeC2pa } from './c2pa.js?v=366e87df';
 import { iccDescription } from './icc.js?v=1ac906b0';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=b751b9be';
-import { blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, tiffItems } from './tiff.js?v=05d71c42';
-import { addXmpItems, emptyXmp, padXmp, parseXmp, planXmp } from './xmp.js?v=45ad6f50';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=5970adfd';
+import { blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, tiffItems } from './tiff.js?v=262e0fe8';
+import { addXmpItems, emptyXmp, padXmp, parseXmp, planXmp } from './xmp.js?v=f2cbf417';
 
 const HEIC_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs']);
 const C2PA_UUID = 'd8fec3d61b0e483c92975828877ec481';

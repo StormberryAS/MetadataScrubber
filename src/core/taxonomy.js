@@ -11,7 +11,7 @@ export const GROUPS = [
 
 export const TIERS = {
   red: { label: 'Remove before sharing', description: 'Can identify you, your camera or the place. Removed by default.' },
-  amber: { label: 'Think about it', description: 'Can reveal routines, devices or history. Kept by default.' },
+  amber: { label: 'Think about it', description: 'Can reveal routines, devices or history. Removed by default.' },
   green: { label: 'Harmless and useful', description: 'Helps the picture display correctly. Kept by default.' },
 };
 

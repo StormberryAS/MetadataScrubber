@@ -1,0 +1,1 @@
+Details now sit in Red, Amber and Green sections that start closed. Red and amber details are ticked for removal to start with; green is kept. Tick a whole colour at once, or open it to choose single details. The result button now names the file, for example Save image.minimal.jpg.

@@ -18,16 +18,25 @@
 //   core         every picture the engine tests generated (MS_FIXTURE_DIR), checked against
 //                the PLANT values in tests/core-fixtures.mjs
 //   adversarial  hand-built pictures that hide data where a scrubber might not look
-//   reencode     buildExif() and insertExif() with the default selection kept, as used after
-//                a crop, a resize or a baked rotation
+//   reencode     buildExif() and insertExif() with every non-red detail kept (stricter than
+//                the page's starting selection), as used after a crop, a resize or a baked
+//                rotation
 //   hostile      damaged and malicious inputs, run in a worker with a time limit
 //
 // For each picture it:
-//   1. runs inspect() and works out which item removes each planted string (one scrub per
-//      item), so a planted string with no item, or with the wrong tier, is caught;
-//   2. scrubs every red item (the default) and searches the output for red planted strings
-//      in plain, UTF-16, hex, base64 and zlib-compressed form;
-//   3. scrubs every item ("Select all") and searches for every planted string;
+//   1. runs inspect() and works out which detail removes each planted string (one scrub per
+//      detail), so a planted string with no detail, or with the wrong tier, is caught;
+//   2. scrubs only the red details (red only, the strictest test for red, since red must go
+//      even when amber is kept) and searches the output for red planted strings in plain,
+//      UTF-16, hex, base64 and zlib-compressed form;
+//   2b. scrubs the page's starting selection (red and amber ticked, green kept, as
+//      defaultIds() in app.js does), searches for red and amber planted strings and requires
+//      a read-back of green details only;
+//   2c. on a picture with an amber HDR gain map, scrubs that selection with the gain map and
+//      its XMP description unticked (what a user gets who keeps HDR) and records each red
+//      planted string that survives as a known engine gap. Gaps are listed in the report but
+//      do not set the exit status: they are why the gain map is not kept by default yet;
+//   3. scrubs every detail ("every detail ticked") and searches for every planted string;
 //   4. lists what exiftool -a -u -G1 -ee3 -U still shows beyond pure structure;
 //   5. checks the outputs decode (magick, Pillow), the decoded pixels are identical, exiftool
 //      -validate reports nothing new, and HEIC box sizes and offsets did not move;
@@ -108,6 +117,8 @@ function finding(severity, fixture, location, detail, reproduce, key) {
   findings.push({ severity, fixture, location, detail, reproduce });
 }
 const pass = (text) => passed.push(text);
+// Red planted strings that survive when the HDR gain map is kept (step 2c).
+const gaps = [];
 
 // ======================================================================================
 // Deep search: raw bytes, UTF-16 either way, and the inside of every zlib stream, hex run
@@ -337,7 +348,10 @@ function exiftoolValidate(file) {
 
 const outputsForTools = []; // { fixture, label, inFile, outFile, format }
 
-async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = true } = {}) {
+// The HDR gain map and its XMP description: what a user unticks to keep HDR (step 2c).
+const GAIN_MAP_OWN = new Set(['jpeg:trailing:gain-map', 'xmp:gainmap']);
+
+async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = true, gainMapGap = false } = {}) {
   const rec = { label, file, section, size: bytesIn.length };
   const inBuf = Buffer.from(bytesIn);
   const fmt = core.detectFormat(u8(inBuf));
@@ -357,7 +371,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
   const present = canaries.filter((c) => locate(hayIn, c.string).length);
   rec.missingInInput = canaries.filter((c) => !present.includes(c)).map((c) => c.string);
 
-  // 1. attribution: which single item removes each planted string
+  // 1. attribution: which single detail removes each planted string
   const removedBy = new Map(present.map((c) => [c.string, []]));
   const touchedBy = new Map(present.map((c) => [c.string, []]));
   const countsIn = new Map(present.map((c) => [c.string, countIn(hayIn, c.string)]));
@@ -372,8 +386,14 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
   }
   const itemOf = (id) => ins.items.find((i) => i.id === id);
 
-  // 2 and 3. default (red) and "Select all"
+  // 2, 2b and 3. red only (strictest), the starting selection (red and amber) and every
+  // detail ticked
   const red = await core.scrub(u8(inBuf), redIds);
+  // Mirrors defaultIds() in app.js: every red and amber detail.
+  const startIds = ins.items.filter((i) => i.tier !== 'green').map((i) => i.id);
+  const start = await core.scrub(u8(inBuf), startIds);
+  const hayStart = haystacks(start.bytes);
+  rec.startWarnings = start.warnings;
   const all = await core.scrub(u8(inBuf), ids);
   const hayRed = haystacks(red.bytes);
   const hayAll = haystacks(all.bytes);
@@ -385,11 +405,14 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
   const allFile = join(OUT, 'outputs', `${safe}.all.${ext}`);
   writeFileSync(redFile, red.bytes);
   writeFileSync(allFile, all.bytes);
-  outputsForTools.push({ fixture: label, inFile: file, redFile, allFile, format: fmt });
+  const startFile = join(OUT, 'outputs', `${safe}.start.${ext}`);
+  writeFileSync(startFile, start.bytes);
+  rec.startFile = startFile;
+  outputsForTools.push({ fixture: label, inFile: file, redFile, allFile, format: fmt, gainMapGap });
   rec.redFile = redFile;
   rec.allFile = allFile;
 
-  const repro = (which) => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${file}')); const i=await c.inspect(b); const r=await c.scrub(b, i.items${which === 'red' ? ".filter(x=>x.tier==='red')" : ''}.map(x=>x.id)); fs.writeFileSync('/tmp/out.${ext}', r.bytes)"; then grep -c (or tests/fixtures/fixturekit.py scan) /tmp/out.${ext}`;
+  const repro = (which) => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${file}')); const i=await c.inspect(b); const r=await c.scrub(b, i.items${which === 'red' ? ".filter(x=>x.tier==='red')" : which === 'start' ? ".filter(x=>x.tier!=='green')" : which === 'hdr' ? ".filter(x=>x.tier!=='green'&&!(x.tier==='amber'&&['jpeg:trailing:gain-map','xmp:gainmap'].includes(x.id)))" : ''}.map(x=>x.id)); fs.writeFileSync('/tmp/out.${ext}', r.bytes)"; then grep -c (or tests/fixtures/fixturekit.py scan) /tmp/out.${ext}`;
 
   rec.canaries = [];
   for (const c of present) {
@@ -400,24 +423,33 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     const leftRed = locate(hayRed, c.string);
     const leftAll = locate(hayAll, c.string);
     const visible = byItems.some((i) => i.value.includes(c.string.slice(0, Math.min(24, c.string.length))));
-    const row = { string: c.string, expected: c.tier, removedBy: by, touchedBy: touched, tiers, leftAfterDefault: describeHits(leftRed), leftAfterAll: describeHits(leftAll) };
+    const leftStart = locate(hayStart, c.string);
+    const row = { string: c.string, expected: c.tier, removedBy: by, touchedBy: touched, tiers, leftAfterDefault: describeHits(leftRed), leftAfterStart: describeHits(leftStart), leftAfterAll: describeHits(leftAll) };
     rec.canaries.push(row);
     const where = c.location || '';
     if (c.tier === 'red' && leftRed.length) {
       let sev;
       let why;
-      if (by.some((id) => itemOf(id).tier === 'red')) { sev = 'critical'; why = `a red item (${by.filter((id) => itemOf(id).tier === 'red').join(', ')}) removes it on its own, yet it survives the default selection`; }
-      else if (touched.some((id) => itemOf(id).tier === 'red')) { sev = 'critical'; why = `red item(s) ${touched.filter((id) => itemOf(id).tier === 'red').join(', ')} remove some copies but not all`; }
-      else if (!by.length && !touched.length) { sev = 'critical'; why = leftAll.length ? 'no item removes it, not even "Select all": the user is never offered its removal' : 'no single item removes it; only the full "Select all" combination does'; }
-      else if (visible) { sev = c.basis === 'inferred' ? 'medium' : 'high'; why = `it is offered, with its value shown, only as ${byItems.map((i) => `${i.tier} item ${i.id} "${i.label}"`).join(', ')}: a tier disagreement with the registry (${c.basis || 'spec'})`; }
-      else { sev = c.basis === 'inferred' ? 'high' : 'critical'; why = `it is hidden inside ${byItems.map((i) => `${i.tier} item ${i.id} "${i.label}" (shown as "${i.value}")`).join(', ')}, which is kept by default and never shows this value`; }
-      finding(sev, label, where, `Red planted string ${JSON.stringify(c.string)} survives the default (red) scrub: ${why}. Left at: ${describeHits(leftRed)}.`, repro('red'));
+      if (by.some((id) => itemOf(id).tier === 'red')) { sev = 'critical'; why = `a red detail (${by.filter((id) => itemOf(id).tier === 'red').join(', ')}) removes it on its own, yet it survives the red-only scrub`; }
+      else if (touched.some((id) => itemOf(id).tier === 'red')) { sev = 'critical'; why = `red detail(s) ${touched.filter((id) => itemOf(id).tier === 'red').join(', ')} remove some copies but not all`; }
+      else if (!by.length && !touched.length) { sev = 'critical'; why = leftAll.length ? 'no detail removes it, not even ticking every detail: the user is never offered its removal' : 'no single detail removes it; only ticking every detail does'; }
+      else if (visible) { sev = c.basis === 'inferred' ? 'medium' : 'high'; why = `it is offered, with its value shown, only as ${byItems.map((i) => `${i.tier} detail ${i.id} "${i.label}"`).join(', ')}: a tier disagreement with the registry (${c.basis || 'spec'})`; }
+      else { sev = c.basis === 'inferred' ? 'high' : 'critical'; why = `it is hidden inside ${byItems.map((i) => `${i.tier} detail ${i.id} "${i.label}" (shown as "${i.value}")`).join(', ')}, which the red-only scrub keeps and which never shows this value`; }
+      const detail = `Red planted string ${JSON.stringify(c.string)} survives the red-only scrub: ${why}. Left at: ${describeHits(leftRed)}.`;
+      // A string hidden in the parts that travel with an amber HDR gain map is the same
+      // engine gap as step 2c: recorded as a gap, while the starting selection must still
+      // remove it (checked below as a finding).
+      if (gainMapGap && by.length && by.every((id) => itemOf(id).tier === 'amber')) gaps.push({ fixture: label, location: where, detail, reproduce: repro('red') });
+      else finding(sev, label, where, detail, repro('red'));
+    }
+    if ((c.tier === 'red' || c.tier === 'amber') && leftStart.length) {
+      finding(c.tier === 'red' ? 'critical' : 'high', label, where, `${c.tier === 'red' ? 'Red' : 'Amber'} planted string ${JSON.stringify(c.string)} survives the page's starting selection (red and amber ticked)${by.length ? `; single details ${by.join(', ')} remove it` : ''}. Left at: ${describeHits(leftStart)}.`, repro('start'));
     }
     if (leftAll.length) {
-      finding('high', label, where, `Planted string ${JSON.stringify(c.string)} (${c.tier}) survives "Select all": ${by.length ? `single items ${by.join(', ')} remove it, but not all of them together` : 'no item covers it'}. Left at: ${describeHits(leftAll)}.`, repro('all'));
+      finding('high', label, where, `Planted string ${JSON.stringify(c.string)} (${c.tier}) survives the every-detail scrub: ${by.length ? `single details ${by.join(', ')} remove it, but not all of them together` : 'no detail covers it'}. Left at: ${describeHits(leftAll)}.`, repro('all'));
     }
     if (!by.length && !touched.length && !leftAll.length && c.tier !== 'red') {
-      finding('medium', label, where, `Planted ${c.tier} string ${JSON.stringify(c.string)} has no item of its own; only "Select all" removes it, so the user cannot remove it selectively.`, repro('all'));
+      finding('medium', label, where, `Planted ${c.tier} string ${JSON.stringify(c.string)} has no detail of its own; only ticking every detail removes it, so the user cannot remove it selectively.`, repro('all'));
     }
     if (by.length && !tiers.includes(c.tier)) {
       const order = { red: 0, amber: 1, green: 2 };
@@ -430,9 +462,23 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     }
   }
 
+  // 2c. the starting selection with an amber HDR gain map kept: red must still go
+  if (ins.items.some((i) => i.id === 'jpeg:trailing:gain-map' && i.tier === 'amber')) {
+    const keepIds = startIds.filter((id) => !(GAIN_MAP_OWN.has(id) && itemOf(id).tier === 'amber'));
+    const hdr = await core.scrub(u8(inBuf), keepIds);
+    const hayHdr = haystacks(hdr.bytes);
+    rec.hdrGaps = [];
+    for (const c of present.filter((x) => x.tier === 'red')) {
+      const left = locate(hayHdr, c.string);
+      if (!left.length) continue;
+      rec.hdrGaps.push(c.string);
+      gaps.push({ fixture: label, location: c.location || '', detail: `Red planted string ${JSON.stringify(c.string)} survives when the HDR gain map is kept. Left at: ${describeHits(left)}.`, reproduce: repro('hdr') });
+    }
+  }
+
   // 6. partial overwrites: fragments of removed strings
   const others = canaries.map((c) => c.string);
-  for (const [which, hay, sel] of [['default', hayRed, (c) => c.tier === 'red'], ['Select all', hayAll, () => true]]) {
+  for (const [which, hay, sel] of [['red-only', hayRed, (c) => c.tier === 'red'], ['starting-selection', hayStart, (c) => c.tier === 'red' || c.tier === 'amber'], ['every-detail', hayAll, () => true]]) {
     for (const c of present.filter(sel)) {
       if (locate(hay, c.string).length || c.string.length < 14 || !/^CANARY|^[A-Z]{3,}-/.test(c.string)) continue;
       const frags = [];
@@ -442,17 +488,17 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
         const h = locate(hay, w);
         if (h.length) frags.push(`${JSON.stringify(w)} ${describeHits(h)}`);
       }
-      if (frags.length) finding(which === 'default' ? 'critical' : 'high', label, c.location || '', `Fragments of removed string ${JSON.stringify(c.string)} remain after the ${which} scrub (partial overwrite): ${frags.slice(0, 3).join(' | ')}.`, repro(which === 'default' ? 'red' : 'all'));
+      if (frags.length) finding(which === 'red-only' ? 'critical' : 'high', label, c.location || '', `Fragments of removed string ${JSON.stringify(c.string)} remain after the ${which} scrub (partial overwrite): ${frags.slice(0, 3).join(' | ')}.`, repro({ 'red-only': 'red', 'starting-selection': 'start' }[which] || 'all'));
     }
   }
-  // 6b. raw GPS rationals of the input must be gone after the default scrub
+  // 6b. raw GPS rationals of the input must be gone after the red-only scrub
   if (gpsCheck) {
     const gps = gpsRationals(inBuf);
     rec.gpsRationals = gps.length;
     for (const g of gps) {
-      for (const [which, out] of [['default', red.bytes], ['Select all', all.bytes]]) {
+      for (const [which, out] of [['red-only', red.bytes], ['every-detail', all.bytes]]) {
         const at = Buffer.from(out).indexOf(g.bytes);
-        if (at >= 0) finding('critical', label, `EXIF GPS ${g.label}`, `The raw ${g.label} rational (${g.bytes.toString('hex')}) is still in the bytes after the ${which} scrub, at offset ${hexAt(at)}: the GPS value was unlinked, not erased.`, repro(which === 'default' ? 'red' : 'all'));
+        if (at >= 0) finding('critical', label, `EXIF GPS ${g.label}`, `The raw ${g.label} rational (${g.bytes.toString('hex')}) is still in the bytes after the ${which} scrub, at offset ${hexAt(at)}: the GPS value was unlinked, not erased.`, repro(which === 'red-only' ? 'red' : 'all'));
       }
     }
   }
@@ -463,18 +509,25 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     rec.readbackDefault = rbRed.items.map((i) => `${i.tier}:${i.id}`);
     rec.wordDefault = core.privacyWord(rbRed.items);
     const stillRed = rbRed.items.filter((i) => i.tier === 'red');
-    if (stillRed.length) finding('high', label, 'read-back', `After the default scrub, the read-back still lists red items: ${stillRed.map((i) => `${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordDefault}".`, repro('red'));
-  } catch (e) { finding('high', label, 'read-back', `inspect() of the default output throws ${e.name}: ${e.message}`, repro('red')); }
+    if (stillRed.length) finding('high', label, 'read-back', `After the red-only scrub, the read-back still lists red details: ${stillRed.map((i) => `${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordDefault}".`, repro('red'));
+  } catch (e) { finding('high', label, 'read-back', `inspect() of the red-only output throws ${e.name}: ${e.message}`, repro('red')); }
+  try {
+    const rbStart = await core.inspect(start.bytes);
+    rec.readbackStart = rbStart.items.map((i) => `${i.tier}:${i.id}`);
+    rec.wordStart = core.privacyWord(rbStart.items);
+    const notGreen = rbStart.items.filter((i) => i.tier !== 'green');
+    if (notGreen.length) finding('high', label, 'read-back', `After the page's starting selection (red and amber ticked), the read-back still lists red or amber details: ${notGreen.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordStart}".`, repro('start'));
+  } catch (e) { finding('high', label, 'read-back', `inspect() of the starting-selection output throws ${e.name}: ${e.message}`, repro('start')); }
   try {
     const rbAll = await core.inspect(all.bytes);
     rec.readbackAll = rbAll.items.map((i) => `${i.tier}:${i.id}`);
     rec.wordAll = core.privacyWord(rbAll.items);
-    if (rbAll.items.length) finding('medium', label, 'read-back', `After "Select all", the read-back still lists items: ${rbAll.items.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word is "${rec.wordAll}", not "clean".`, repro('all'));
-  } catch (e) { finding('high', label, 'read-back', `inspect() of the "Select all" output throws ${e.name}: ${e.message}`, repro('all')); }
+    if (rbAll.items.length) finding('medium', label, 'read-back', `After the every-detail scrub, the read-back still lists details: ${rbAll.items.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word is "${rec.wordAll}", not "clean".`, repro('all'));
+  } catch (e) { finding('high', label, 'read-back', `inspect() of the every-detail output throws ${e.name}: ${e.message}`, repro('all')); }
 
   if (fmt === 'heic') {
-    for (const [which, out] of [['default', red.bytes], ['Select all', all.bytes]]) {
-      if (out.length !== inBuf.length) finding('medium', label, 'HEIC size', `The ${which} output is ${out.length} bytes, the input ${inBuf.length}: HEIC edits must be in place.`, repro(which === 'default' ? 'red' : 'all'));
+    for (const [which, out] of [['red-only', red.bytes], ['every-detail', all.bytes]]) {
+      if (out.length !== inBuf.length) finding('medium', label, 'HEIC size', `The ${which} output is ${out.length} bytes, the input ${inBuf.length}: HEIC edits must be in place.`, repro(which === 'red-only' ? 'red' : 'all'));
       // The engine blanks a box by turning it into a 'free' box of the same size, so a box
       // whose output twin is 'free' at the same place and size counts as unchanged.
       const boxesIn = isoBoxes(inBuf);
@@ -486,7 +539,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
       const a = boxesIn.map((x, i) => norm(x, boxesOut[i]));
       const bb = boxesOut.map((x, i) => norm(x, x));
       const diff = a.filter((x, i) => x !== bb[i]);
-      if (diff.length || a.length !== bb.length) finding('medium', label, 'HEIC boxes', `Box layout changed after the ${which} scrub: ${diff.slice(0, 4).join(', ')}`, repro(which === 'default' ? 'red' : 'all'));
+      if (diff.length || a.length !== bb.length) finding('medium', label, 'HEIC boxes', `Box layout changed after the ${which} scrub: ${diff.slice(0, 4).join(', ')}`, repro(which === 'red-only' ? 'red' : 'all'));
     }
   }
   return rec;
@@ -856,7 +909,7 @@ function buildAdversarial() {
     t.writeUInt32LE(gpsAt, e + 8);
     add('adv-kept-tag-overlaps-gps.jpg', jpegInsert(baseJpeg('b14.jpg'), exifSeg(t)), [
       { string: C('OVERLAP-GPSAREA-ab34'), tier: 'red', location: 'GPSAreaInformation whose bytes are also covered by a kept unknown tag 0xBEEF' },
-    ], 'An unknown tag (amber, kept by default) whose value range overlaps the GPS directory.');
+    ], 'An unknown tag (amber, kept by the red-only scrub) whose value range overlaps the GPS directory.');
   }
   // A15. C2PA manifest with a stds.exif assertion holding a GPS position and a creator.
   {
@@ -1034,6 +1087,85 @@ function buildAdversarial() {
       { string: C('HEIC-EXTRA-JPEG-ARTIST-ab35'), tier: 'red', location: 'an extra jpeg image item that nothing references, with its own EXIF' },
     ], 'HEIC with metadata in places other than Exif and mime items.');
   }
+  // A30 to A36. Data hidden in what travels with an HDR gain map, built on the corpus Ultra
+  // HDR picture: extra fields in the hdrgm, HDRGainMap and Container XMP namespaces (in the
+  // photo and inside the gain map), the tail of the MPF index, an ISO 21496-1 segment, and
+  // bytes after the gain map's end marker. The starting selection ticks the gain map, so all
+  // of it must go; keeping the gain map keeps it today (recorded as gaps, see step 2c).
+  {
+    const srcFile = join(FIXTURES, 'jpeg-ultrahdr-like.jpg');
+    if (existsSync(srcFile)) {
+      const ultra = readFileSync(srcFile);
+      const isXmp = (b, s) => s.marker === 0xe1 && b.toString('latin1', s.data, s.data + 29) === 'http://ns.adobe.com/xap/1.0/\0';
+      const isMpf = (b, s) => s.marker === 0xe2 && b.toString('latin1', s.data, s.data + 4) === 'MPF\0';
+      const mpfOf = (b) => {
+        const s = jpegSegments(b).find((x) => isMpf(b, x));
+        const t = s.data + 4;
+        const le = b.toString('latin1', t, t + 2) === 'II';
+        const r16 = (o) => (le ? b.readUInt16LE(o) : b.readUInt16BE(o));
+        const r32 = (o) => (le ? b.readUInt32LE(o) : b.readUInt32BE(o));
+        const ifd = t + r32(t + 4);
+        for (let i = 0; i < r16(ifd); i++) {
+          const e = ifd + 2 + i * 12;
+          if (r16(e) === 0xb002) return { base: t, le, table: t + r32(e + 8), r32 };
+        }
+        throw new Error('no MP entry table');
+      };
+      // Rewrites one segment's payload.
+      const editSeg = (b, pick, fn) => {
+        const s = jpegSegments(b).find((x) => pick(b, x));
+        return cat(b.subarray(0, s.start), seg(s.marker, fn(b.subarray(s.data, s.end))), b.subarray(s.end));
+      };
+      const swap = (old, neu) => (payload) => {
+        const t = payload.toString('latin1');
+        if (!t.includes(old)) throw new Error(`not found: ${old}`);
+        return Buffer.from(t.replace(old, neu), 'latin1');
+      };
+      // Splits at the second MP entry and puts the picture back together with a fresh table.
+      const m0 = mpfOf(ultra);
+      const gmAt = m0.base + m0.r32(m0.table + 16 + 8);
+      const prim0 = ultra.subarray(0, gmAt);
+      const gm0 = ultra.subarray(gmAt);
+      const join2 = (prim, gm, tail = '') => {
+        const out = Buffer.from(prim);
+        const m = mpfOf(out);
+        const w32 = (o, v) => (m.le ? out.writeUInt32LE(v, o) : out.writeUInt32BE(v, o));
+        w32(m.table + 4, out.length);
+        w32(m.table + 16 + 4, gm.length + B(tail).length);
+        w32(m.table + 16 + 8, out.length - m.base);
+        return cat(out, gm, tail);
+      };
+      const creator = /<dc:creator>[\s\S]*?<\/dc:creator>/;
+      const gmBare = editSeg(gm0, isXmp, (p) => Buffer.from(p.toString('latin1').replace(creator, ''), 'latin1'));
+      const gap = (name, bytes, canaries, note) => { add(name, bytes, canaries, note); list[list.length - 1].gainMapGap = true; };
+      gap('adv-gainmap-hdrgm-extra.jpg', join2(editSeg(prim0, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" hdrgm:CameraSerialNumber="${C('HDRGM-SERIAL-c1d2')}" hdrgm:GPSLatitude="${C('HDRGM-GPS-d2e3')}"`)), gm0), [
+        { string: C('HDRGM-SERIAL-c1d2'), tier: 'red', location: 'unknown hdrgm:CameraSerialNumber in the photo XMP' },
+        { string: C('HDRGM-GPS-d2e3'), tier: 'red', location: 'unknown hdrgm:GPSLatitude in the photo XMP' },
+      ], 'Ultra HDR picture with extra, non-standard fields in the hdrgm namespace.');
+      gap('adv-gainmap-container-label.jpg', join2(editSeg(prim0, isXmp, swap('Item:Semantic="GainMap"', `Item:Semantic="GainMap" Item:Label="${C('CONTAINER-LABEL-e3f4')}"`)), gm0), [
+        { string: C('CONTAINER-LABEL-e3f4'), tier: 'red', location: 'Item:Label inside the Container:Directory of the photo XMP' },
+      ], 'Ultra HDR picture whose Container directory carries a label.');
+      gap('adv-gainmap-apple-owner.jpg', join2(editSeg(prim0, isXmp, swap('xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"', `xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" HDRGainMap:HDRGainMapVersion="65536" HDRGainMap:OwnerName="${C('APPLE-GAIN-OWNER-f405')}"`)), gm0), [
+        { string: C('APPLE-GAIN-OWNER-f405'), tier: 'red', location: 'unknown HDRGainMap:OwnerName in the photo XMP' },
+      ], 'Ultra HDR picture with an Apple HDRGainMap field that is not part of the gain map.');
+      gap('adv-gainmap-after-eoi.jpg', join2(prim0, editSeg(gmBare, isXmp, swap(' x:xmptk="Fjord XMP Core 1.0"', '')), C('AFTER-GAINMAP-EOI-0516')), [
+        { string: C('AFTER-GAINMAP-EOI-0516'), tier: 'red', location: 'bytes after the gain map end marker, inside its MPF size' },
+      ], 'A gain map with no metadata of its own and hidden bytes after its end marker.');
+      gap('adv-gainmap-mpf-tail.jpg', join2(editSeg(prim0, isMpf, (p) => cat(p, C('MPF-TAIL-1627'))), gm0), [
+        { string: C('MPF-TAIL-1627'), tier: 'red', location: 'bytes after the MP entry table, at the end of the MPF segment' },
+      ], 'MPF segment longer than its index.');
+      gap('adv-gainmap-inner-hdrgm.jpg', join2(prim0, editSeg(gmBare, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" hdrgm:CameraSerialNumber="${C('INNER-HDRGM-SERIAL-2738')}"`))), [
+        { string: C('INNER-HDRGM-SERIAL-2738'), tier: 'red', location: 'unknown hdrgm:CameraSerialNumber in the gain map XMP' },
+      ], 'A gain map whose own XMP has an extra, non-standard hdrgm field.');
+      {
+        const mpfSeg = jpegSegments(prim0).find((x) => isMpf(prim0, x));
+        const iso = seg(0xe2, cat('urn:iso:std:iso:ts:21496:-1\0', Buffer.from([0, 0, 0, 0]), C('ISO-GAIN-SEG-3849')));
+        gap('adv-gainmap-iso-segment.jpg', join2(cat(prim0.subarray(0, mpfSeg.start), iso, prim0.subarray(mpfSeg.start)), gm0), [
+          { string: C('ISO-GAIN-SEG-3849'), tier: 'red', location: 'surplus bytes in an ISO 21496-1 APP2 segment of the photo' },
+        ], 'An ISO 21496-1 gain map segment longer than its version field.');
+      }
+    }
+  }
   return list;
 }
 
@@ -1098,7 +1230,7 @@ async function sectionAdversarial(records) {
     const decodes = { magick: magickIdentify(file).ok, pil: a.name.endsWith('.heic') ? null : pilHashes([file])[file]?.ok };
     const et = USE_EXIFTOOL ? tryRun('exiftool', ['-a', '-u', '-U', '-G1', '-ee3', '-s', '-m', file]).out : '';
     const shownBy = a.canaries.filter((c) => et.includes(c.string)).map((c) => c.string);
-    const rec = await evaluate(`adv/${a.name}`, file, a.bytes, a.canaries.map((c) => ({ ...c, basis: 'spec' })), { section: 'adversarial' });
+    const rec = await evaluate(`adv/${a.name}`, file, a.bytes, a.canaries.map((c) => ({ ...c, basis: 'spec' })), { section: 'adversarial', gainMapGap: !!a.gainMapGap });
     rec.note = a.note;
     rec.inputDecodes = decodes;
     rec.exiftoolShows = shownBy;
@@ -1107,8 +1239,9 @@ async function sectionAdversarial(records) {
 }
 
 // ======================================================================================
-// Section 3b: the re-encode path (crop, resize, rotation baked in). buildExif() with the
-// default selection kept, inserted into freshly encoded pictures; no red string may follow.
+// Section 3b: the re-encode path (crop, resize, rotation baked in). buildExif() with every
+// non-red detail kept (red only, stricter than the page's starting selection), inserted into
+// freshly encoded pictures; no red string may follow.
 
 async function sectionReencode(records) {
   const reg = loadRegistry();
@@ -1138,12 +1271,12 @@ async function sectionReencode(records) {
       writeFileSync(f, res);
       const hay = haystacks(res);
       const left = red.filter((s) => locate(hay, s).length);
-      if (left.length) finding('critical', basename(file), `re-encode to ${fmt}`, `buildExif() with the default selection kept carries red strings into the re-encoded picture: ${left.join(', ')}`, `keep = non-red ids; insertExif(fresh, '${fmt}', buildExif(src, keep)); grep ${f}`);
+      if (left.length) finding('critical', basename(file), `re-encode to ${fmt}`, `buildExif() with every non-red detail kept carries red strings into the re-encoded picture: ${left.join(', ')}`, `keep = non-red ids; insertExif(fresh, '${fmt}', buildExif(src, keep)); grep ${f}`);
       const rb = await core.inspect(res);
       const o = rb.items.find((i) => i.id === 'exif:orientation');
       if (o && o.value !== 'Normal') finding('high', basename(file), `re-encode to ${fmt}`, `Orientation in the rebuilt EXIF is "${o.value}", not Normal.`, f);
       const redLeft = rb.items.filter((i) => i.tier === 'red');
-      if (redLeft.length) finding('critical', basename(file), `re-encode to ${fmt}`, `Read-back of the re-encoded picture lists red items: ${redLeft.map((i) => `${i.id} (${i.value})`).join('; ')}`, f);
+      if (redLeft.length) finding('critical', basename(file), `re-encode to ${fmt}`, `Read-back of the re-encoded picture lists red details: ${redLeft.map((i) => `${i.id} (${i.value})`).join('; ')}`, f);
       const dec = fmt === 'jpeg' || fmt === 'png' || fmt === 'webp' ? pilHashes([f])[f] : null;
       if (dec && !dec.ok) finding('medium', basename(file), `re-encode to ${fmt}`, `Pillow cannot decode the picture after insertExif(): ${dec.error}`, f);
       if (USE_EXIFTOOL) {
@@ -1374,9 +1507,9 @@ async function sectionHostile(records) {
       }
       continue;
     }
-    if (r.readbackError) finding('medium', c.name, 'hostile input', `Reading back the "Select all" output throws ${r.readbackError}.`, rep(save()), `rb|${r.readbackError.replace(/\d+/g, 'N')}`);
+    if (r.readbackError) finding('medium', c.name, 'hostile input', `Reading back the every-detail output throws ${r.readbackError}.`, rep(save()), `rb|${r.readbackError.replace(/\d+/g, 'N')}`);
     if (!r.format || !c.canaries.length || !r.all) continue;
-    // Silent keep: planted strings intact in the input that survive "Select all".
+    // Silent keep: planted strings intact in the input that survive the every-detail scrub.
     const hayIn = haystacks(c.bytes);
     const hayAll = haystacks(Buffer.from(r.all));
     const left = c.canaries.filter((s) => locate(hayIn, s).length && locate(hayAll, s).length);
@@ -1390,7 +1523,7 @@ async function sectionHostile(records) {
   runner.close();
   for (const { c, left, warned, file, r } of silent.values()) {
     if (c.mutated) continue;
-    finding(warned ? 'medium' : 'high', c.name, 'hostile input', `${left.length} planted string(s) survive "Select all"${warned ? ` (with warnings: ${[...(r.warnings || []), ...(r.allWarnings || [])].slice(0, 2).join(' / ')})` : ' with NO warning at all'}: ${left.slice(0, 4).join(', ')}${left.length > 4 ? ', ...' : ''}.`, `${file}: inspect, scrub with every id, grep the output.`);
+    finding(warned ? 'medium' : 'high', c.name, 'hostile input', `${left.length} planted string(s) survive the every-detail scrub${warned ? ` (with warnings: ${[...(r.warnings || []), ...(r.allWarnings || [])].slice(0, 2).join(' / ')})` : ' with NO warning at all'}: ${left.slice(0, 4).join(', ')}${left.length > 4 ? ', ...' : ''}.`, `${file}: inspect, scrub with every id, grep the output.`);
   }
   // Mutations: summarise per fixture rather than one finding per mutation.
   const mut = [...silent.values()].filter((x) => x.c.mutated);
@@ -1399,7 +1532,7 @@ async function sectionHostile(records) {
   for (const [f, xs] of byFile) {
     const silentOnes = xs.filter((x) => !x.warned);
     const sample = (silentOnes[0] || xs[0]);
-    finding(silentOnes.length ? 'high' : 'medium', f, 'mutated input', `${xs.length} distinct survivals after "Select all" across ${FUZZ} random mutations of the metadata region; ${silentOnes.length} of them with no warning. Example: ${sample.left.slice(0, 3).join(', ')} survive after edits ${sample.c.edits.join(', ')}.`, `${sample.file}: inspect, scrub with every id, grep the output.`);
+    finding(silentOnes.length ? 'high' : 'medium', f, 'mutated input', `${xs.length} distinct survivals after the every-detail scrub across ${FUZZ} random mutations of the metadata region; ${silentOnes.length} of them with no warning. Example: ${sample.left.slice(0, 3).join(', ')} survive after edits ${sample.c.edits.join(', ')}.`, `${sample.file}: inspect, scrub with every id, grep the output.`);
   }
   records.push({ section: 'hostile', stats, survivals: [...silent.values()].map((x) => ({ name: x.c.name, left: x.left, warned: x.warned, file: x.file })) });
   log(`[hostile] ${JSON.stringify(stats)}`);
@@ -1417,7 +1550,7 @@ function toolChecks(records) {
   for (const o of outputsForTools) {
     const rec = records.find((r) => r.label === o.fixture);
     const integ = {};
-    for (const [which, f] of [['default', o.redFile], ['Select all', o.allFile]]) {
+    for (const [which, f] of [['red-only', o.redFile], ['every-detail', o.allFile]]) {
       const inOk = magickIdentify(o.inFile).ok;
       const id = magickIdentify(f);
       if (inOk && !id.ok) finding('medium', o.fixture, `${which} output`, `magick identify rejects the ${which} output (the input is accepted): ${id.error}`, `magick identify -regard-warnings ${f}`);
@@ -1437,7 +1570,7 @@ function toolChecks(records) {
     }
     if (USE_EXIFTOOL) {
       const vin = new Set(exiftoolValidate(o.inFile));
-      for (const [which, f] of [['default', o.redFile], ['Select all', o.allFile]]) {
+      for (const [which, f] of [['red-only', o.redFile], ['every-detail', o.allFile]]) {
         const vout = exiftoolValidate(f);
         const added = vout.filter((w) => !vin.has(w));
         if (added.length) finding('medium', o.fixture, `${which} output`, `exiftool -validate reports new warnings after the ${which} scrub: ${added.slice(0, 4).join(' / ')}`, `exiftool -validate -warning -a ${o.inFile} ${f}`, `val|${o.fixture}|${which}|${added.join('/')}`);
@@ -1446,12 +1579,16 @@ function toolChecks(records) {
         const list = rows.map((r) => `[${r.group}] ${r.tag}: ${r.value.slice(0, 80)}`);
         writeFileSync(join(OUT, 'exiftool', `${basename(f)}.txt`), list.join('\n') + '\n');
         exiftoolReport.push({ fixture: o.fixture, which, count: rows.length, redLooking: rows.filter((r) => RED_TAG.test(r.tag)).map((r) => `[${r.group}] ${r.tag}: ${r.value.slice(0, 60)}`), all: list });
-        if (which === 'Select all' && rows.length) {
-          finding('low', o.fixture, 'Select all output', `exiftool still shows ${rows.length} non-structural tag(s) after "Select all": ${list.slice(0, 6).join(' ; ')}${rows.length > 6 ? ' ; ...' : ''}`, `exiftool -a -u -U -G1 -ee3 -s ${f}`, `etall|${o.fixture}`);
+        if (which === 'every-detail' && rows.length) {
+          finding('low', o.fixture, 'every-detail output', `exiftool still shows ${rows.length} non-structural tag(s) after the every-detail scrub: ${list.slice(0, 6).join(' ; ')}${rows.length > 6 ? ' ; ...' : ''}`, `exiftool -a -u -U -G1 -ee3 -s ${f}`, `etall|${o.fixture}`);
         }
-        if (which === 'default') {
+        if (which === 'red-only') {
           const gps = rows.filter((r) => r.group !== 'PNG' && (/GPS(Latitude|Longitude|Position|Coordinates)/i.test(r.tag) || /^(GPSCoordinates|Location)$/.test(r.tag)));
-          if (gps.length) finding('critical', o.fixture, 'default output', `exiftool still reads a position from the default output: ${gps.map((r) => `[${r.group}] ${r.tag}: ${r.value}`).slice(0, 4).join(' ; ')}`, `exiftool -a -G1 -ee3 -U -gps:all -xmp:all ${f}`, `etgps|${o.fixture}`);
+          const detail = `exiftool still reads a position from the red-only output: ${gps.map((r) => `[${r.group}] ${r.tag}: ${r.value}`).slice(0, 4).join(' ; ')}`;
+          const reproduce = `exiftool -a -G1 -ee3 -U -gps:all -xmp:all ${f}`;
+          // Inside the amber HDR gain map description: the same gap as step 2c.
+          if (gps.length && o.gainMapGap && gps.every((r) => /^XMP-(hdrgm|HDRGainMap|GContainer)$/.test(r.group))) gaps.push({ fixture: o.fixture, location: 'red-only output', detail, reproduce });
+          else if (gps.length) finding('critical', o.fixture, 'red-only output', detail, reproduce, `etgps|${o.fixture}`);
         }
       }
     }
@@ -1475,22 +1612,26 @@ if (SECTIONS.has('hostile')) await sectionHostile(records);
 // Things that held up, for the record.
 for (const r of records.filter((x) => x.canaries)) {
   const leaksDefault = r.canaries.filter((c) => c.expected === 'red' && c.leftAfterDefault).length;
+  const leaksStart = r.canaries.filter((c) => (c.expected === 'red' || c.expected === 'amber') && c.leftAfterStart).length;
   const leaksAll = r.canaries.filter((c) => c.leftAfterAll).length;
-  if (!leaksDefault && !leaksAll && r.canaries.length) pass(`${r.label}: all ${r.canaries.length} planted strings behave (no red left after the default scrub, nothing left after "Select all")`);
+  if (!leaksDefault && !leaksStart && !leaksAll && r.canaries.length) pass(`${r.label}: all ${r.canaries.length} planted strings behave (no red left after the red-only scrub, no red or amber left after the starting selection, nothing left with every detail ticked)`);
 }
 const order = { critical: 0, high: 1, medium: 2, low: 3 };
 findings.sort((a, b) => order[a.severity] - order[b.severity] || a.fixture.localeCompare(b.fixture));
 const summary = Object.fromEntries(Object.keys(order).map((k) => [k, findings.filter((f) => f.severity === k).length]));
-writeFileSync(join(OUT, 'report.json'), JSON.stringify({ summary, findings, passed, records: records.map((r) => ({ ...r, items: r.items && r.items.map((i) => `${i.tier}:${i.id} ${i.label} = ${i.value}`) })) }, null, 1));
+writeFileSync(join(OUT, 'report.json'), JSON.stringify({ summary, findings, gaps, passed, records: records.map((r) => ({ ...r, items: r.items && r.items.map((i) => `${i.tier}:${i.id} ${i.label} = ${i.value}`) })) }, null, 1));
 const txt = [
   `MetadataScrubber engine audit, ${new Date().toISOString()}`,
   `Findings: ${JSON.stringify(summary)}`,
   '',
   ...findings.map((f) => `[${f.severity.toUpperCase()}] ${f.fixture} | ${f.location}\n  ${f.detail}\n  Reproduce: ${f.reproduce}`),
   '',
+  `Known engine gaps when the HDR gain map is kept (${gaps.length}; not findings, they are why the gain map starts ticked):`,
+  ...gaps.map((g) => `[GAP] ${g.fixture} | ${g.location}\n  ${g.detail}\n  Reproduce: ${g.reproduce}`),
+  '',
   'Passed:',
   ...passed.map((p) => `  ${p}`),
 ].join('\n');
 writeFileSync(join(OUT, 'report.txt'), txt + '\n');
-log(`\nDone in ${Math.round((Date.now() - t0) / 1000)} s. Findings: ${JSON.stringify(summary)}. Report: ${join(OUT, 'report.txt')}`);
+log(`\nDone in ${Math.round((Date.now() - t0) / 1000)} s. Findings: ${JSON.stringify(summary)}. Known gaps with the HDR gain map kept: ${gaps.length}. Report: ${join(OUT, 'report.txt')}`);
 process.exitCode = summary.critical || summary.high ? 1 : 0;

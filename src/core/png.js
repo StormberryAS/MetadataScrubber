@@ -14,9 +14,9 @@ import { iccDescription } from './icc.js?v=1ac906b0';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_THUMBS, IRB_XMP, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc, rebuildIrb,
 } from './iptc.js?v=0c70531b';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=b751b9be';
-import { TIFF_ITEMS, findTiffStart, keyForTagName, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=05d71c42';
-import { addXmpItems, parseXmp, planXmp, xmpText } from './xmp.js?v=45ad6f50';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=5970adfd';
+import { TIFF_ITEMS, findTiffStart, keyForTagName, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=262e0fe8';
+import { addXmpItems, parseXmp, planXmp, xmpText } from './xmp.js?v=f2cbf417';
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const STRUCTURAL = new Set(['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS', 'acTL', 'fcTL', 'fdAT']);

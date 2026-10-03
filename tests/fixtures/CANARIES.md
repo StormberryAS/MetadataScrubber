@@ -55,9 +55,12 @@ compressed `iTXt` and `iCCP` chunks, every hex-decoded PNG raw profile, and
 UTF-16 text in either byte order. A plain `grep -c CANARY- file` finds only the
 `raw` ones.
 
-What the default scrub (every red item ticked) must achieve, per fixture: no
-red string left; amber and green strings still there unless the user ticked
-them. "Minimal" leaves only green strings; "clean" leaves none.
+What the page's starting selection (every red and amber detail ticked) must
+achieve, per fixture: no red or amber string left; green strings still there
+unless the user ticked them. That gives "minimal", which leaves only green
+strings; "clean" leaves none. The red-only scrub, which the audit also runs as
+the strictest test for red, must leave no red string while amber and green
+strings stay.
 
 A baseline for comparison: `exiftool -all=` on the fixtures removes every
 planted string except two, the unknown PNG chunk `prVt` and the unknown WebP
@@ -338,7 +341,7 @@ With `exiftool -a -u -G1 -ee`, 102 of the 124 planted strings appear verbatim,
   motion photo directory, the Extended XMP GUID, the RIFF size and VP8X flags,
   the PNG CRCs and the IPTC digest in the Photoshop block all depend on what
   is removed.
-- **Content Credentials.** Keeping the C2PA manifest (amber, kept by default)
+- **Content Credentials.** Keeping the C2PA manifest (amber, removed by default)
   while removing anything else breaks its hash binding in a real file, so it
   will no longer validate. Worth saying in the one-line explanation.
 - **Hostile input.** The cycle and overflow files must finish fast with

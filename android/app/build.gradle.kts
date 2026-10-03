@@ -76,8 +76,9 @@ android {
         minSdk = 24
         targetSdk = 36
         // 0.0.1 (code 1): the first release, published to Zapstore as an early version (Marcos, 2026-10-03).
-        versionCode = 1
-        versionName = "0.0.1"
+        // 0.0.2 (code 2): details in collapsed Red, Amber and Green sections, red and amber ticked to start, the result button reads "Save <name>" (2026-10-03).
+        versionCode = 2
+        versionName = "0.0.2"
 
         // Density PNGs generated from vectors are a source of build nondeterminism, and the
         // app ships vector icons only.

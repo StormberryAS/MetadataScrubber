@@ -62,7 +62,7 @@ function samePixels(...names) {
   assert.equal(new Set(hashes).size, 1, `decoded pixels differ between ${names.join(', ')}`);
 }
 
-// Shared checks for one fixture: red default, then everything.
+// Shared checks for one fixture: red only, then everything.
 async function standardChecks(name, format, { redStrings = [], keptStrings = [], redTags = [], keptTags = [] }) {
   const input = F.read(name);
   const info = await core.inspect(input);
@@ -323,7 +323,7 @@ describe('JPEG', () => {
     assert.equal(info.items.find((i) => i.id === 'exif:thumbnail').note, 'Can still show the original, uncropped photo after cropping.');
   });
 
-  test('full fixture: red default, everything, pixels and validity', async () => {
+  test('full fixture: red only, everything, pixels and validity', async () => {
     const { res } = await standardChecks(F.jpegFull(), 'jpeg', {
       redStrings: [PLANT.artist, PLANT.owner, PLANT.serial, PLANT.lensSerial, PLANT.uniqueId, PLANT.xmpCreator, PLANT.xmpCity,
         PLANT.xmpDocId, PLANT.xmpAuxSerial, PLANT.iptcByline, PLANT.iptcCity, PLANT.iptcContact, PLANT.unknownApp, PLANT.trailing,
@@ -600,7 +600,7 @@ describe('PNG', () => {
     assert.equal(info.items.find((i) => i.id === 'png:c2pa').source, 'C2PA');
   });
 
-  test('full fixture: red default, everything, pixels and validity', async () => {
+  test('full fixture: red only, everything, pixels and validity', async () => {
     await standardChecks(F.pngFull(), 'png', {
       redStrings: [PLANT.owner, PLANT.xmpCreator, PLANT.xmpCity, PLANT.xmpDocId, 'PRVT-PLANT-SECRET', 'PNGTAIL-PLANT-SECRET', 'GPS-AREA-PLANT', PLANT.copyright],
       keptStrings: [PLANT.software, PLANT.description, 'FakeCam C2PA PLANT'],
@@ -935,7 +935,7 @@ describe('Hardening', () => {
     samePixels('hard-computer-base.png', 'hard-computer.out-red.png');
   });
 
-  test('JPEG: stray bytes, a DNL segment and JFIF padding are offered, and "Select all" still opens', async () => {
+  test('JPEG: stray bytes, a DNL segment and JFIF padding are offered, and ticking every detail still opens', async () => {
     const b0 = baseJpeg();
     const dqt = Buffer.from(b0).indexOf(Buffer.from([0xff, 0xdb]));
     const app0 = F.u8('JFIF\0', [1, 1, 0, 0, 1, 0, 1, 0, 0], ` ${H('JFIFPAD')} `);

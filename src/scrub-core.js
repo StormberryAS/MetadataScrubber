@@ -13,12 +13,12 @@
 //   GROUPS, TIERS
 
 import { latin1, toU8 } from './core/bytes.js?v=b373c219';
-import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=b751b9be';
-import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=699750e5';
-import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=4663547a';
-import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=d670219e';
-import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=5ced97b7';
-import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=05d71c42';
+import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=5970adfd';
+import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=9b1d2d73';
+import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=6139903e';
+import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=6dc5794d';
+import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=1b8d4ee1';
+import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=262e0fe8';
 
 export { GROUPS, TIERS };
 

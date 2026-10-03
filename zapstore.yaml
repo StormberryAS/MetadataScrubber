@@ -28,13 +28,19 @@ description: |
 
   The only line you should see is the package name.
 
-  - Shows before it removes, grouped by what each item reveals.
-  - Red, amber and green tiers; red items are ticked by default.
-  - Lossless by default: only the metadata changes, not the picture.
+  - Shows every detail with its value before it removes, grouped in a Red,
+    an Amber and a Green section.
+  - Red and amber details are ticked for removal to start with; green
+    (rotation, colour profile, size and exposure) is kept.
+  - In a JPEG, an HDR gain map is amber and goes too; untick HDR gain map
+    and HDR gain map details to keep HDR photos bright on HDR screens.
+  - Tick a whole colour at once, or open it to choose single details.
+  - Lossless by default: the picture is not saved again unless you crop,
+    resize, convert or remove a sideways rotation.
   - Crop, resize and convert JPEG, PNG and WebP when you need to.
   - Reads the result back, so you see what remains before you share.
-  - Neutral file names such as image.public.jpg.
-  - Share a photo in from your gallery, then save or share the clean copy.
+  - Neutral file names such as image.minimal.jpg.
+  - Share a photo in from your gallery, then Save or Share the clean copy.
 
   JPEG, PNG, WebP and HEIC. HEIC metadata can be removed, but cropping and
   resizing HEIC are not available in the app, because Android's web engine

@@ -20,7 +20,7 @@
 // only want to crop or resize. When nothing would change, no identical copy is made;
 // the page says so instead.
 
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=84177708';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=1d047a44';
 
 // ---------------------------------------------------------------------------------------
 // Constants
@@ -31,16 +31,30 @@ const FORMAT_NAME = { jpeg: 'JPEG', png: 'PNG', webp: 'WebP', heic: 'HEIC' };
 const TIER_ORDER = ['red', 'amber', 'green'];
 const TIER_RANK = { red: 0, amber: 1, green: 2 };
 const TIER_WORD = { red: 'Red', amber: 'Amber', green: 'Green' };
+const GROUP_RANK = Object.fromEntries(GROUPS.map((g, i) => [g.id, i]));
+const GROUP_LABEL = Object.fromEntries(GROUPS.map((g) => [g.id, g.label]));
+// The tiers ticked for removal to start with. Green holds rotation and the colour profile;
+// removing those re-saves many phone photos and can shift colours, so it starts unticked.
+const DEFAULT_TIERS = new Set(['red', 'amber']);
+// The HDR gain map is amber and starts ticked like the rest of amber. Keeping it by default
+// waits for an engine change: today a kept gain map also keeps any extra property in the
+// hdrgm, HDRGainMap and Container XMP namespaces and some raw bytes that travel with it, and
+// the page cannot see or list those. Once the engine keeps only the known gain map fields,
+// defaultIds() can leave the gain map and its amber XMP description unticked.
+const GAIN_MAP_ID = 'jpeg:trailing:gain-map';
+// The amber details that belong to the gain map itself, for the note on a result that kept it.
+const GAIN_MAP_OWN = new Set([GAIN_MAP_ID, 'xmp:gainmap']);
 
 // The tier words and their meanings, from the spec's file name table. The colour is the
 // tier of the most sensitive kind of item that can be left in a file with that word.
 const PRIVACY = {
   public: { tier: 'amber', text: 'Safe to share publicly: location, serial numbers, names and the hidden preview are gone.' },
-  minimal: { tier: 'green', text: 'Only technical data left: rotation, colour, size.' },
+  minimal: { tier: 'green', text: 'Only technical data left: rotation, colour, size and exposure.' },
   clean: { tier: 'green', text: 'No metadata left at all.' },
   custom: { tier: 'red', text: 'Your own selection. Check the list of what remains.' },
 };
 const CUSTOM_WARNING = 'Not recommended for public sharing.';
+const GAIN_MAP_KEPT_NOTE = 'The HDR gain map stays, so the photo keeps its brightness on HDR screens. Tick HDR gain map under Amber for a minimal file.';
 
 const RATIOS = { free: null, '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9, '1.91:1': 1.91 };
 
@@ -264,17 +278,20 @@ async function loadFiles(fileList) {
 
   state.entries = entries;
   state.rows = mergeRows(entries);
-  state.selected = presetIds('red');
+  state.selected = defaultIds();
   state.crop = { on: false, ratio: 'free', rect: null };
   renderWorkspace();
   // On a phone the workspace starts below the picker; bring it into view.
   if (matchMedia('(max-width: 879px)').matches) $('workspace').scrollIntoView({ behavior: 'instant', block: 'start' });
 
-  const reds = state.rows.filter((r) => r.tier === 'red').length;
+  const ticked = state.selected.size;
   const found = state.rows.length;
   const what = entries.length === 1 ? 'Picture loaded.' : `${entries.length} pictures loaded.`;
+  const tickedText = ticked
+    ? `${fmtInt(ticked)} of them ${ticked === 1 ? 'is' : 'are'} red or amber and ticked for removal.`
+    : 'None of them is red or amber, so nothing is ticked.';
   announce(found
-    ? `${what} ${plural(found, 'metadata item', 'metadata items')} found. ${plural(reds, 'red item is', 'red items are')} ticked for removal.`
+    ? `${what} ${plural(found, 'metadata detail', 'metadata details')} found. ${tickedText}`
     : `${what} No metadata found.`);
 }
 
@@ -390,14 +407,9 @@ function mergeRows(entries) {
   return [...rows.values()];
 }
 
-function presetIds(preset) {
-  const ids = new Set();
-  for (const row of state.rows) {
-    if (preset === 'all'
-      || (preset === 'red' && row.tier === 'red')
-      || (preset === 'amber' && (row.tier === 'red' || row.tier === 'amber'))) ids.add(row.id);
-  }
-  return ids;
+// The details ticked for removal to start with: every red and amber one.
+function defaultIds() {
+  return new Set(state.rows.filter((row) => DEFAULT_TIERS.has(row.tier)).map((row) => row.id));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -494,7 +506,7 @@ function renderPreview() {
       thumb,
       h('div', { class: 'ms-file-text' },
         h('p', { class: 'ms-file-name' }, h('span', { class: 'ms-file-number', text: `Picture ${i + 1}: ` }), e.file.name),
-        h('p', { class: 'ms-file-meta', text: `${fileFacts(e)}. ${e.info.items.length ? `${plural(e.info.items.length, 'item', 'items')}, ${fmtInt(reds)} red.` : 'No metadata.'}` })));
+        h('p', { class: 'ms-file-meta', text: `${fileFacts(e)}. ${e.info.items.length ? `${plural(e.info.items.length, 'detail', 'details')}, ${fmtInt(reds)} red.` : 'No metadata.'}` })));
   }));
   $('crop-controls').hidden = false;
   $('crop-toggle').closest('label').hidden = true;
@@ -520,8 +532,9 @@ function tierBadge(tier) {
   return h('span', { class: 'tier-badge', dataset: { tier }, text: TIER_WORD[tier] });
 }
 
-// One group block of the metadata list: checkboxes when `pick` is true, read-only otherwise.
-function renderGroups(items, { pick, idPrefix }) {
+// The read-only list of what remains in a new file, one block per group (Where, Who and
+// so on), most sensitive first within a group.
+function renderGroups(items, { idPrefix }) {
   const frag = document.createDocumentFragment();
   for (const group of GROUPS) {
     const inGroup = items
@@ -531,15 +544,103 @@ function renderGroups(items, { pick, idPrefix }) {
       .map((x) => x.it);
     if (!inGroup.length) continue;
     const titleId = `${idPrefix}-g-${group.id}`;
-    const block = h(pick ? 'fieldset' : 'section', { class: 'ms-group', 'aria-labelledby': pick ? null : titleId },
-      pick
-        ? h('legend', { class: 'ms-group-title', id: titleId, text: group.label })
-        : h('h4', { class: 'ms-group-title', id: titleId, text: group.label }),
+    const block = h('section', { class: 'ms-group', 'aria-labelledby': titleId },
+      h('h4', { class: 'ms-group-title', id: titleId, text: group.label }),
       h('p', { class: 'ms-group-desc', text: group.description }),
-      h('ul', { class: 'ms-items' }, inGroup.map((it, n) => renderItem(it, { pick, id: `${idPrefix}-${group.id}-${n}` }))));
+      h('ul', { class: 'ms-items' }, inGroup.map((it, n) => renderItem(it, { pick: false, id: `${idPrefix}-${group.id}-${n}` }))));
     frag.append(block);
   }
   return frag;
+}
+
+// The selection list, one section per tier (red, amber, green), each holding only the
+// details this file has. A section has a tick box that ticks or unticks every detail of its
+// tier, the tier's meaning, a count, and an arrow that shows or hides the details. Every
+// section starts closed; the tick boxes say what goes. Details go by their own tier, so a
+// red Content Credentials detail sits with the other red details. Within a section the
+// details follow the group order (Where, Who, When, Device, Hidden extras, Technical),
+// then the order the engine found them in, and each names its group.
+function renderTiers(items) {
+  const frag = document.createDocumentFragment();
+  for (const tier of TIER_ORDER) {
+    const inTier = items
+      .map((it, n) => ({ it, n }))
+      .filter((x) => x.it.tier === tier)
+      .sort((a, b) => ((GROUP_RANK[a.it.group] ?? 99) - (GROUP_RANK[b.it.group] ?? 99)) || (a.n - b.n))
+      .map((x) => x.it);
+    if (!inTier.length) continue;
+    // The group word is shown only when a section mixes groups; a tag that is the same on
+    // every item (all green items are Technical) tells the reader nothing.
+    const mixed = new Set(inTier.map((it) => it.group)).size > 1;
+    const base = `m-tier-${tier}`;
+    const open = false;
+    const all = h('input', {
+      type: 'checkbox', class: 'ms-tier-check', id: `${base}-all`,
+      'aria-labelledby': `${base}-name ${base}-every`,
+      'aria-describedby': `${base}-desc ${base}-count`,
+      dataset: { tier },
+    });
+    const toggle = h('button', {
+      type: 'button', class: 'ms-tier-toggle', id: `${base}-toggle`,
+      'aria-expanded': String(open), 'aria-controls': `${base}-list`,
+      dataset: { tier },
+    },
+    h('span', { class: 'visually-hidden', text: `${TIER_WORD[tier]} details` }),
+    chevron());
+    const block = h('section', { class: 'ms-tier', id: base, role: 'group', dataset: { tier }, 'aria-labelledby': `${base}-name` },
+      h('div', { class: 'ms-tier-head' },
+        all,
+        h('div', { class: 'ms-tier-text' },
+          // Only the badge is the tick box's label: a click on the heading words must not
+          // untick a whole colour by surprise.
+          h('h3', { class: 'ms-tier-title', id: `${base}-title`, 'aria-labelledby': `${base}-name` },
+            h('label', { for: `${base}-all`, class: 'ms-tier-label' }, tierBadge(tier)),
+            ' ',
+            h('span', { class: 'ms-tier-name', text: `${TIERS[tier].label}.` })),
+          // The name screen readers hear for the heading, the section and its tick box, with
+          // a pause after the colour: "Red: Remove before sharing." The heading is a flex
+          // box, so a colon placed inside it would be read as "Red :". Hidden from reading
+          // order because the heading already says it.
+          h('span', { class: 'visually-hidden', id: `${base}-name`, 'aria-hidden': 'true', text: `${TIER_WORD[tier]}: ${TIERS[tier].label}.` }),
+          h('span', { class: 'visually-hidden', id: `${base}-every`, text: `Every ${tier} detail.` }),
+          h('p', { class: 'ms-tier-desc', id: `${base}-desc`, text: TIERS[tier].description }),
+          h('p', { class: 'ms-tier-count', id: `${base}-count` })),
+        toggle),
+      h('ul', { class: 'ms-items ms-tier-items', id: `${base}-list`, hidden: !open },
+        inTier.map((it, n) => renderItem(it, { pick: true, id: `m-${tier}-${n}`, showGroup: mixed }))));
+    frag.append(block);
+  }
+  return frag;
+}
+
+// The arrow on a tier section: it points down when the section is closed and turns to
+// point up when it is open (see .ms-tier-toggle in style.css).
+function chevron() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'ms-chevron');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '20');
+  svg.setAttribute('height', '20');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', 'M6 9l6 6 6-6');
+  path.setAttribute('fill', 'none');
+  path.setAttribute('stroke', 'currentColor');
+  path.setAttribute('stroke-width', '2.2');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  svg.append(path);
+  return svg;
+}
+
+function setTierOpen(tier, open) {
+  const toggle = $(`m-tier-${tier}-toggle`);
+  const list = $(`m-tier-${tier}-list`);
+  if (!toggle || !list) return;
+  toggle.setAttribute('aria-expanded', String(open));
+  list.hidden = !open;
 }
 
 function itemValue(it) {
@@ -551,12 +652,17 @@ function itemValue(it) {
 // One item: its name with the tier and source beside it, then its value and note. The
 // tier is always a word next to the colour. For a checkbox, the name is the label and the
 // value, note and tier are its description, read in that order.
-function renderItem(it, { pick, id }) {
-  const value = itemValue(it);
+function renderItem(it, { pick, id, showGroup = false }) {
+  // An item whose value cannot be read is still in the file and can still be removed.
+  const value = itemValue(it) || 'Present, but its value cannot be read.';
   const valueEl = value ? h('span', { class: 'ms-item-value', id: `${id}-v`, text: value }) : null;
   const noteEl = it.note ? h('span', { class: 'ms-item-note', id: `${id}-n`, text: it.note }) : null;
   const meta = h('span', { class: 'ms-item-meta', id: `${id}-m` },
+    // The spaces keep the words apart when read aloud; a flex row does not draw them.
+    showGroup ? h('span', { class: 'ms-group-word', text: GROUP_LABEL[it.group] || it.group }) : null,
+    showGroup ? ' ' : null,
     tierBadge(it.tier),
+    ' ',
     h('span', { class: 'ms-source', text: it.source }),
     h('span', { class: 'visually-hidden', text: `, ${TIERS[it.tier].label}.` }));
   const top = h('span', { class: 'ms-item-top' },
@@ -564,7 +670,7 @@ function renderItem(it, { pick, id }) {
     h('span', { class: 'ms-item-label', id: `${id}-l`, text: it.label }),
     meta);
   const body = h('span', { class: 'ms-item-body' }, top, valueEl, noteEl);
-  if (!pick) return h('li', { class: 'ms-item ms-item-static', dataset: { tier: it.tier } }, body);
+  if (!pick) return h('li', { class: 'ms-item ms-item-static', dataset: { tier: it.tier, id: it.id } }, body);
   const box = h('input', {
     type: 'checkbox', class: 'ms-check', id: `${id}-c`,
     'aria-labelledby': `${id}-r ${id}-l`,
@@ -580,13 +686,11 @@ function renderMetadata() {
   const groups = $('meta-groups');
   const empty = $('meta-empty');
   const hasItems = state.rows.length > 0;
-  groups.replaceChildren(renderGroups(state.rows, { pick: true, idPrefix: 'm' }));
+  groups.replaceChildren(renderTiers(state.rows));
   empty.hidden = hasItems;
   empty.textContent = single()
     ? 'This file has no metadata. There is nothing hidden to remove.'
     : 'These files have no metadata. There is nothing hidden to remove.';
-  $('quick').hidden = !hasItems;
-  $('tier-legend').hidden = !hasItems;
   $('meta-intro').hidden = !hasItems;
   $('select-count').hidden = !hasItems;
 
@@ -600,29 +704,24 @@ function renderMetadata() {
   syncSelectionUi();
 }
 
-function renderLegend() {
-  $('tier-legend').replaceChildren(...TIER_ORDER.map((t) => h('li', { class: 'ms-legend-item' },
-    tierBadge(t),
-    h('span', { class: 'ms-legend-text' }, h('strong', { text: `${TIERS[t].label}. ` }), TIERS[t].description))));
-}
-
 function syncSelectionUi() {
   for (const box of document.querySelectorAll('#meta-groups .ms-check')) {
     box.checked = state.selected.has(box.dataset.id);
     box.closest('.ms-item').classList.toggle('is-ticked', box.checked);
   }
-  let pressed = null;
-  for (const preset of ['red', 'amber', 'all', 'none']) {
-    const ids = presetIds(preset === 'none' ? '' : preset);
-    if (ids.size === state.selected.size && [...ids].every((id) => state.selected.has(id))) {
-      pressed = preset;
-      break;
-    }
+  // Each tier's own tick box: ticked when every detail of the tier is, half-ticked when some are.
+  for (const all of document.querySelectorAll('#meta-groups .ms-tier-check')) {
+    const tier = all.dataset.tier;
+    const rows = state.rows.filter((r) => r.tier === tier);
+    const n = rows.filter((r) => state.selected.has(r.id)).length;
+    all.checked = rows.length > 0 && n === rows.length;
+    all.indeterminate = n > 0 && n < rows.length;
+    const count = $(`m-tier-${tier}-count`);
+    if (count) count.textContent = `${plural(rows.length, 'detail', 'details')}, ${fmtInt(n)} ticked`;
   }
-  for (const btn of document.querySelectorAll('#quick [data-preset]')) btn.setAttribute('aria-pressed', String(btn.dataset.preset === pressed));
   const total = state.rows.length;
   const ticked = state.rows.filter((r) => state.selected.has(r.id)).length;
-  $('select-count').textContent = `${fmtInt(ticked)} of ${plural(total, 'item', 'items')} ticked for removal.${pressed ? '' : ' Your own selection.'}`;
+  $('select-count').textContent = `${fmtInt(ticked)} of ${plural(total, 'detail', 'details')} ticked for removal.`;
 }
 
 // Size and format need the picture itself. When the browser cannot open any of the
@@ -830,9 +929,9 @@ function refreshDerived() {
     else items.push(opts.resize.mode === 'percent' ? `Resized to ${fmtInt(opts.resize.value)} per cent.` : `Resized so the longest side is at most ${fmtInt(opts.resize.value)} pixels.`);
   }
   if (plans.some((p) => p.convert)) items.push(`Saved as ${FORMAT_NAME[opts.format] || 'a new format'}.`);
-  const keptOther = anyResave && state.entries.some((e, i) => plans[i].resave && e.info.items.some((it) => !plans[i].remove.has(it.id) && !it.id.startsWith('exif:')));
+  const keptOther = anyResave && state.entries.some((e, i) => plans[i].resave && e.info.items.some((it) => !plans[i].remove.has(it.id) && !it.id.startsWith('exif:') && it.tier !== 'green'));
   if (anyResave) items.push(keptOther
-    ? 'Only the EXIF details you keep are written back. Other kept items, such as XMP, IPTC, PNG text and colour profiles, are left out, and colours are converted to sRGB, the standard web colour space.'
+    ? 'Only the EXIF details you keep are written back. Other kept details, such as XMP, IPTC and PNG text, are left out, and colours are converted to sRGB, the standard web colour space.'
     : 'Only the EXIF details you keep are written back, and colours are converted to sRGB, the standard web colour space.');
   for (const p of plans) for (const w of p.warnings) if (!items.includes(w)) items.push(w);
 
@@ -1157,8 +1256,8 @@ async function run() {
   const remaining = ok.reduce((n, r) => n + r.readback.items.length, 0);
   let msg;
   if (!ok.length) msg = 'The new file could not be made. The reason is shown under Your new file.';
-  else if (ok.length === 1 && results.length === 1) msg = `Done. ${names[0]} is ready to download. ${remaining ? `${plural(remaining, 'item remains', 'items remain')} in it.` : 'No metadata remains.'}`;
-  else msg = `Done. ${plural(ok.length, 'file is', 'files are')} ready to download${ok.length < results.length ? `, ${fmtInt(results.length - ok.length)} failed` : ''}.`;
+  else if (ok.length === 1 && results.length === 1) msg = `Done. ${names[0]} is ready to save. ${remaining ? `${plural(remaining, 'detail remains', 'details remain')} in it.` : 'No metadata remains.'}`;
+  else msg = `Done. ${plural(ok.length, 'file is', 'files are')} ready to save${ok.length < results.length ? `, ${fmtInt(results.length - ok.length)} failed` : ''}.`;
   announce(msg);
   const section = $('results');
   section.focus({ preventScroll: true });
@@ -1224,13 +1323,20 @@ function renderResult(r) {
   state.urls.push(url);
   const info = PRIVACY[r.word];
   const hasRed = r.readback.items.some((it) => it.tier === 'red');
+  // The word is public only because the HDR gain map stayed, still usable (with its XMP
+  // description when the photo had one): say why, and how to get minimal.
+  const notGreen = r.readback.items.filter((it) => it.tier !== 'green');
+  const kept = (id) => notGreen.some((it) => it.id === id);
+  const hadDescription = r.entry.info.items.some((it) => it.id === 'xmp:gainmap');
+  const keptOnlyGainMap = r.word === 'public' && kept(GAIN_MAP_ID) && (!hadDescription || kept('xmp:gainmap'))
+    && notGreen.every((it) => it.tier === 'amber' && GAIN_MAP_OWN.has(it.id));
   const facts = [`${FORMAT_NAME[r.format]}, ${fmtDims(r.width, r.height)}, ${fmtBytes(r.bytes.length)}.`];
   facts.push(r.lossless
     ? 'Lossless: the picture itself was not re-saved.'
     : `Re-saved${r.quality ? ` at quality ${Math.round(r.quality * 100)} per cent` : ''}.`);
 
   const link = h('a', { class: 'btn btn-primary ms-download', href: url, download: name, dataset: { result: String(r.index) } },
-    h('span', { text: 'Download ' }), h('span', { class: 'ms-download-name', text: name }));
+    h('span', { text: 'Save ' }), h('span', { class: 'ms-download-name', text: name }));
 
   const notes = [...r.notes.map((t) => ({ t, tier: null })), ...r.warnings.map((t) => ({ t, tier: 'amber' }))];
   const items = r.readback.items;
@@ -1239,10 +1345,10 @@ function renderResult(r) {
   if (!items.length) {
     readback = h('p', { class: 'ms-notice', dataset: { tier: 'green' }, text: 'No metadata remains.' });
   } else {
-    const groups = renderGroups(items, { pick: false, idPrefix: `r${r.index}` });
+    const groups = renderGroups(items, { idPrefix: `r${r.index}` });
     readback = many
       ? h('details', { class: 'ms-readback' },
-        h('summary', { text: `${remainsTitle}: ${plural(items.length, 'item', 'items')} (${tierCounts(items)})` }),
+        h('summary', { text: `${remainsTitle}: ${plural(items.length, 'detail', 'details')} (${tierCounts(items)})` }),
         h('div', { class: 'ms-groups' }, groups))
       : h('div', { class: 'ms-readback' },
         h('h4', { class: 'ms-readback-title', text: remainsTitle }),
@@ -1261,6 +1367,7 @@ function renderResult(r) {
           h('span', { class: 'tier-badge ms-word', dataset: { tier: info.tier }, text: r.word }),
           h('span', { class: 'ms-word-text', text: info.text })),
         r.word === 'custom' && hasRed ? h('p', { class: 'ms-word-warning', text: CUSTOM_WARNING }) : null,
+        keptOnlyGainMap ? h('p', { class: 'ms-word-note', text: GAIN_MAP_KEPT_NOTE }) : null,
         link)),
     notes.length ? h('ul', { class: 'ms-notes' }, notes.map((n) => h('li', { class: 'ms-note', dataset: n.tier ? { tier: n.tier } : null, text: n.t }))) : null,
     readback);
@@ -1304,7 +1411,7 @@ function useWorkableSize(fit) {
   run();
 }
 
-// Any change to the choices clears the new file, so what can be downloaded always
+// Any change to the choices clears the new file, so what can be saved always
 // matches what is on screen.
 function choicesChanged() {
   state.choiceVersion += 1;
@@ -1485,6 +1592,8 @@ function resetAll() {
   state.rows = [];
   state.selected = new Set();
   state.crop = { on: false, ratio: 'free', rect: null };
+  $('meta-groups').replaceChildren();
+  $('select-count').textContent = '';
   $('workspace').hidden = true;
   $('pick-card').classList.remove('is-loaded');
   $('go-stale').hidden = true;
@@ -1502,7 +1611,6 @@ function gateOpen() {
 }
 
 function init() {
-  renderLegend();
   canEncodeWebp().then((ok) => { webpKnown = ok; });
 
   const input = $('file-input');
@@ -1553,6 +1661,19 @@ function init() {
   });
 
   $('meta-groups').addEventListener('change', (ev) => {
+    const all = ev.target.closest('.ms-tier-check');
+    if (all) {
+      // A half-ticked box becomes ticked when pressed, so a press ticks the whole tier.
+      for (const r of state.rows) {
+        if (r.tier !== all.dataset.tier) continue;
+        if (all.checked) state.selected.add(r.id);
+        else state.selected.delete(r.id);
+      }
+      syncSelectionUi();
+      choicesChanged();
+      announce($('select-count').textContent);
+      return;
+    }
     const box = ev.target.closest('.ms-check');
     if (!box) return;
     if (box.checked) state.selected.add(box.dataset.id);
@@ -1560,14 +1681,10 @@ function init() {
     syncSelectionUi();
     choicesChanged();
   });
-
-  $('quick').addEventListener('click', (ev) => {
-    const btn = ev.target.closest('[data-preset]');
-    if (!btn) return;
-    state.selected = presetIds(btn.dataset.preset === 'none' ? '' : btn.dataset.preset);
-    syncSelectionUi();
-    choicesChanged();
-    announce($('select-count').textContent);
+  $('meta-groups').addEventListener('click', (ev) => {
+    const toggle = ev.target.closest('.ms-tier-toggle');
+    if (!toggle) return;
+    setTierOpen(toggle.dataset.tier, toggle.getAttribute('aria-expanded') !== 'true');
   });
 
   $('crop-toggle').addEventListener('change', (ev) => setCropOn(ev.target.checked));
@@ -1585,7 +1702,7 @@ function init() {
   $('crop-box').addEventListener('keydown', onCropKey);
 
   // The file name sits in this card too, but a new name changes no picture: it only
-  // renames the download (below), so it never clears the new file.
+  // renames the file to save (below), so it never clears the new file.
   const editCard = $('edit-card');
   const isName = (ev) => ev.target.id === 'name-input';
   editCard.addEventListener('change', (ev) => {

@@ -13,7 +13,7 @@
 // packet is parsed again and checked before it is trusted.
 
 import { clip, encodeUtf8, utf8 } from './bytes.js?v=b373c219';
-import { keyForTagName } from './tiff.js?v=05d71c42';
+import { keyForTagName } from './tiff.js?v=262e0fe8';
 
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const META = 'adobe:ns:meta/';
@@ -314,7 +314,7 @@ export const XMP_ITEMS = {
   extended: { group: 'hidden', tier: 'red', label: 'Extra XMP data' },
   description: { group: 'hidden', tier: 'amber', label: 'Title, description and keywords' },
   hidden: { group: 'hidden', tier: 'red', label: 'Hidden text inside XMP', note: 'Comments and other text that XMP readers skip. It can still hold names or notes.' },
-  other: { group: 'hidden', tier: 'red', label: 'Unrecognised XMP data', note: 'Fields this tool does not recognise. They may hold anything, so they are removed by default.' },
+  other: { group: 'hidden', tier: 'red', label: 'Unrecognised XMP data', note: 'Data this tool does not recognise. It may hold anything, so it is removed by default.' },
   technical: { group: 'technical', tier: 'green', label: 'Technical details' },
 };
 

@@ -19,9 +19,9 @@ import { iccDescription } from './icc.js?v=1ac906b0';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_THUMBS, IRB_XMP, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc, rebuildIrb,
 } from './iptc.js?v=0c70531b';
-import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=b751b9be';
-import { parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=05d71c42';
-import { addXmpItems, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=45ad6f50';
+import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=5970adfd';
+import { parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=262e0fe8';
+import { addXmpItems, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=f2cbf417';
 
 const XMP_ID = 'http://ns.adobe.com/xap/1.0/\0';
 const XMP_EXT_ID = 'http://ns.adobe.com/xmp/extension/\0';

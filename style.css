@@ -206,6 +206,32 @@ button, input, select, textarea { font: inherit; color: inherit; }
   text-align: center;
 }
 
+/* ---- Android app link (website only) ------------------------------ */
+/* Marked data-web-only in the HTML: the Android app's bridge hides it,
+   and the [hidden] rule above wins over the display rule here. */
+.android-app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-sm);
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.android-app p { max-width: 34rem; }
+
+.android-app strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.android-app .btn {
+  max-width: 100%;
+  white-space: normal;
+}
+
 /* ---- Shared building blocks for the app UI ------------------------ */
 .card {
   position: relative;
@@ -850,28 +876,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 /* ---- Metadata list ------------------------------------------------ */
-.ms-legend {
-  display: grid;
-  gap: var(--sp-sm);
-  list-style: none;
-  padding: var(--sp-md);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.ms-legend-item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-sm);
-  font-size: 0.88rem;
-  color: var(--text-secondary);
-  line-height: 1.45;
-}
-
-.ms-legend-item .tier-badge { margin-top: 0.05rem; min-width: 4.6rem; justify-content: center; }
-.ms-legend-text strong { color: var(--text-primary); font-weight: 600; }
-
 .ms-count {
   font-size: 0.9rem;
   color: var(--text-secondary);
@@ -995,6 +999,111 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-radius: var(--r-sm);
   color: var(--text-muted);
   font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* ---- Tier sections of the selection list --------------------------
+   One block per tier, red then amber then green, each with a tick box
+   for the whole tier, its meaning, a count, and an arrow that shows or
+   hides the fields. The tier colour runs down the left edge, as on the
+   items, and the word is always there beside the colour. */
+.ms-tier {
+  display: grid;
+  gap: var(--sp-sm);
+  min-width: 0;
+  padding: var(--sp-sm) var(--sp-sm) var(--sp-sm) 0.75rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--tier);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ms-tier-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.ms-tier-check {
+  flex-shrink: 0;
+  width: 1.2rem;
+  height: 1.2rem;
+  margin: 0.75rem 0 0;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.ms-tier-text {
+  display: grid;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+  padding-top: 0.45rem;
+}
+
+.ms-tier-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.5rem;
+  font-size: 1.12rem;
+  font-weight: 700;
+}
+
+.ms-tier-label {
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.ms-tier-label .tier-badge { min-width: 4.6rem; justify-content: center; }
+
+.ms-tier-desc {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.ms-tier-count {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.ms-tier-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+
+.ms-tier-toggle:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* Open: the arrow turns to point up and the button takes the tier
+   colour, so an open section reads as open at a glance. */
+.ms-tier-toggle[aria-expanded="true"] {
+  background: var(--tier-bg);
+  border-color: var(--tier-border);
+}
+
+.ms-chevron { transition: transform var(--t-med); }
+.ms-tier-toggle[aria-expanded="true"] .ms-chevron { transform: rotate(180deg); }
+
+.ms-tier-items { margin-top: var(--sp-xs); }
+
+/* The group a field belongs to (Where, Who and so on), beside its tier. */
+.ms-group-word {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
   line-height: 1.5;
   white-space: nowrap;
 }
@@ -1197,8 +1306,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-weight: 700;
 }
 
+.ms-word-note {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
 /* A block on phones, so a long file name wraps inside the button instead
-   of squeezing the word Download. */
+   of squeezing the word Save. */
 .ms-download {
   display: block;
   width: 100%;
@@ -1242,5 +1356,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ---- Reduced motion ----------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   .ms-drop,
-  .ms-item { transition: none; }
+  .ms-item,
+  .ms-tier-toggle,
+  .ms-chevron { transition: none; }
 }

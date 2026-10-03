@@ -7,9 +7,9 @@
 import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=b373c219';
 import { describeC2pa } from './c2pa.js?v=366e87df';
 import { iccDescription } from './icc.js?v=1ac906b0';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=b751b9be';
-import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=05d71c42';
-import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=45ad6f50';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=5970adfd';
+import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=262e0fe8';
+import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=f2cbf417';
 
 const STRUCTURAL = new Set(['VP8 ', 'VP8L', 'VP8X', 'ALPH', 'ANIM', 'ANMF']);
 const FLAG_ICC = 0x20;

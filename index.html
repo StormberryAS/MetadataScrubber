@@ -39,7 +39,7 @@
 
   <!-- Local Fonts: Inter -->
   <link rel="stylesheet" href="fonts/inter/inter.css?v=868d674e" />
-  <link rel="stylesheet" href="style.css?v=e32d1dfc" />
+  <link rel="stylesheet" href="style.css?v=bac73e72" />
   <link rel="stylesheet" href="gate.css?v=9f2087d3" />
   <script src="gate.js?v=d516d809" defer></script>
 </head>
@@ -121,14 +121,7 @@
 
       <section class="card ms-card" id="meta-card" aria-labelledby="meta-title">
         <h2 class="ms-card-title" id="meta-title">What the file reveals</h2>
-        <p class="ms-help" id="meta-intro">Ticked items will be removed. Red items are ticked to start with.</p>
-        <ul class="ms-legend" id="tier-legend" aria-label="What the colours mean"></ul>
-        <div class="ms-chips" role="group" aria-label="Quick choices" id="quick">
-          <button type="button" class="btn btn-secondary ms-chip" data-preset="red" aria-pressed="true">Red only</button>
-          <button type="button" class="btn btn-secondary ms-chip" data-preset="amber" aria-pressed="false">Red and amber</button>
-          <button type="button" class="btn btn-secondary ms-chip" data-preset="all" aria-pressed="false">Select all</button>
-          <button type="button" class="btn btn-secondary ms-chip" data-preset="none" aria-pressed="false">None</button>
-        </div>
+        <p class="ms-help" id="meta-intro">Ticked details will be removed. Red and amber details are ticked to start with.</p>
         <p class="ms-count" id="select-count"></p>
         <div class="ms-groups" id="meta-groups"></div>
         <p class="ms-notice" id="meta-empty" data-tier="green" hidden></p>
@@ -242,6 +235,14 @@
     <noscript>
       <p class="noscript">MetadataScrubber needs JavaScript to read your photos. It never uploads them either way.</p>
     </noscript>
+
+    <!-- ANDROID APP: link to the store listing. data-web-only: the bridge script that only
+         the Android app loads hides this section inside the app. Do not name that script's
+         file here: the APK build refuses an index.html that already mentions it. -->
+    <section class="android-app" id="android-app" aria-labelledby="android-app-title" data-web-only>
+      <p><strong id="android-app-title">Android app</strong>: the same tool on your phone, with no permissions and no internet. Share a photo into it straight from your gallery.</p>
+      <a class="btn btn-secondary" href="https://zapstore.dev/apps/no.stormberry.metadatascrubber" target="_blank" rel="noopener">Get the Android app on Zapstore<span class="visually-hidden"> (opens in a new tab)</span></a>
+    </section>
   </main>
 
   <section class="app-switcher-container" aria-labelledby="switcher-title">
@@ -468,6 +469,6 @@
     </div>
   </footer>
 
-  <script type="module" src="app.js?v=451a59a2"></script>
+  <script type="module" src="app.js?v=609ee98d"></script>
 </body>
 </html>
