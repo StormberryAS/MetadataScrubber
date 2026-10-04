@@ -18,28 +18,34 @@
 //   core         every picture the engine tests generated (MS_FIXTURE_DIR), checked against
 //                the PLANT values in tests/core-fixtures.mjs
 //   adversarial  hand-built pictures that hide data where a scrubber might not look
-//   reencode     buildExif() and insertExif() with every non-red detail kept (stricter than
-//                the page's starting selection), as used after a crop, a resize or a baked
-//                rotation
+//   reencode     buildExif() and insertExif() with every non-red detail kept (the page's
+//                starting selection, which ticks red only since 0.0.3), as used after a
+//                crop, a resize or a baked rotation
 //   hostile      damaged and malicious inputs, run in a worker with a time limit
 //
 // For each picture it:
 //   1. runs inspect() and works out which detail removes each planted string (one scrub per
 //      detail), so a planted string with no detail, or with the wrong tier, is caught;
-//   2. scrubs only the red details (red only, the strictest test for red, since red must go
-//      even when amber is kept) and searches the output for red planted strings in plain,
-//      UTF-16, hex, base64 and zlib-compressed form;
-//   2b. scrubs the page's starting selection (red and amber ticked, green kept, as
-//      defaultIds() in app.js does), searches for red and amber planted strings and requires
-//      a read-back of green details only;
-//   2c. on a picture with an amber HDR gain map, scrubs that selection with the gain map and
-//      its XMP description unticked (what a user gets who keeps HDR) and records each red
-//      planted string that survives as a known engine gap. Gaps are listed in the report but
-//      do not set the exit status: they are why the gain map is not kept by default yet;
+//   2. scrubs only the red details (red only: since 0.0.3 this is the page's starting
+//      selection, as defaultIds() in app.js ticks red only; the audit checks the two agree)
+//      and searches the output for red planted strings in plain, UTF-16, hex, base64 and
+//      zlib-compressed form;
+//   2b. scrubs the red-and-amber selection (red and amber ticked, green kept, except an
+//      amber HDR gain map and its own amber details, as a user gets by ticking Amber and
+//      leaving the gain map unticked; the page's starting selection before 0.0.3), searches
+//      for red and amber planted strings and requires a read-back of green details only,
+//      plus the gain map's own details when it is kept. Anything planted in or around a kept
+//      gain map must still go: the gain map keeps only what it needs to render;
+//   2b-min. on a picture with an amber HDR gain map, also scrubs every red and amber detail
+//      with the gain map ticked (what a user gets who wants the minimal word), with the same
+//      searches and a read-back of green details only;
 //   3. scrubs every detail ("every detail ticked") and searches for every planted string;
 //   4. lists what exiftool -a -u -G1 -ee3 -U still shows beyond pure structure;
 //   5. checks the outputs decode (magick, Pillow), the decoded pixels are identical, exiftool
-//      -validate reports nothing new, and HEIC box sizes and offsets did not move;
+//      -validate reports nothing new, and HEIC box sizes and offsets did not move; where the
+//      red-and-amber selection keeps an HDR gain map, that the gain map is still a whole JPEG found
+//      through MPF (exiftool -b -MPImage2), decodes to the input gain map's pixels, has the
+//      length the Container directory gives, and keeps the hdrgm values of the input;
 //   6. looks for partial overwrites: fragments of removed strings and the raw GPS rationals;
 //   7. feeds damaged inputs and checks nothing hangs, crashes or keeps data silently.
 //
@@ -61,6 +67,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 const CORE_URL = pathToFileURL(join(ROOT, 'src', 'scrub-core.js')).href;
 const core = await import(CORE_URL);
+const { canonicalXmp, parseXmp } = await import(pathToFileURL(join(ROOT, 'src', 'core', 'xmp.js')).href);
+const { parseHeif } = await import(pathToFileURL(join(ROOT, 'src', 'core', 'heic.js')).href);
 
 const argv = process.argv.slice(2);
 const opt = (name, dflt) => {
@@ -117,8 +125,6 @@ function finding(severity, fixture, location, detail, reproduce, key) {
   findings.push({ severity, fixture, location, detail, reproduce });
 }
 const pass = (text) => passed.push(text);
-// Red planted strings that survive when the HDR gain map is kept (step 2c).
-const gaps = [];
 
 // ======================================================================================
 // Deep search: raw bytes, UTF-16 either way, and the inside of every zlib stream, hex run
@@ -337,6 +343,9 @@ function exiftoolValidate(file) {
   return r.out.split('\n')
     .filter((l) => /^\[ExifTool\]\s+(Warning|Error)\b/.test(l))
     .map((l) => l.replace(/^\[[^\]]+\]\s+\S+\s*:\s*/, '').replace(/\s*\[x\d+\]$/, '').trim())
+    // An entry's position moves up when an earlier entry is removed, so the same damaged
+    // entry is compared without its number ("for IFD0 entry 2" and "entry 1" are one warning).
+    .map((l) => l.replace(/\b(for \w+ entry) \d+\b/, '$1 N'))
     .filter((l) => !/^\[minor\] Validate/.test(l));
 }
 
@@ -348,10 +357,77 @@ function exiftoolValidate(file) {
 
 const outputsForTools = []; // { fixture, label, inFile, outFile, format }
 
-// The HDR gain map and its XMP description: what a user unticks to keep HDR (step 2c).
-const GAIN_MAP_OWN = new Set(['jpeg:trailing:gain-map', 'xmp:gainmap']);
+// The HDR gain map (JPEG or HEIC), its XMP description and Apple HDR brightness: amber, and
+// unticked in the red-and-amber selection (step 2b), as app.js GAIN_MAP_OWN.
+const GAIN_MAP_OWN = new Set(['jpeg:trailing:gain-map', 'heic:gain-map', 'xmp:gainmap', 'exif:apple-hdr']);
+const GAIN_MAP_IDS = new Set(['jpeg:trailing:gain-map', 'heic:gain-map']);
 
-async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = true, gainMapGap = false } = {}) {
+// Every XMP packet in a prepared file must be in the engine's canonical form (0.0.3,
+// decision 4): written again, it gives the same text, so no white space between nodes, no
+// padding, no comments and no order of the writer's choosing can carry anything. A packet
+// with a wrapper is checked in that form, one without in the compact form; an emptied HEIC
+// packet is the one fixed empty packet. Returns { packets, problems }.
+const EMPTY_PACKET = '<x:xmpmeta xmlns:x="adobe:ns:meta/"/>';
+function xmpLayout(bytes) {
+  const b = Buffer.from(bytes);
+  const texts = [];
+  const fmt = core.detectFormat(u8(b));
+  if (fmt === 'jpeg') {
+    // Every APP1 XMP segment anywhere in the file: the photo's and those of a gain map or
+    // another picture after it.
+    const head = Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1');
+    for (let i = b.indexOf(head); i >= 0; i = b.indexOf(head, i + 1)) {
+      if (i < 4 || b[i - 4] !== 0xff || b[i - 3] !== 0xe1) continue;
+      const end = i - 2 + b.readUInt16BE(i - 2);
+      if (end <= b.length) texts.push(b.subarray(i + head.length, end).toString('utf8'));
+    }
+  } else if (fmt === 'png') {
+    for (const c of pngChunks(b)) {
+      if (!['tEXt', 'zTXt', 'iTXt'].includes(c.type)) continue;
+      const d = b.subarray(c.data, c.end - 4);
+      const z = d.indexOf(0);
+      const kw = d.toString('latin1', 0, z);
+      let raw;
+      try {
+        if (c.type === 'tEXt') raw = d.subarray(z + 1);
+        else if (c.type === 'zTXt') raw = zlib.inflateSync(d.subarray(z + 2));
+        else {
+          const lang = d.indexOf(0, z + 3);
+          const trans = d.indexOf(0, lang + 1);
+          raw = d[z + 1] ? zlib.inflateSync(d.subarray(trans + 1)) : d.subarray(trans + 1);
+        }
+      } catch { continue; }
+      if (kw === 'XML:com.adobe.xmp') texts.push(raw.toString(c.type === 'tEXt' ? 'latin1' : 'utf8'));
+      else if (/^raw profile type xmp$/i.test(kw)) {
+        // ImageMagick's form: "\nxmp\n<length>\n<hexadecimal lines>\n".
+        const m = /^\s*[^\n]*\n\s*(\d+)\n([\s\S]*)$/.exec(raw.toString('latin1'));
+        if (m) texts.push(Buffer.from(m[2].replace(/[^0-9a-fA-F]/g, ''), 'hex').subarray(0, Number(m[1])).toString('utf8'));
+      }
+    }
+  } else if (fmt === 'webp') {
+    for (let p = 12; p + 8 <= b.length;) {
+      const n = b.readUInt32LE(p + 4);
+      if (b.toString('latin1', p, p + 4) === 'XMP ') texts.push(b.subarray(p + 8, p + 8 + n).toString('utf8'));
+      p += 8 + n + (n & 1);
+    }
+  } else if (fmt === 'heic') {
+    const m = parseHeif(u8(b));
+    for (const it of m.items.values()) {
+      if (it.type !== 'mime' || !/rdf\+xml|xmp/i.test(it.contentType) || !it.ranges) continue;
+      const t = Buffer.concat(it.ranges.map(([s, e]) => b.subarray(s, e)));
+      if (!t.every((x) => x === 0)) texts.push(t.toString('utf8'));
+    }
+  }
+  const problems = [];
+  for (const t of texts) {
+    if (t === EMPTY_PACKET) continue;
+    const canon = canonicalXmp(parseXmp(t), !t.startsWith('<?xpacket'));
+    if (canon !== t) problems.push(`${`"${t.slice(0, 60).replace(/\s+/g, ' ')}..."`}${/>[ \t\r\n]+</.test(t) ? ' (white space between nodes)' : ''}${/[ \t\r\n]{2,}(<\?xpacket end|$)/.test(t) ? ' (padding)' : ''}`);
+  }
+  return { packets: texts.length, problems };
+}
+
+async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = true } = {}) {
   const rec = { label, file, section, size: bytesIn.length };
   const inBuf = Buffer.from(bytesIn);
   const fmt = core.detectFormat(u8(inBuf));
@@ -386,14 +462,26 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
   }
   const itemOf = (id) => ins.items.find((i) => i.id === id);
 
-  // 2, 2b and 3. red only (strictest), the starting selection (red and amber) and every
-  // detail ticked
+  // 2, 2b, 2b-min and 3. red only (the page's starting selection), red and amber with the
+  // gain map kept, every red and amber detail, and every detail ticked
   const red = await core.scrub(u8(inBuf), redIds);
-  // Mirrors defaultIds() in app.js: every red and amber detail.
-  const startIds = ins.items.filter((i) => i.tier !== 'green').map((i) => i.id);
+  const hdrKept = ins.items.some((i) => GAIN_MAP_IDS.has(i.id) && i.tier === 'amber');
+  // Mirrors defaultIds() in app.js (0.0.3): every red detail, except a gain map's own details
+  // when the file holds an amber gain map. For one file that must be the red-only selection.
+  const pageIds = ins.items.filter((i) => i.tier === 'red' && !(hdrKept && GAIN_MAP_OWN.has(i.id))).map((i) => i.id);
+  if (pageIds.join('\n') !== redIds.join('\n')) finding('high', label, 'starting selection', `The page's starting selection (red only) differs from the red-only scrub: ${redIds.filter((id) => !pageIds.includes(id)).join(', ')} would stay unticked.`, '');
+  // The red-and-amber selection: every red and amber detail, except an amber HDR gain map and
+  // its own amber details.
+  rec.hdrKept = hdrKept;
+  const startIds = ins.items.filter((i) => i.tier !== 'green' && !(hdrKept && i.tier === 'amber' && GAIN_MAP_OWN.has(i.id))).map((i) => i.id);
+  rec.startIds = startIds;
   const start = await core.scrub(u8(inBuf), startIds);
   const hayStart = haystacks(start.bytes);
   rec.startWarnings = start.warnings;
+  const minIds = ins.items.filter((i) => i.tier !== 'green').map((i) => i.id);
+  const min = hdrKept ? await core.scrub(u8(inBuf), minIds) : start;
+  const hayMin = hdrKept ? haystacks(min.bytes) : hayStart;
+  rec.minWarnings = min.warnings;
   const all = await core.scrub(u8(inBuf), ids);
   const hayRed = haystacks(red.bytes);
   const hayAll = haystacks(all.bytes);
@@ -408,11 +496,12 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
   const startFile = join(OUT, 'outputs', `${safe}.start.${ext}`);
   writeFileSync(startFile, start.bytes);
   rec.startFile = startFile;
-  outputsForTools.push({ fixture: label, inFile: file, redFile, allFile, format: fmt, gainMapGap });
+  if (hdrKept) writeFileSync(join(OUT, 'outputs', `${safe}.min.${ext}`), min.bytes);
+  outputsForTools.push({ fixture: label, inFile: file, redFile, allFile, startFile, format: fmt, hdrKept, rec });
   rec.redFile = redFile;
   rec.allFile = allFile;
 
-  const repro = (which) => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${file}')); const i=await c.inspect(b); const r=await c.scrub(b, i.items${which === 'red' ? ".filter(x=>x.tier==='red')" : which === 'start' ? ".filter(x=>x.tier!=='green')" : which === 'hdr' ? ".filter(x=>x.tier!=='green'&&!(x.tier==='amber'&&['jpeg:trailing:gain-map','xmp:gainmap'].includes(x.id)))" : ''}.map(x=>x.id)); fs.writeFileSync('/tmp/out.${ext}', r.bytes)"; then grep -c (or tests/fixtures/fixturekit.py scan) /tmp/out.${ext}`;
+  const repro = (which) => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${file}')); const i=await c.inspect(b); const h=i.items.some(x=>['jpeg:trailing:gain-map','heic:gain-map'].includes(x.id)&&x.tier==='amber'); const r=await c.scrub(b, i.items${which === 'red' ? ".filter(x=>x.tier==='red')" : which === 'start' ? ".filter(x=>x.tier!=='green'&&!(h&&x.tier==='amber'&&['jpeg:trailing:gain-map','heic:gain-map','xmp:gainmap','exif:apple-hdr'].includes(x.id)))" : which === 'min' ? ".filter(x=>x.tier!=='green')" : ''}.map(x=>x.id)); fs.writeFileSync('/tmp/out.${ext}', r.bytes)"; then grep -c (or tests/fixtures/fixturekit.py scan) /tmp/out.${ext}`;
 
   rec.canaries = [];
   for (const c of present) {
@@ -424,7 +513,8 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     const leftAll = locate(hayAll, c.string);
     const visible = byItems.some((i) => i.value.includes(c.string.slice(0, Math.min(24, c.string.length))));
     const leftStart = locate(hayStart, c.string);
-    const row = { string: c.string, expected: c.tier, removedBy: by, touchedBy: touched, tiers, leftAfterDefault: describeHits(leftRed), leftAfterStart: describeHits(leftStart), leftAfterAll: describeHits(leftAll) };
+    const leftMin = hdrKept ? locate(hayMin, c.string) : leftStart;
+    const row = { string: c.string, expected: c.tier, removedBy: by, touchedBy: touched, tiers, leftAfterDefault: describeHits(leftRed), leftAfterStart: describeHits(leftStart), leftAfterMin: describeHits(leftMin), leftAfterAll: describeHits(leftAll) };
     rec.canaries.push(row);
     const where = c.location || '';
     if (c.tier === 'red' && leftRed.length) {
@@ -435,15 +525,13 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
       else if (!by.length && !touched.length) { sev = 'critical'; why = leftAll.length ? 'no detail removes it, not even ticking every detail: the user is never offered its removal' : 'no single detail removes it; only ticking every detail does'; }
       else if (visible) { sev = c.basis === 'inferred' ? 'medium' : 'high'; why = `it is offered, with its value shown, only as ${byItems.map((i) => `${i.tier} detail ${i.id} "${i.label}"`).join(', ')}: a tier disagreement with the registry (${c.basis || 'spec'})`; }
       else { sev = c.basis === 'inferred' ? 'high' : 'critical'; why = `it is hidden inside ${byItems.map((i) => `${i.tier} detail ${i.id} "${i.label}" (shown as "${i.value}")`).join(', ')}, which the red-only scrub keeps and which never shows this value`; }
-      const detail = `Red planted string ${JSON.stringify(c.string)} survives the red-only scrub: ${why}. Left at: ${describeHits(leftRed)}.`;
-      // A string hidden in the parts that travel with an amber HDR gain map is the same
-      // engine gap as step 2c: recorded as a gap, while the starting selection must still
-      // remove it (checked below as a finding).
-      if (gainMapGap && by.length && by.every((id) => itemOf(id).tier === 'amber')) gaps.push({ fixture: label, location: where, detail, reproduce: repro('red') });
-      else finding(sev, label, where, detail, repro('red'));
+      finding(sev, label, where, `Red planted string ${JSON.stringify(c.string)} survives the red-only scrub: ${why}. Left at: ${describeHits(leftRed)}.`, repro('red'));
     }
     if ((c.tier === 'red' || c.tier === 'amber') && leftStart.length) {
-      finding(c.tier === 'red' ? 'critical' : 'high', label, where, `${c.tier === 'red' ? 'Red' : 'Amber'} planted string ${JSON.stringify(c.string)} survives the page's starting selection (red and amber ticked)${by.length ? `; single details ${by.join(', ')} remove it` : ''}. Left at: ${describeHits(leftStart)}.`, repro('start'));
+      finding(c.tier === 'red' ? 'critical' : 'high', label, where, `${c.tier === 'red' ? 'Red' : 'Amber'} planted string ${JSON.stringify(c.string)} survives the red-and-amber selection (red and amber ticked${hdrKept ? ', the HDR gain map and its description kept' : ''})${by.length ? `; single details ${by.join(', ')} remove it` : ''}. Left at: ${describeHits(leftStart)}.`, repro('start'));
+    }
+    if (hdrKept && (c.tier === 'red' || c.tier === 'amber') && leftMin.length) {
+      finding(c.tier === 'red' ? 'critical' : 'high', label, where, `${c.tier === 'red' ? 'Red' : 'Amber'} planted string ${JSON.stringify(c.string)} survives with every red and amber detail ticked, the HDR gain map included${by.length ? `; single details ${by.join(', ')} remove it` : ''}. Left at: ${describeHits(leftMin)}.`, repro('min'));
     }
     if (leftAll.length) {
       finding('high', label, where, `Planted string ${JSON.stringify(c.string)} (${c.tier}) survives the every-detail scrub: ${by.length ? `single details ${by.join(', ')} remove it, but not all of them together` : 'no detail covers it'}. Left at: ${describeHits(leftAll)}.`, repro('all'));
@@ -462,23 +550,16 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     }
   }
 
-  // 2c. the starting selection with an amber HDR gain map kept: red must still go
-  if (ins.items.some((i) => i.id === 'jpeg:trailing:gain-map' && i.tier === 'amber')) {
-    const keepIds = startIds.filter((id) => !(GAIN_MAP_OWN.has(id) && itemOf(id).tier === 'amber'));
-    const hdr = await core.scrub(u8(inBuf), keepIds);
-    const hayHdr = haystacks(hdr.bytes);
-    rec.hdrGaps = [];
-    for (const c of present.filter((x) => x.tier === 'red')) {
-      const left = locate(hayHdr, c.string);
-      if (!left.length) continue;
-      rec.hdrGaps.push(c.string);
-      gaps.push({ fixture: label, location: c.location || '', detail: `Red planted string ${JSON.stringify(c.string)} survives when the HDR gain map is kept. Left at: ${describeHits(left)}.`, reproduce: repro('hdr') });
-    }
+  // A kept gain map should survive the red-and-amber selection. When the engine cannot keep it
+  // safely it removes it and says so: that fails closed, so it is noted, not a leak.
+  rec.hdrFellBack = hdrKept && start.warnings.some((w) => /HDR gain map/.test(w));
+  if (rec.hdrFellBack) {
+    finding('low', label, 'red-and-amber selection', `The red-and-amber selection was meant to keep the HDR gain map, but the engine removed it: ${start.warnings.filter((w) => /HDR gain map/.test(w)).join(' / ')}`, repro('start'));
   }
 
   // 6. partial overwrites: fragments of removed strings
   const others = canaries.map((c) => c.string);
-  for (const [which, hay, sel] of [['red-only', hayRed, (c) => c.tier === 'red'], ['starting-selection', hayStart, (c) => c.tier === 'red' || c.tier === 'amber'], ['every-detail', hayAll, () => true]]) {
+  for (const [which, hay, sel] of [['red-only', hayRed, (c) => c.tier === 'red'], ['red-and-amber', hayStart, (c) => c.tier === 'red' || c.tier === 'amber'], ...(hdrKept ? [['minimal-selection', hayMin, (c) => c.tier === 'red' || c.tier === 'amber']] : []), ['every-detail', hayAll, () => true]]) {
     for (const c of present.filter(sel)) {
       if (locate(hay, c.string).length || c.string.length < 14 || !/^CANARY|^[A-Z]{3,}-/.test(c.string)) continue;
       const frags = [];
@@ -488,7 +569,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
         const h = locate(hay, w);
         if (h.length) frags.push(`${JSON.stringify(w)} ${describeHits(h)}`);
       }
-      if (frags.length) finding(which === 'red-only' ? 'critical' : 'high', label, c.location || '', `Fragments of removed string ${JSON.stringify(c.string)} remain after the ${which} scrub (partial overwrite): ${frags.slice(0, 3).join(' | ')}.`, repro({ 'red-only': 'red', 'starting-selection': 'start' }[which] || 'all'));
+      if (frags.length) finding(which === 'red-only' ? 'critical' : 'high', label, c.location || '', `Fragments of removed string ${JSON.stringify(c.string)} remain after the ${which} scrub (partial overwrite): ${frags.slice(0, 3).join(' | ')}.`, repro({ 'red-only': 'red', 'red-and-amber': 'start', 'minimal-selection': 'min' }[which] || 'all'));
     }
   }
   // 6b. raw GPS rationals of the input must be gone after the red-only scrub
@@ -515,9 +596,19 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     const rbStart = await core.inspect(start.bytes);
     rec.readbackStart = rbStart.items.map((i) => `${i.tier}:${i.id}`);
     rec.wordStart = core.privacyWord(rbStart.items);
-    const notGreen = rbStart.items.filter((i) => i.tier !== 'green');
-    if (notGreen.length) finding('high', label, 'read-back', `After the page's starting selection (red and amber ticked), the read-back still lists red or amber details: ${notGreen.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordStart}".`, repro('start'));
-  } catch (e) { finding('high', label, 'read-back', `inspect() of the starting-selection output throws ${e.name}: ${e.message}`, repro('start')); }
+    const notGreen = rbStart.items.filter((i) => i.tier !== 'green' && !(hdrKept && i.tier === 'amber' && GAIN_MAP_OWN.has(i.id)));
+    if (notGreen.length) finding('high', label, 'read-back', `After the red-and-amber selection (red and amber ticked${hdrKept ? ', the HDR gain map kept' : ''}), the read-back still lists red or amber details: ${notGreen.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordStart}".`, repro('start'));
+    if (hdrKept && !rec.hdrFellBack && !rbStart.items.some((i) => GAIN_MAP_IDS.has(i.id))) finding('medium', label, 'read-back', 'The red-and-amber selection was meant to keep the HDR gain map, but the read-back no longer lists it, and the scrub did not say why.', repro('start'));
+  } catch (e) { finding('high', label, 'read-back', `inspect() of the red-and-amber output throws ${e.name}: ${e.message}`, repro('start')); }
+  if (hdrKept) {
+    try {
+      const rbMin = await core.inspect(min.bytes);
+      rec.readbackMin = rbMin.items.map((i) => `${i.tier}:${i.id}`);
+      rec.wordMin = core.privacyWord(rbMin.items);
+      const notGreen = rbMin.items.filter((i) => i.tier !== 'green');
+      if (notGreen.length) finding('high', label, 'read-back', `With every red and amber detail ticked, the HDR gain map included, the read-back still lists red or amber details: ${notGreen.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordMin}".`, repro('min'));
+    } catch (e) { finding('high', label, 'read-back', `inspect() of the minimal-selection output throws ${e.name}: ${e.message}`, repro('min')); }
+  }
   try {
     const rbAll = await core.inspect(all.bytes);
     rec.readbackAll = rbAll.items.map((i) => `${i.tier}:${i.id}`);
@@ -525,21 +616,41 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     if (rbAll.items.length) finding('medium', label, 'read-back', `After the every-detail scrub, the read-back still lists details: ${rbAll.items.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word is "${rec.wordAll}", not "clean".`, repro('all'));
   } catch (e) { finding('high', label, 'read-back', `inspect() of the every-detail output throws ${e.name}: ${e.message}`, repro('all')); }
 
+  // 0.0.3, decision 4: every XMP packet left in a prepared file is in the canonical form.
+  rec.xmpPackets = 0;
+  for (const [which, out] of [['red-only', red.bytes], ['red-and-amber', start.bytes], ['every-detail', all.bytes]]) {
+    const lay = xmpLayout(out);
+    rec.xmpPackets += lay.packets;
+    if (lay.problems.length) finding('high', label, 'XMP layout', `After the ${which} scrub, ${lay.problems.length} XMP packet(s) are not in the canonical form, so their layout (white space, padding, order) can carry data: ${lay.problems.slice(0, 3).join('; ')}.`, repro(which === 'red-only' ? 'red' : which === 'every-detail' ? 'all' : 'start'));
+  }
+
   if (fmt === 'heic') {
+    // Only XMP may change length (it is written in the canonical form); the boxes stay the
+    // same and in the same order, and every other item keeps its length.
+    const hin = parseHeif(u8(inBuf));
     for (const [which, out] of [['red-only', red.bytes], ['every-detail', all.bytes]]) {
-      if (out.length !== inBuf.length) finding('medium', label, 'HEIC size', `The ${which} output is ${out.length} bytes, the input ${inBuf.length}: HEIC edits must be in place.`, repro(which === 'red-only' ? 'red' : 'all'));
-      // The engine blanks a box by turning it into a 'free' box of the same size, so a box
-      // whose output twin is 'free' at the same place and size counts as unchanged.
-      const boxesIn = isoBoxes(inBuf);
-      const boxesOut = isoBoxes(Buffer.from(out));
-      const norm = (x, twin) => {
-        const blanked = twin && twin.start === x.start && twin.size === x.size && /(^|\/)free$/.test(twin.path);
-        return `${blanked ? x.path.replace(/[^/]+$/, 'X') : x.path.replace(/\b(colr|uuid|free)\b/, 'X')}@${x.start}+${x.size}`;
-      };
-      const a = boxesIn.map((x, i) => norm(x, boxesOut[i]));
-      const bb = boxesOut.map((x, i) => norm(x, x));
-      const diff = a.filter((x, i) => x !== bb[i]);
-      if (diff.length || a.length !== bb.length) finding('medium', label, 'HEIC boxes', `Box layout changed after the ${which} scrub: ${diff.slice(0, 4).join(', ')}`, repro(which === 'red-only' ? 'red' : 'all'));
+      const ho = parseHeif(u8(Buffer.from(out)));
+      const newWarn = ho.warnings.filter((w) => !hin.warnings.includes(w));
+      const types = (m) => `${m.top.map((x) => x.type).join(',')} / ${m.metaKids.map((x) => x.type).join(',')}`;
+      const resized = [...hin.items.values()].filter((it) => it.ranges && !(it.type === 'mime' && /rdf\+xml|xmp/i.test(it.contentType))).filter((it) => {
+        const o = ho.items.get(it.id);
+        const len = (x) => (x && x.ranges ? x.ranges.reduce((n, [a, e]) => n + e - a, 0) : -1);
+        return len(o) !== len(it);
+      });
+      if (newWarn.length) finding('medium', label, 'HEIC structure', `The ${which} output reads with new warnings: ${newWarn.join(' / ')}`, repro(which === 'red-only' ? 'red' : 'all'));
+      // The engine blanks a box by turning it into a 'free' box of the same size.
+      if (types(hin).replace(/\b(colr|uuid|free)\b/g, 'X') !== types(ho).replace(/\b(colr|uuid|free)\b/g, 'X')) finding('medium', label, 'HEIC boxes', `Box layout changed after the ${which} scrub: ${types(hin)} became ${types(ho)}`, repro(which === 'red-only' ? 'red' : 'all'));
+      if (resized.length) finding('medium', label, 'HEIC items', `After the ${which} scrub, items other than XMP changed length: ${resized.map((it) => it.id).join(', ')}`, repro(which === 'red-only' ? 'red' : 'all'));
+    }
+    // A removed image must not turn into a picture of its own that a viewer offers (review of
+    // 4 October 2026): libheif counts no more top-level images than in the input.
+    const outFiles = [['red-only', rec.redFile], ['every-detail', rec.allFile]].filter(([, f]) => f);
+    const heif = heifInfo([file, ...outFiles.map(([, f]) => f)]);
+    if (heif && heif[file] && !heif[file].error) {
+      for (const [which, f] of outFiles) {
+        const h = heif[f];
+        if (h && !h.error && h.top > heif[file].top) finding('high', label, 'HEIC top-level images', `After the ${which} scrub libheif sees ${h.top} top-level images, the input ${heif[file].top}: a removed image is offered as a picture of its own.`, `python3 ${join(OUT, 'heif-info.py')} ${file} ${f}`);
+      }
     }
   }
   return rec;
@@ -592,13 +703,18 @@ async function sectionCore(records) {
   if (prev === undefined) delete process.env.MS_FIXTURE_DIR;
   // Copyright is red: it names the photographer (decision of 2026-10-01, see README).
   // The computer name is red: it often names the owner (decision of 2026-10-02).
-  const redKeys = ['artist', 'owner', 'serial', 'lensSerial', 'uniqueId', 'xmpCreator', 'xmpCity', 'xmpDocId', 'xmpAuxSerial', 'iptcByline', 'iptcCity', 'iptcContact', 'unknownApp', 'trailing', 'copyright', 'computer'];
+  // Anything hidden in or around a kept HDR gain map is red: it is not part of the gain map.
+  // Free text in a colour profile or a technical field is red since 0.0.3 (hdrAmber keeps
+  // its old name), and so is the rest of Apple's MakerNote next to the HDR numbers.
+  // Descriptions and comments are free text, red since 0.0.3 (decision of 2026-10-04).
+  const redKeys = ['description', 'comment', 'artist', 'owner', 'serial', 'lensSerial', 'uniqueId', 'xmpCreator', 'xmpCity', 'xmpDocId', 'xmpAuxSerial', 'iptcByline', 'iptcCity', 'iptcContact', 'unknownApp', 'trailing', 'copyright', 'computer', 'hdr', 'hdr2', 'hdrAmber', 'green', 'appleNote'];
   const canaries = [
     ...Object.entries(PLANT).map(([k, v]) => ({ string: v, tier: redKeys.includes(k) ? 'red' : 'amber', basis: 'core PLANT', location: `PLANT.${k}` })),
     { string: 'GPS-AREA-PLANT', tier: 'red', basis: 'core', location: 'GPSAreaInformation' },
     { string: 'MAKERNOTE-OWNER-PLANT', tier: 'red', basis: 'core', location: 'MakerNote owner' },
     { string: 'VIDEO-PLANT-SECRET', tier: 'red', basis: 'core', location: 'Motion Photo video' },
-    { string: 'FakeCam C2PA PLANT', tier: 'amber', basis: 'core', location: 'C2PA claim generator' },
+    // Content Credentials are red since the review of 4 October 2026.
+    { string: 'FakeCam C2PA PLANT', tier: 'red', basis: 'core', location: 'C2PA claim generator' },
   ];
   const files = readdirSync(CORE_FIX).filter((n) => /\.(jpe?g|png|webp|heic)$/i.test(n) && !/\.out|\.gone|\.keep|^fresh/.test(n)).sort();
   for (const name of files) {
@@ -694,10 +810,29 @@ ${body}
 <?xpacket end="w"?>`;
 const xmpSeg = (text) => seg(0xe1, cat('http://ns.adobe.com/xap/1.0/\0', Buffer.from(text, 'utf8')));
 const C = (tag) => `CANARY-ADV-${tag}`;
+// A message spelt in white space: each bit a space or a tab, each byte ended by a newline.
+const WS_SPELL = (text) => [...Buffer.from(text, 'latin1')].map((c) => `${[...c.toString(2).padStart(8, '0')].map((x) => (x === '1' ? '\t' : ' ')).join('')}\n`).join('');
+// Apple's MakerNote ("Apple iOS", big-endian, offsets from its own start) with the two HDR
+// numbers (tags 33 and 48) and a text tag.
+function appleNote(text) {
+  const t = Buffer.from(`${text}\0`, 'latin1');
+  const entries = [[0x0001, 9, 1, be32(14)], [0x000b, 2, t.length, t], [0x0021, 10, 1, cat(be32(10200), be32(10000))], [0x0030, 10, 1, cat(be32(64), be32(10000))]];
+  const head = 14 + 2 + 12 * entries.length + 4;
+  const parts = [Buffer.from('Apple iOS\0\0\x01MM', 'latin1'), be16(entries.length)];
+  const values = [];
+  let at = head;
+  for (const [tag, type, count, data] of entries) {
+    parts.push(be16(tag), be16(type), be32(count));
+    if (data.length <= 4) parts.push(cat(data, Buffer.alloc(4 - data.length)));
+    else { parts.push(be32(at)); values.push(data); at += data.length; if (data.length & 1) { values.push(Buffer.alloc(1)); at++; } }
+  }
+  parts.push(be32(0));
+  return cat(...parts, ...values);
+}
 
 function buildAdversarial() {
   const list = [];
-  const add = (name, bytes, canaries, note) => { writeFileSync(advPath(name), bytes); list.push({ name, bytes, canaries, note }); };
+  const add = (name, bytes, canaries, note, extra = {}) => { writeFileSync(advPath(name), bytes); list.push({ name, bytes, canaries, note, ...extra }); };
 
   // A1. A second preview in IFD2, chained after the IFD1 thumbnail.
   {
@@ -983,6 +1118,95 @@ function buildAdversarial() {
     ], 'The name of the computer that saved the file, which often names its owner.');
   }
 
+  // A20 to A27. Free text in green details, which are kept by default: a colour profile's
+  // text tags (in every form: Latin-1 desc and text, mluc records in other languages, the
+  // Unicode part of a desc tag), a private tag, bytes no tag uses, a profile ID that is not
+  // its checksum, and technical XMP fields holding names. Each must be offered as red and go
+  // with the red-and-amber selection while the colours stay.
+  const icc = ({ tags = [], gap = '', id = null, reserved = null } = {}) => {
+    const pad = (d) => cat(d, Buffer.alloc((4 - (d.length % 4)) % 4));
+    const xyz = cat('XYZ ', Buffer.alloc(4), be32(0xf6d6), be32(0x10000), be32(0xd32d));
+    const all = [...tags, ['wtpt', xyz]];
+    const body = [];
+    const table = [be32(all.length)];
+    let at = 128 + 4 + 12 * all.length;
+    for (const [sig, d] of all) {
+      table.push(Buffer.from(sig, 'latin1'), be32(at), be32(d.length));
+      body.push(pad(d));
+      at += pad(d).length;
+      if (gap && sig === all[0][0]) { body.push(pad(B(gap))); at += pad(B(gap)).length; }
+    }
+    const head = Buffer.alloc(128);
+    head.writeUInt32BE(at, 0); head.writeUInt32BE(0x04200000, 8); head.write('mntrRGB XYZ ', 12, 'latin1'); head.write('acsp', 36, 'latin1');
+    head.writeUInt32BE(0xf6d6, 68); head.writeUInt32BE(0x10000, 72); head.writeUInt32BE(0xd32d, 76);
+    if (id) B(id).copy(head, 84);
+    if (reserved) B(reserved).copy(head, 100);
+    return cat(head, ...table, ...body);
+  };
+  const textTag = (t) => cat('text', Buffer.alloc(4), t, Buffer.from([0]));
+  const mlucTag = (records) => {
+    const strs = records.map(([, t]) => Buffer.from(t, 'utf16le').swap16());
+    let off = 16 + 12 * records.length;
+    const head = [Buffer.from('mluc'), Buffer.alloc(4), be32(records.length), be32(12)];
+    records.forEach(([lang], i) => { head.push(Buffer.from(lang, 'latin1'), be32(strs[i].length), be32(off)); off += strs[i].length; });
+    return cat(...head, ...strs);
+  };
+  const descTag = (ascii, unicode = '') => {
+    const u = Buffer.from(unicode, 'utf16le').swap16();
+    return cat('desc', Buffer.alloc(4), be32(ascii.length + 1), ascii, Buffer.from([0]), be32(unicode ? 0x656e5553 : 0), be32(unicode ? unicode.length : 0), u, Buffer.alloc(3 + 67));
+  };
+  const iccSeg = (profile) => seg(0xe2, cat('ICC_PROFILE\0', Buffer.from([1, 1]), profile));
+  {
+    add('adv-icc-copyright-name.jpg', jpegInsert(baseJpeg('b20.jpg'), iccSeg(icc({ tags: [['desc', descTag('sRGB IEC61966-2.1')], ['cprt', textTag(`Copyright Astrid Holmvik ${C('ICC-CPRT-67a0')}`)], ['dmnd', textTag(`Astrid Holmvik ${C('ICC-DMND-78b1')}`)]] }))), [
+      { string: C('ICC-CPRT-67a0'), tier: 'red', location: "the photo's colour profile, copyright text tag" },
+      { string: C('ICC-DMND-78b1'), tier: 'red', location: "the photo's colour profile, device maker text tag" },
+    ], "Names in the text tags of the photo's own colour profile, which is green and kept.");
+    add('adv-icc-mluc-record.jpg', jpegInsert(baseJpeg('b21.jpg'), iccSeg(icc({ tags: [['desc', mlucTag([['enUS', 'Display P3'], ['nbNO', `Astrid Holmvik ${C('ICC-MLUC-NB-89c2')}`]])], ['cprt', mlucTag([['enUS', 'Copyright Apple Inc., 2017']])]] }))), [
+      { string: C('ICC-MLUC-NB-89c2'), tier: 'red', location: 'a second language record of the profile description (mluc, UTF-16)' },
+    ], 'A well-known profile name in English, and a name in its Norwegian record.');
+    add('adv-icc-desc-unicode.jpg', jpegInsert(baseJpeg('b22.jpg'), iccSeg(icc({ tags: [['desc', descTag('sRGB IEC61966-2.1', `Astrid ${C('ICC-DESC-UNI-9ad3')}`)]] }))), [
+      { string: C('ICC-DESC-UNI-9ad3'), tier: 'red', location: 'the Unicode part of a version 2 desc tag whose ASCII part is a known name' },
+    ], 'Most readers show only the ASCII part of a desc tag.');
+    add('adv-icc-private-tags.jpg', jpegInsert(baseJpeg('b23.jpg'), iccSeg(icc({ tags: [['desc', descTag('sRGB')], ['ZZZZ', cat('curv', Buffer.alloc(4), be32(24), `Astrid Holmvik ${C('ICC-CURV-ab14')}`)], ['CNRY', textTag(C('ICC-PRIVATE-TEXT-bc25'))]] }))), [
+      { string: C('ICC-CURV-ab14'), tier: 'red', location: 'a private tag of a colour type (curv) holding a name' },
+      { string: C('ICC-PRIVATE-TEXT-bc25'), tier: 'red', location: 'a private text tag' },
+    ], 'Tags no colour engine reads.');
+    add('adv-icc-gap-and-id.jpg', jpegInsert(baseJpeg('b24.jpg'), iccSeg(icc({ tags: [['desc', descTag('sRGB')]], gap: `Astrid Holmvik ${C('ICC-GAP-cd36')}`, id: 'CANARY-ADV-IDde4', reserved: C('ICC-RESV-ef58') }))), [
+      { string: C('ICC-GAP-cd36'), tier: 'red', location: 'bytes between two tags that no tag uses' },
+      { string: 'CANARY-ADV-IDde4', tier: 'red', location: 'the 16-byte profile ID, which is not the profile checksum' },
+      { string: C('ICC-RESV-ef58'), tier: 'red', location: 'the reserved header bytes 100 to 127' },
+    ], 'Places in a colour profile that are neither text nor colour.');
+    const ns = 'xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/" xmlns:exif="http://ns.adobe.com/exif/1.0/"'
+      + ` xmp:Rating="Astrid ${C('XMP-RATING-TEXT-f069')}" photoshop:ICCProfile="Astrid Holmvik ${C('XMP-ICCPROFILE-NAME-017a')}" photoshop:ColorMode="3" GPano:PoseHeadingDegrees="${C('GPANO-HEADING-128b')}" exif:FNumber="19/10"`;
+    const body = `   <exif:Flash rdf:parseType="Resource"><exif:Fired>False</exif:Fired><exif:Owner>Astrid Holmvik ${C('EXIF-FLASH-CHILD-239c')}</exif:Owner></exif:Flash>\n   <GPano:Note>${C('GPANO-NOTE-34ad')}</GPano:Note>`;
+    add('adv-xmp-technical-text.jpg', jpegInsert(baseJpeg('b25.jpg'), xmpSeg(XMP(body, ns))), [
+      { string: C('XMP-RATING-TEXT-f069'), tier: 'red', location: 'XMP xmp:Rating holding text' },
+      { string: C('XMP-ICCPROFILE-NAME-017a'), tier: 'red', location: 'XMP photoshop:ICCProfile holding a name, not a known profile name' },
+      { string: C('GPANO-HEADING-128b'), tier: 'red', location: 'XMP GPano:PoseHeadingDegrees holding text' },
+      { string: C('EXIF-FLASH-CHILD-239c'), tier: 'red', location: 'an unknown field inside the exif:Flash structure' },
+      { string: C('GPANO-NOTE-34ad'), tier: 'red', location: 'XMP GPano:Note, a field the photo sphere specification does not define' },
+    ], 'Technical XMP fields are green and kept, so they may hold only numbers and fixed words.');
+    // Technical EXIF fields: text in a numeric field, the free-text field the specification
+    // allows, a block that carries names, and the interop file format text.
+    const tiff = tiffLE([
+      { name: 'ifd0', entries: [{ tag: 0x010f, type: 2, data: 'Advcam' }, { tag: 0x8769, type: 4, ptr: 'exif' }] },
+      { name: 'exif', entries: [
+        { tag: 0x829d, type: 2, data: `Astrid ${C('EXIF-FNUMBER-TEXT-45be')}` },
+        { tag: 0x8824, type: 2, data: `Astrid Holmvik ${C('EXIF-SPECTRAL-56cf')}` },
+        { tag: 0x9000, type: 7, count: 4, data: Buffer.from('0232') },
+        { tag: 0xa40b, type: 7, data: Buffer.from(`\0\0\0\0Astrid Holmvik ${C('EXIF-DEVICESETTING-67d0')}`) },
+        { tag: 0xa005, type: 4, ptr: 'interop' },
+      ] },
+      { name: 'interop', entries: [{ tag: 0x0001, type: 2, data: 'R98' }, { tag: 0x1000, type: 2, data: `Astrid ${C('EXIF-INTEROP-FORMAT-78e1')}` }] },
+    ]);
+    add('adv-exif-technical-text.jpg', jpegInsert(baseJpeg('b26.jpg'), exifSeg(tiff)), [
+      { string: C('EXIF-FNUMBER-TEXT-45be'), tier: 'red', location: 'EXIF FNumber written as text' },
+      { string: C('EXIF-SPECTRAL-56cf'), tier: 'red', location: 'EXIF SpectralSensitivity (free text by the specification)' },
+      { string: C('EXIF-DEVICESETTING-67d0'), tier: 'red', location: 'EXIF DeviceSettingDescription (a block of names)' },
+      { string: C('EXIF-INTEROP-FORMAT-78e1'), tier: 'red', location: 'EXIF Interop RelatedImageFileFormat (free text)' },
+    ], 'Technical EXIF fields are green and kept, so they may hold only numbers and their defined forms.');
+  }
+
   // PNG ---------------------------------------------------------------------------------
   const pngChunk = (type, data) => { const d = B(data); const tc = cat(type, d); return cat(be32(d.length), tc, be32(zlib.crc32(tc))); };
   const pngBase = (name, seed) => { sh('magick', ['-seed', String(seed), '-size', '64x48', 'plasma:fractal', '-strip', `PNG24:${advPath(name)}`]); return readFileSync(advPath(name)); };
@@ -1020,6 +1244,32 @@ function buildAdversarial() {
     add('adv-png-host-computer-text.png', cat(head, pngChunk('tEXt', cat('Host Computer\0', `Astrid-Laptop ${C('PNG-HOSTCOMPUTER-TEXT-67f0')}`)), pngChunk('tEXt', cat('Software\0', 'Advedit 1.0')), iend), [
       { string: C('PNG-HOSTCOMPUTER-TEXT-67f0'), tier: 'red', location: 'tEXt with keyword "Host Computer"' },
     ], 'A plain text chunk whose keyword says it holds the computer name.');
+  }
+  {
+    // An iCCP chunk before the picture data whose profile name is a name, and whose profile
+    // holds one in its copyright (compressed, so only an inflate finds it).
+    const png = pngBase('p8.png', 41);
+    const ihdr = pngChunks(png).find((c) => c.type === 'IHDR');
+    const prof = icc({ tags: [['desc', descTag('sRGB IEC61966-2.1')], ['cprt', textTag(`Copyright Astrid Holmvik ${C('PNG-ICCP-CPRT-45be')}`)]] });
+    const iccp = pngChunk('iCCP', cat(`Astrid ${C('PNG-ICCP-NAME-56cf')}`, Buffer.from([0, 0]), zlib.deflateSync(prof)));
+    add('adv-png-iccp-name.png', cat(png.subarray(0, ihdr.end), iccp, png.subarray(ihdr.end)), [
+      { string: C('PNG-ICCP-NAME-56cf'), tier: 'red', location: 'iCCP profile name' },
+      { string: C('PNG-ICCP-CPRT-45be'), tier: 'red', location: 'iCCP profile (compressed), copyright text tag' },
+    ], 'A colour profile chunk whose name and copyright are names.');
+  }
+  {
+    // Colour and display chunks are green: one longer than its size with a name after the
+    // numbers, a pCAL whose calibration name is a name, and an exif: text copy holding text.
+    const png = pngBase('p9.png', 43);
+    const ihdr = pngChunks(png).find((c) => c.type === 'IHDR');
+    const extra = cat(pngChunk('gAMA', cat(Buffer.from([0, 0, 0xb1, 0x8f]), `Astrid ${C('PNG-GAMA-TAIL-89f2')}`)),
+      pngChunk('pCAL', cat(`Astrid ${C('PNG-PCAL-NAME-9a03')}`, Buffer.alloc(13))),
+      pngChunk('tEXt', cat('exif:ExposureTime\0', `Holmvik ${C('PNG-EXIFTEXT-EXPOSURE-ab14')}`)));
+    add('adv-png-green-chunks.png', cat(png.subarray(0, ihdr.end), extra, png.subarray(ihdr.end)), [
+      { string: C('PNG-GAMA-TAIL-89f2'), tier: 'red', location: 'gAMA chunk longer than its four bytes' },
+      { string: C('PNG-PCAL-NAME-9a03'), tier: 'red', location: 'pCAL calibration name' },
+      { string: C('PNG-EXIFTEXT-EXPOSURE-ab14'), tier: 'red', location: 'tEXt exif:ExposureTime (an ImageMagick copy) holding text' },
+    ], 'Green PNG chunks must have the size and form the specification gives.');
   }
   {
     const t1 = baseJpeg('pt1.jpg', 40, 30, 35, C('PNG-EXIF-IFD1-COM-019b'));
@@ -1086,12 +1336,61 @@ function buildAdversarial() {
       { string: C('HEIC-UDES-NAME-9a24'), tier: 'red', location: 'udes (user description) item property on the primary picture' },
       { string: C('HEIC-EXTRA-JPEG-ARTIST-ab35'), tier: 'red', location: 'an extra jpeg image item that nothing references, with its own EXIF' },
     ], 'HEIC with metadata in places other than Exif and mime items.');
+
+    // A68 to A71 (0.0.3, decisions 4 and 5). An iPhone-style HDR HEIC: a gain map attached
+    // with auxl and named by auxC exactly as Apple names it, its own XMP, and Apple's
+    // MakerNote with the two HDR numbers and a text plant. The default (red only) and the
+    // red-and-amber selection must keep the gain map attached and the HDR numbers readable
+    // (checked after evaluate), and remove the rest. Then the same file with a name that is
+    // not exactly Apple's, and with bytes after the name: those layers are red and go.
+    sh('magick', ['-size', '32x24', 'gradient:gray20-gray90', '-depth', '8', advPath('h-gain.heic')]);
+    const gainPic = extractHeic(readFileSync(advPath('h-gain.heic')));
+    const APPLE_AUX = 'urn:com:apple:photo:2020:aux:hdrgainmap';
+    const appleHeic = (auxName, auxTail = Buffer.alloc(0), gainExtra = '') => {
+      const mn = appleNote(C('HEIC-APPLE-NOTE-b6c7'));
+      const exifTiff = tiffLE([
+        { name: 'ifd0', entries: [{ tag: 0x010f, type: 2, data: 'Apple' }, { tag: 0x8769, type: 4, ptr: 'exif' }] },
+        { name: 'exif', entries: [{ tag: 0x927c, type: 7, data: mn }, { tag: 0x9003, type: 2, data: '2025:03:04 05:06:07' }] },
+      ]);
+      const photoXmp = XMP(`   <dc:creator><rdf:Seq><rdf:li>${C('HEIC-PHOTO-CREATOR-c7d8')}</rdf:li></rdf:Seq></dc:creator>\n   <xmp:CreateDate>2025-03-04T05:06:07</xmp:CreateDate>`, 'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/"') + ' '.repeat(3000);
+      const gainXmp = `<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">\n   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n      <rdf:Description rdf:about=""\n            xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/">\n         <HDRGainMap:HDRGainMapVersion>65536</HDRGainMap:HDRGainMapVersion>${gainExtra}\n      </rdf:Description>\n   </rdf:RDF>\n</x:xmpmeta>\n`;
+      const auxC = fullbox('auxC', 0, 0, `${auxName}\0`, auxTail);
+      return heicBuild({
+        prim,
+        items: [
+          { id: 2, type: 'Exif', data: cat(be32(6), 'Exif\0\0', exifTiff), hidden: true },
+          { id: 3, type: 'mime', contentType: 'application/rdf+xml', data: Buffer.from(photoXmp, 'utf8'), hidden: true },
+          { id: 4, type: 'hvc1', data: gainPic.data, hidden: true },
+          { id: 5, type: 'mime', contentType: 'application/rdf+xml', data: Buffer.from(gainXmp, 'utf8'), hidden: true },
+        ],
+        extraProps: [...gainPic.props.map((x) => ({ box: x.box, essential: x.essential, item: 4 })), { box: auxC, essential: false, item: 4 }],
+        refs: [['auxl', 4, 1], ['cdsc', 2, 1], ['cdsc', 3, 1], ['cdsc', 5, 4]],
+      });
+    };
+    const appleRows = [
+      { string: C('HEIC-APPLE-NOTE-b6c7'), tier: 'red', location: "text in Apple's MakerNote next to the two HDR numbers (EXIF item)" },
+      { string: C('HEIC-PHOTO-CREATOR-c7d8'), tier: 'red', location: "dc:creator in the photo's XMP item" },
+    ];
+    add('adv-heic-apple-hdr.heic', appleHeic(APPLE_AUX, Buffer.alloc(0), `\n         <HDRGainMap:Note>${C('HEIC-GAIN-XMP-d8e9')}</HDRGainMap:Note>`), [
+      ...appleRows,
+      { string: C('HEIC-GAIN-XMP-d8e9'), tier: 'red', location: "a field the gain map does not need in the gain map's own XMP item" },
+    ], 'An iPhone-style HDR HEIC: the gain map and the HDR numbers must stay, everything else planted must go.', { appleHdr: true });
+    add('adv-heic-aux-name.heic', appleHeic(`${APPLE_AUX} ${C('HEIC-AUX-NAME-e9fa')}`), [
+      ...appleRows,
+      { string: C('HEIC-AUX-NAME-e9fa'), tier: 'red', location: "the auxC name of the auxiliary image: Apple's name with text after it" },
+    ], 'An auxiliary image whose name is not exactly a known one.', { auxGone: true });
+    add('adv-heic-aux-tail.heic', appleHeic(APPLE_AUX, Buffer.from(C('HEIC-AUX-TAIL-fa0b'), 'latin1')), [
+      ...appleRows,
+      { string: C('HEIC-AUX-TAIL-fa0b'), tier: 'red', location: "bytes after the NUL that ends Apple's auxC name" },
+    ], "Apple's gain map name followed by bytes Apple never writes.", { auxGone: true });
   }
-  // A30 to A36. Data hidden in what travels with an HDR gain map, built on the corpus Ultra
+  // A30 to A51. Data hidden in what travels with an HDR gain map, built on the corpus Ultra
   // HDR picture: extra fields in the hdrgm, HDRGainMap and Container XMP namespaces (in the
-  // photo and inside the gain map), the tail of the MPF index, an ISO 21496-1 segment, and
-  // bytes after the gain map's end marker. The starting selection ticks the gain map, so all
-  // of it must go; keeping the gain map keeps it today (recorded as gaps, see step 2c).
+  // photo and inside the gain map), known names with values of the wrong form, the tail and
+  // extra tags of the MPF index, ISO 21496-1 segments longer than their structure, an index
+  // and an ISO segment inside the gain map, and bytes (or a whole picture) after the gain
+  // map's end marker. The red-and-amber selection keeps the gain map, and all of this must still
+  // go with it, while the gain map stays and renders.
   {
     const srcFile = join(FIXTURES, 'jpeg-ultrahdr-like.jpg');
     if (existsSync(srcFile)) {
@@ -1137,34 +1436,224 @@ function buildAdversarial() {
       };
       const creator = /<dc:creator>[\s\S]*?<\/dc:creator>/;
       const gmBare = editSeg(gm0, isXmp, (p) => Buffer.from(p.toString('latin1').replace(creator, ''), 'latin1'));
-      const gap = (name, bytes, canaries, note) => { add(name, bytes, canaries, note); list[list.length - 1].gainMapGap = true; };
-      gap('adv-gainmap-hdrgm-extra.jpg', join2(editSeg(prim0, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" hdrgm:CameraSerialNumber="${C('HDRGM-SERIAL-c1d2')}" hdrgm:GPSLatitude="${C('HDRGM-GPS-d2e3')}"`)), gm0), [
+      add('adv-gainmap-hdrgm-extra.jpg', join2(editSeg(prim0, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" hdrgm:CameraSerialNumber="${C('HDRGM-SERIAL-c1d2')}" hdrgm:GPSLatitude="${C('HDRGM-GPS-d2e3')}"`)), gm0), [
         { string: C('HDRGM-SERIAL-c1d2'), tier: 'red', location: 'unknown hdrgm:CameraSerialNumber in the photo XMP' },
         { string: C('HDRGM-GPS-d2e3'), tier: 'red', location: 'unknown hdrgm:GPSLatitude in the photo XMP' },
       ], 'Ultra HDR picture with extra, non-standard fields in the hdrgm namespace.');
-      gap('adv-gainmap-container-label.jpg', join2(editSeg(prim0, isXmp, swap('Item:Semantic="GainMap"', `Item:Semantic="GainMap" Item:Label="${C('CONTAINER-LABEL-e3f4')}"`)), gm0), [
+      add('adv-gainmap-container-label.jpg', join2(editSeg(prim0, isXmp, swap('Item:Semantic="GainMap"', `Item:Semantic="GainMap" Item:Label="${C('CONTAINER-LABEL-e3f4')}"`)), gm0), [
         { string: C('CONTAINER-LABEL-e3f4'), tier: 'red', location: 'Item:Label inside the Container:Directory of the photo XMP' },
       ], 'Ultra HDR picture whose Container directory carries a label.');
-      gap('adv-gainmap-apple-owner.jpg', join2(editSeg(prim0, isXmp, swap('xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"', `xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" HDRGainMap:HDRGainMapVersion="65536" HDRGainMap:OwnerName="${C('APPLE-GAIN-OWNER-f405')}"`)), gm0), [
+      add('adv-gainmap-apple-owner.jpg', join2(editSeg(prim0, isXmp, swap('xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"', `xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" HDRGainMap:HDRGainMapVersion="65536" HDRGainMap:OwnerName="${C('APPLE-GAIN-OWNER-f405')}"`)), gm0), [
         { string: C('APPLE-GAIN-OWNER-f405'), tier: 'red', location: 'unknown HDRGainMap:OwnerName in the photo XMP' },
       ], 'Ultra HDR picture with an Apple HDRGainMap field that is not part of the gain map.');
-      gap('adv-gainmap-after-eoi.jpg', join2(prim0, editSeg(gmBare, isXmp, swap(' x:xmptk="Fjord XMP Core 1.0"', '')), C('AFTER-GAINMAP-EOI-0516')), [
+      add('adv-gainmap-after-eoi.jpg', join2(prim0, editSeg(gmBare, isXmp, swap(' x:xmptk="Fjord XMP Core 1.0"', '')), C('AFTER-GAINMAP-EOI-0516')), [
         { string: C('AFTER-GAINMAP-EOI-0516'), tier: 'red', location: 'bytes after the gain map end marker, inside its MPF size' },
       ], 'A gain map with no metadata of its own and hidden bytes after its end marker.');
-      gap('adv-gainmap-mpf-tail.jpg', join2(editSeg(prim0, isMpf, (p) => cat(p, C('MPF-TAIL-1627'))), gm0), [
+      add('adv-gainmap-mpf-tail.jpg', join2(editSeg(prim0, isMpf, (p) => cat(p, C('MPF-TAIL-1627'))), gm0), [
         { string: C('MPF-TAIL-1627'), tier: 'red', location: 'bytes after the MP entry table, at the end of the MPF segment' },
       ], 'MPF segment longer than its index.');
-      gap('adv-gainmap-inner-hdrgm.jpg', join2(prim0, editSeg(gmBare, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" hdrgm:CameraSerialNumber="${C('INNER-HDRGM-SERIAL-2738')}"`))), [
+      add('adv-gainmap-inner-hdrgm.jpg', join2(prim0, editSeg(gmBare, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" hdrgm:CameraSerialNumber="${C('INNER-HDRGM-SERIAL-2738')}"`))), [
         { string: C('INNER-HDRGM-SERIAL-2738'), tier: 'red', location: 'unknown hdrgm:CameraSerialNumber in the gain map XMP' },
       ], 'A gain map whose own XMP has an extra, non-standard hdrgm field.');
       {
         const mpfSeg = jpegSegments(prim0).find((x) => isMpf(prim0, x));
         const iso = seg(0xe2, cat('urn:iso:std:iso:ts:21496:-1\0', Buffer.from([0, 0, 0, 0]), C('ISO-GAIN-SEG-3849')));
-        gap('adv-gainmap-iso-segment.jpg', join2(cat(prim0.subarray(0, mpfSeg.start), iso, prim0.subarray(mpfSeg.start)), gm0), [
+        add('adv-gainmap-iso-segment.jpg', join2(cat(prim0.subarray(0, mpfSeg.start), iso, prim0.subarray(mpfSeg.start)), gm0), [
           { string: C('ISO-GAIN-SEG-3849'), tier: 'red', location: 'surplus bytes in an ISO 21496-1 APP2 segment of the photo' },
         ], 'An ISO 21496-1 gain map segment longer than its version field.');
+        const iso2 = seg(0xe2, cat('urn:iso:std:iso:ts:21496:-1\0', Buffer.from([0, 0, 0, 0]), C('ISO-SECOND-SEG-a1b2')));
+        const isoOk = seg(0xe2, cat('urn:iso:std:iso:ts:21496:-1\0', Buffer.from([0, 0, 0, 0])));
+        add('adv-gainmap-iso-second.jpg', join2(cat(prim0.subarray(0, mpfSeg.start), isoOk, iso2, prim0.subarray(mpfSeg.start)), gm0), [
+          { string: C('ISO-SECOND-SEG-a1b2'), tier: 'red', location: 'a second ISO 21496-1 APP2 segment in the photo' },
+        ], 'A valid version-only ISO 21496-1 segment followed by a second one.');
+      }
+      const gmPlain = editSeg(gmBare, isXmp, swap(' x:xmptk="Fjord XMP Core 1.0"', ''));
+      add('adv-gainmap-inner-mpf.jpg', join2(prim0, jpegInsert(gmPlain, seg(0xe2, cat('MPF\0', 'MM', be16(42), be32(8), be16(0), be32(0), C('INNER-MPF-TAIL-b2c3'))))), [
+        { string: C('INNER-MPF-TAIL-b2c3'), tier: 'red', location: 'an MPF APP2 segment inside the gain map, with a tail' },
+      ], 'A gain map that carries a multi-picture index of its own.');
+      add('adv-gainmap-inner-iso.jpg', join2(prim0, jpegInsert(gmPlain, seg(0xe2, cat('urn:iso:std:iso:ts:21496:-1\0', Buffer.from([0, 0, 0, 0]), C('INNER-ISO-TAIL-c3d4'))))), [
+        { string: C('INNER-ISO-TAIL-c3d4'), tier: 'red', location: 'surplus bytes in the ISO 21496-1 APP2 segment of the gain map' },
+      ], 'An ISO 21496-1 segment in the gain map longer than its version field.');
+      add('adv-gainmap-version-text.jpg', join2(editSeg(prim0, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0 ${C('VERSION-TEXT-d4e5')}"`)), gm0), [
+        { string: C('VERSION-TEXT-d4e5'), tier: 'red', location: 'text inside the value of hdrgm:Version in the photo XMP' },
+      ], 'A gain map field with an allowed name and a value of the wrong form.');
+      add('adv-gainmap-item-uri.jpg', join2(editSeg(prim0, isXmp, swap('Item:Semantic="GainMap"', `Item:Semantic="GainMap" Item:URI="${C('ITEM-URI-e5f6')}"`)), gm0), [
+        { string: C('ITEM-URI-e5f6'), tier: 'red', location: 'Item:URI on the GainMap entry of the Container directory' },
+      ], 'A Container directory entry with a URI field Ultra HDR does not use.');
+      add('adv-gainmap-dir-child.jpg', join2(editSeg(prim0, isXmp, swap('</Container:Directory>', `<Container:Note>${C('DIR-CHILD-f607')}</Container:Note></Container:Directory>`)), gm0), [
+        { string: C('DIR-CHILD-f607'), tier: 'red', location: 'a child element with text inside Container:Directory' },
+      ], 'A Container directory with an extra element after its list.');
+      add('adv-gainmap-seq-text.jpg', join2(prim0, editSeg(gmPlain, isXmp, (p) => swap(' hdrgm:OffsetHDR="0.015625"', '')(swap('</rdf:Description>', `<hdrgm:OffsetHDR><rdf:Seq><rdf:li>0.015625</rdf:li><rdf:li>${C('SEQ-TEXT-0718')}</rdf:li><rdf:li>0.015625</rdf:li></rdf:Seq></hdrgm:OffsetHDR></rdf:Description>`)(p)))), [
+        { string: C('SEQ-TEXT-0718'), tier: 'red', location: 'text in one rdf:li of an rdf:Seq hdrgm:OffsetHDR in the gain map XMP' },
+      ], 'A per-channel gain map value with text in one channel.');
+      add('adv-gainmap-hidden-jpeg.jpg', join2(prim0, gmPlain, baseJpeg('hidden-after-gm.jpg', 24, 16, 31, C('HIDDEN-JPEG-COM-1829'))), [
+        { string: C('HIDDEN-JPEG-COM-1829'), tier: 'red', location: 'a JPEG (with a comment) after the gain map end marker, inside its MPF size' },
+      ], 'A whole picture hidden after the gain map, inside the size the MPF index gives it.');
+      {
+        // Little-endian MPF index with image IDs, a frame count, an unknown tag and an MP
+        // Attribute IFD holding an unknown ASCII tag. join2 fills in the sizes and offsets.
+        const uid = cat(C('MPF-UID-293a').padEnd(32, '0'), Buffer.from([0]), '0'.repeat(32), Buffer.from([0]));
+        const table = cat(le32(0x20030000), le32(0), le32(0), le16(0), le16(0), le32(0), le32(0), le32(0), le16(0), le16(0));
+        const mpfLE = cat('MPF\0', tiffLE([
+          { name: 'ifd0', next: 'attr', entries: [
+            { tag: 0xb000, type: 7, count: 4, data: Buffer.from('0100') },
+            { tag: 0xb001, type: 4, count: 1, data: le32(2) },
+            { tag: 0xb002, type: 7, data: table },
+            { tag: 0xb003, type: 7, data: uid },
+            { tag: 0xb004, type: 4, count: 1, data: le32(2) },
+            { tag: 0xb0ff, type: 2, data: C('MPF-UNKNOWN-TAG-3a4b') },
+          ] },
+          { name: 'attr', entries: [
+            { tag: 0xb101, type: 4, count: 1, data: le32(1) },
+            { tag: 0xb2ee, type: 2, data: C('MPF-ATTR-ASCII-4b5c') },
+          ] },
+        ]));
+        add('adv-gainmap-mpf-extras.jpg', join2(editSeg(prim0, isMpf, () => mpfLE), gm0), [
+          { string: C('MPF-UID-293a'), tier: 'red', location: 'MPF B003 ImageUIDList (little-endian index)' },
+          { string: C('MPF-UNKNOWN-TAG-3a4b'), tier: 'red', location: 'unknown ASCII tag B0FF in the MP Index IFD' },
+          { string: C('MPF-ATTR-ASCII-4b5c'), tier: 'red', location: 'unknown ASCII tag B2EE in the MP Attribute IFD' },
+        ], 'An MPF index with image IDs, layout details and two unknown tags.');
+      }
+      // A47 to A51. Free text in the Container directory's own fields, technical fields
+      // with free text inside the gain map, and text in the gain map's colour profile.
+      add('adv-gainmap-dir-semantic.jpg', join2(editSeg(prim0, isXmp, swap('</rdf:Seq>', `<rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="AstridHolmvik${C('DIR-SEMANTIC-5a6b')}" Item:Mime="image/astrid.holmvik" Item:Length="0"/></rdf:li></rdf:Seq>`)), gm0), [
+        { string: C('DIR-SEMANTIC-5a6b'), tier: 'red', location: 'Item:Semantic of a third Container directory entry that stands for no part' },
+      ], 'A directory entry whose role names a person and stands for nothing after the image.');
+      add('adv-gainmap-dir-mime.jpg', join2(editSeg(prim0, isXmp, swap('Item:Semantic="GainMap" Item:Mime="image/jpeg"', `Item:Semantic="GainMap" Item:Mime="image/${C('DIR-MIME-6b7c')}"`)), gm0), [
+        { string: C('DIR-MIME-6b7c'), tier: 'red', location: 'Item:Mime of the GainMap entry of the Container directory' },
+      ], 'A gain map entry whose file type is free text.');
+      add('adv-gainmap-inner-gpano.jpg', join2(prim0, editSeg(gmPlain, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/" GPano:Note="Astrid Holmvik ${C('INNER-GPANO-7c8d')}"`))), [
+        { string: C('INNER-GPANO-7c8d'), tier: 'red', location: 'GPano:Note (a technical namespace) with a name, in the gain map XMP' },
+      ], 'A name in a field of the gain map XMP whose namespace is technical.');
+      add('adv-gainmap-inner-rating.jpg', join2(prim0, editSeg(gmPlain, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="${C('INNER-RATING-8d9e')}"`))), [
+        { string: C('INNER-RATING-8d9e'), tier: 'red', location: 'xmp:Rating with text, in the gain map XMP' },
+      ], 'Text in a field of the gain map XMP that is normally a number.');
+      {
+        const text = (t) => { const d = cat('text', Buffer.alloc(4), t, Buffer.from([0])); return cat(d, Buffer.alloc((4 - (d.length % 4)) % 4)); };
+        const desc = (() => { const t = 'sRGB gain'; const d = cat('desc', Buffer.alloc(4), be32(t.length + 1), t, Buffer.alloc(1 + 8 + 3 + 67)); return cat(d, Buffer.alloc((4 - (d.length % 4)) % 4)); })();
+        const tags = [['desc', desc], ['cprt', text(`Copyright Astrid Holmvik ${C('GAINMAP-ICC-CPRT-9eaf')}`)]];
+        let at = 128 + 4 + 12 * tags.length;
+        const table = [be32(tags.length)];
+        for (const [sig, d] of tags) { table.push(Buffer.from(sig, 'latin1'), be32(at), be32(d.length)); at += d.length; }
+        const head = Buffer.alloc(128);
+        head.writeUInt32BE(at, 0); head.writeUInt32BE(0x02100000, 8); head.write('mntrRGB XYZ ', 12, 'latin1'); head.write('acsp', 36, 'latin1');
+        const profile = cat(head, ...table, ...tags.map((x) => x[1]));
+        add('adv-gainmap-icc-text.jpg', join2(prim0, jpegInsert(gmPlain, seg(0xe2, cat('ICC_PROFILE\0', Buffer.from([1, 1]), profile)))), [
+          { string: C('GAINMAP-ICC-CPRT-9eaf'), tier: 'red', location: "copyright text tag in the gain map's own colour profile" },
+        ], "A gain map with a colour profile of its own whose copyright names a person.");
+      }
+      // A61 to A63 (review 4). A prefix chosen to carry text on the photo's hdrgm:Version, an
+      // xml attribute on the gain map's own description, and a decoder table inside the gain
+      // map that no scan uses.
+      add('adv-gainmap-prefix.jpg', join2(editSeg(prim0, isXmp, (p) => swap('hdrgm:Version', `${C('HDR-PREFIX-c5d6')}:Version`)(swap('xmlns:hdrgm=', `xmlns:${C('HDR-PREFIX-c5d6')}=`)(p))), gm0), [
+        { string: C('HDR-PREFIX-c5d6'), tier: 'red', location: 'the namespace prefix of hdrgm:Version in the photo XMP' },
+      ], 'The photo XMP writes the hdrgm namespace under a prefix that is a name.');
+      add('adv-gainmap-xml-attr.jpg', join2(prim0, editSeg(gmPlain, isXmp, swap('hdrgm:Version="1.0"', `hdrgm:Version="1.0" xml:note="Astrid Holmvik ${C('GAIN-XML-ATTR-d6e7')}"`))), [
+        { string: C('GAIN-XML-ATTR-d6e7'), tier: 'red', location: 'an xml:note attribute on the gain map XMP description' },
+      ], 'An xml attribute carries a name on the gain map description.');
+      {
+        const table = Buffer.alloc(64, 0x20);
+        Buffer.from(C('GAIN-DQT-e7f8'), 'latin1').copy(table);
+        add('adv-gainmap-unused-dqt.jpg', join2(prim0, jpegInsert(gmPlain, seg(0xdb, cat(Buffer.from([0x03]), table)))), [
+          { string: C('GAIN-DQT-e7f8'), tier: 'red', location: 'a quantisation table (id 3) inside the gain map that no scan uses' },
+        ], 'A decoder table no scan reads, inside the gain map.');
+      }
+      // A65 (0.0.3, decision 4). A message spelt in white space between the nodes of both
+      // packets (the photo's and the gain map's own) and in padding after them. Nothing is
+      // planted as text: the XMP layout check must find both packets in the canonical form
+      // after every scrub, while the gain map stays and renders.
+      {
+        const ws = WS_SPELL('Astrid Holmvik');
+        const spread = (p) => Buffer.from(p.toString('latin1').replace(/></g, `>${ws}<`).replace(/(<\/x:xmpmeta>)/, `$1${' '.repeat(4000)}`), 'latin1');
+        add('adv-ws-gainmap.jpg', join2(editSeg(prim0, isXmp, spread), editSeg(gmPlain, isXmp, spread)), [], 'An Ultra HDR picture whose two XMP packets carry a message in white space and padding.');
       }
     }
+  }
+  // A52 to A60 (review 4). Free channels in details kept by default: inside colour tags and
+  // the profile header, in the count of an EXIF number, in XMP prefixes, declarations, the
+  // packet wrapper and xml attributes, and in a decoder table no scan uses.
+  {
+    const iccWith = ({ extra = [], rTRC = null, header = {} }) => {
+      const text = (t) => cat('text', Buffer.alloc(4), t, Buffer.from([0]));
+      const desc = cat('desc', Buffer.alloc(4), be32(5), 'sRGB', Buffer.alloc(1 + 8 + 3 + 67));
+      const xyz = cat('XYZ ', Buffer.alloc(4), be32(0xf6d6), be32(0x10000), be32(0xd32d));
+      const tags = [['desc', desc], ['cprt', text('No copyright, use freely')], ['wtpt', xyz], ...(rTRC ? [['rTRC', rTRC]] : []), ...extra];
+      let at = 128 + 4 + 12 * tags.length;
+      const table = [be32(tags.length)];
+      const data = [];
+      for (const [sig, d] of tags) { const pd = cat(d, Buffer.alloc((4 - (d.length % 4)) % 4)); table.push(Buffer.from(sig, 'latin1'), be32(at), be32(d.length)); data.push(pd); at += pd.length; }
+      const head = Buffer.alloc(128);
+      head.writeUInt32BE(at, 0); head.writeUInt32BE(0x02100000, 8); head.write('mntrRGB XYZ ', 12, 'latin1'); head.write('acsp', 36, 'latin1');
+      head.writeUInt32BE(0xf6d6, 68); head.writeUInt32BE(0x10000, 72); head.writeUInt32BE(0xd32d, 76);
+      for (const [o, v] of Object.entries(header)) Buffer.from(v, 'latin1').copy(head, Number(o));
+      return cat(head, ...table, ...data);
+    };
+    const iccSegOf = (p) => seg(0xe2, cat('ICC_PROFILE\0', Buffer.from([1, 1]), p));
+    add('adv-icc-curv-tail.jpg', jpegInsert(baseJpeg('b52.jpg', 96, 64, 52), iccSegOf(iccWith({ rTRC: cat('curv', Buffer.alloc(4), be32(1), Buffer.from([2, 0x33]), C('ICC-CURV-TAIL-f809')) }))), [
+      { string: C('ICC-CURV-TAIL-f809'), tier: 'red', location: 'bytes after the one value of an rTRC curve in the colour profile' },
+    ], 'A colour curve with text after its values.');
+    add('adv-icc-targ-ui08.jpg', jpegInsert(baseJpeg('b53.jpg', 96, 64, 53), iccSegOf(iccWith({ extra: [['targ', cat('ui08', Buffer.alloc(4), C('ICC-TARG-091a'))]] }))), [
+      { string: C('ICC-TARG-091a'), tier: 'red', location: 'a characterisation target tag typed as numbers (ui08) in the colour profile' },
+    ], 'A registered tag signature with a numeric type that holds text.');
+    add('adv-icc-header.jpg', jpegInsert(baseJpeg('b54.jpg', 96, 64, 54), iccSegOf(iccWith({ header: { 48: 'AstridHolmvik-1a' } }))), [
+      { string: 'AstridHolmvik-1a', tier: 'red', location: 'device maker, model and attributes in the colour profile header (16 bytes)' },
+    ], 'A name in the free fields of the colour profile header.');
+    {
+      const t = Buffer.alloc(40, 0x20);
+      Buffer.from(C('EXIF-XRES-COUNT-1a2b'), 'latin1').copy(t);
+      const tiff = tiffLE([{ name: 'ifd0', entries: [{ tag: 0x010f, type: 2, data: 'Advcam' }, { tag: 0x011a, type: 5, count: 5, data: t }] }]);
+      add('adv-exif-rational-count.jpg', jpegInsert(baseJpeg('b55.jpg', 96, 64, 55), exifSeg(tiff)), [
+        { string: C('EXIF-XRES-COUNT-1a2b'), tier: 'red', location: 'XResolution written as five fractions, the bytes spelling text' },
+      ], 'A technical EXIF number with more values than its field has.');
+    }
+    add('adv-xmp-prefix.jpg', jpegInsert(baseJpeg('b56.jpg', 96, 64, 56), xmpSeg(XMP('', `xmlns:${C('XMP-PREFIX-2b3c')}="http://ns.adobe.com/xap/1.0/" ${C('XMP-PREFIX-2b3c')}:Rating="3"`))), [
+      { string: C('XMP-PREFIX-2b3c'), tier: 'red', location: 'the namespace prefix of xmp:Rating' },
+    ], 'A technical XMP field under a prefix that is a name.');
+    add('adv-xmp-outside.jpg', jpegInsert(baseJpeg('b57.jpg', 96, 64, 57), xmpSeg(XMP('', `xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:Rating="3" xmlns:n="urn:${C('XMP-UNUSED-NS-3c4d')}" xml:note="${C('XMP-XML-ATTR-4d5e')}"`).replace('id="W5M0MpCehiHzreSzNTczkc9d"', `id="${C('XMP-XPACKET-ID-5e6f')}"`))), [
+      { string: C('XMP-UNUSED-NS-3c4d'), tier: 'red', location: 'a namespace declaration no name uses' },
+      { string: C('XMP-XML-ATTR-4d5e'), tier: 'red', location: 'an xml:note attribute on rdf:Description' },
+      { string: C('XMP-XPACKET-ID-5e6f'), tier: 'red', location: 'the id of the xpacket wrapper' },
+    ], 'Text outside the XMP property model, around a technical field.');
+    {
+      const table = Buffer.alloc(64, 0x20);
+      Buffer.from(C('PHOTO-DQT-6f70'), 'latin1').copy(table);
+      add('adv-unused-dqt.jpg', jpegInsert(baseJpeg('b58.jpg', 96, 64, 58), seg(0xdb, cat(Buffer.from([0x03]), table))), [
+        { string: C('PHOTO-DQT-6f70'), tier: 'red', location: 'a quantisation table (id 3) no scan uses' },
+      ], 'A decoder table no scan reads.');
+    }
+  }
+  // A64, A66, A67 (0.0.3, decision 4). A message spelt in white space between the nodes of
+  // a packet, inside its start tags and in 4,000 bytes of padding, around a date (amber,
+  // kept by the page's starting selection, which ticks red only) and a technical rating (green, kept), in JPEG, PNG and
+  // WebP. The XMP layout check must find every packet in the canonical form after every
+  // scrub; the planted creator goes as usual.
+  {
+    const ws = WS_SPELL('Fjordveien 12, Bergen');
+    const packet = (tag) => XMP(`${ws}<xmp:CreateDate>${ws}2025-03-04T05:06:07${ws}</xmp:CreateDate>${ws}<dc:creator>${ws}<rdf:Seq><rdf:li>${C(tag)}</rdf:li></rdf:Seq>${ws}</dc:creator>${ws}`,
+      `${ws}xmlns:xmp="http://ns.adobe.com/xap/1.0/"${ws}xmlns:dc="http://purl.org/dc/elements/1.1/"${ws}xmp:Rating="3"${ws}`).replace('</x:xmpmeta>', `</x:xmpmeta>${' '.repeat(4000)}`);
+    add('adv-ws-photo.jpg', jpegInsert(baseJpeg('b64.jpg', 96, 64, 64), xmpSeg(packet('WS-JPEG-CREATOR-0b1c'))), [
+      { string: C('WS-JPEG-CREATOR-0b1c'), tier: 'red', location: 'dc:creator in an XMP packet laid out with a message in white space' },
+    ], 'An XMP packet whose white space and padding spell a message.');
+    const png = magickTo(advPath('b66.png'), ['-seed', '66', '-size', '96x64', 'plasma:fractal', '-strip']);
+    const iend = png.length - 12;
+    const itxt = (kw, text) => { const body = cat(kw, Buffer.from([0, 0, 0, 0, 0]), Buffer.from(text, 'utf8')); const d = cat('iTXt', body); return cat(be32(body.length), d, be32(zlib.crc32(d))); };
+    add('adv-ws.png', cat(png.subarray(0, iend), itxt('XML:com.adobe.xmp', packet('WS-PNG-CREATOR-1c2d')), png.subarray(iend)), [
+      { string: C('WS-PNG-CREATOR-1c2d'), tier: 'red', location: 'dc:creator in an iTXt XMP packet laid out with a message in white space' },
+    ], 'A PNG XMP packet whose white space and padding spell a message.');
+    sh('magick', ['-seed', '67', '-size', '96x64', 'plasma:fractal', '-quality', '80', advPath('b67.webp')]);
+    tryRun('exiftool', ['-q', '-overwrite_original', '-XMP-xmp:Rating=1', advPath('b67.webp')]);
+    const wb = readFileSync(advPath('b67.webp'));
+    const chunks = [];
+    for (let q = 12; q + 8 <= wb.length;) {
+      const n = wb.readUInt32LE(q + 4);
+      if (wb.toString('latin1', q, q + 4) === 'XMP ') { const x = Buffer.from(packet('WS-WEBP-CREATOR-2d3e'), 'utf8'); chunks.push(cat('XMP ', le32(x.length), x, x.length & 1 ? Buffer.alloc(1) : Buffer.alloc(0))); }
+      else chunks.push(wb.subarray(q, q + 8 + n + (n & 1)));
+      q += 8 + n + (n & 1);
+    }
+    const body = cat(...chunks);
+    add('adv-ws.webp', cat('RIFF', le32(body.length + 4), 'WEBP', body), [
+      { string: C('WS-WEBP-CREATOR-2d3e'), tier: 'red', location: 'dc:creator in a WebP XMP chunk laid out with a message in white space' },
+    ], 'A WebP XMP packet whose white space and padding spell a message.');
   }
   return list;
 }
@@ -1198,7 +1687,7 @@ function extractHeic(b) {
   for (let i = 0; i < k; i++) { if (flags & 1) { assoc.push(b.readUInt16BE(q)); q += 2; } else assoc.push(b[q++]); }
   return { data: Buffer.concat(parts), props: assoc.map((a) => ({ box: props[(a & 0x7fff & (flags & 1 ? 0x7fff : 0x7f)) - 1], essential: !!(a & (flags & 1 ? 0x8000 : 0x80)) })) };
 }
-function heicBuild({ prim, items = [], extraProps = [], top = [] }) {
+function heicBuild({ prim, items = [], extraProps = [], top = [], refs = [] }) {
   const box = (type, ...parts) => { const body = cat(...parts); return cat(be32(8 + body.length), type, body); };
   const fullbox = (type, v, flags, ...parts) => box(type, Buffer.from([v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
   const all = [{ id: 1, type: 'hvc1', data: prim.data }, ...items];
@@ -1206,23 +1695,138 @@ function heicBuild({ prim, items = [], extraProps = [], top = [] }) {
   const metaFor = (offsets) => {
     const hdlr = fullbox('hdlr', 0, 0, be32(0), 'pict', Buffer.alloc(12), Buffer.from([0]));
     const pitm = fullbox('pitm', 0, 0, be16(1));
-    const infe = (it) => fullbox('infe', 2, 0, be16(it.id), be16(0), it.type, Buffer.from([0]), ...(it.type === 'mime' ? [`${it.contentType}\0`] : []));
+    const infe = (it) => fullbox('infe', 2, it.hidden ? 1 : 0, be16(it.id), be16(0), it.type, Buffer.from([0]), ...(it.type === 'mime' ? [`${it.contentType}\0`] : []));
     const iinf = fullbox('iinf', 0, 0, be16(all.length), ...all.map(infe));
+    const iref = refs.length ? [fullbox('iref', 0, 0, ...refs.map(([type, from, to]) => box(type, be16(from), be16(1), be16(to))))] : [];
     const ipco = box('ipco', ...prim.props.map((x) => x.box), ...extraProps.map((x) => x.box));
     const assocOf = new Map([[1, prim.props.map((x, i) => (x.essential ? 0x80 : 0) | (i + 1))]]);
     extraProps.forEach((x, i) => { const id = x.item || 1; if (!assocOf.has(id)) assocOf.set(id, []); assocOf.get(id).push((x.essential ? 0x80 : 0) | (prim.props.length + 1 + i)); });
     const ipma = fullbox('ipma', 0, 0, be32(assocOf.size), ...[...assocOf].map(([id, a]) => cat(be16(id), Buffer.from([a.length]), Buffer.from(a))));
     const iprp = box('iprp', ipco, ipma);
     const iloc = fullbox('iloc', 1, 0, Buffer.from([0x44, 0x00]), be16(all.length), ...all.map((it) => cat(be16(it.id), be16(0), be16(0), be16(1), be32(offsets[it.id] || 0), be32(it.data.length))));
-    return fullbox('meta', 0, 0, hdlr, pitm, iinf, iprp, iloc);
+    return fullbox('meta', 0, 0, hdlr, pitm, iinf, ...iref, iprp, iloc);
   };
   const layout = (metaLen) => { const o = {}; let p = ftyp.length + metaLen + 8; for (const it of all) { o[it.id] = p; p += it.data.length; } return o; };
   const meta = metaFor(layout(metaFor({}).length));
   return cat(ftyp, meta, box('mdat', ...all.map((it) => it.data)), ...top);
 }
 
+// libheif's view of HEIC files (python3 ctypes over libheif.so.1): the primary picture's
+// pixels and the auxiliary images attached to it, with their names and pixels.
+function heifInfo(files) {
+  const script = join(OUT, 'heif-info.py');
+  if (!existsSync(script)) {
+    writeFileSync(script, `import ctypes, sys, hashlib, json
+L = ctypes.CDLL('libheif.so.1')
+class Err(ctypes.Structure):
+    _fields_ = [('code', ctypes.c_int), ('subcode', ctypes.c_int), ('message', ctypes.c_char_p)]
+V = ctypes.c_void_p
+L.heif_context_alloc.restype = V
+L.heif_context_read_from_file.argtypes = [V, ctypes.c_char_p, V]
+L.heif_context_read_from_file.restype = Err
+L.heif_context_get_primary_image_handle.argtypes = [V, ctypes.POINTER(V)]
+L.heif_context_get_primary_image_handle.restype = Err
+L.heif_image_handle_get_number_of_auxiliary_images.argtypes = [V, ctypes.c_int]
+L.heif_image_handle_get_list_of_auxiliary_image_IDs.argtypes = [V, ctypes.c_int, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int]
+L.heif_image_handle_get_auxiliary_image_handle.argtypes = [V, ctypes.c_uint32, ctypes.POINTER(V)]
+L.heif_image_handle_get_auxiliary_image_handle.restype = Err
+L.heif_image_handle_get_auxiliary_type.argtypes = [V, ctypes.POINTER(ctypes.c_char_p)]
+L.heif_image_handle_get_auxiliary_type.restype = Err
+L.heif_decode_image.argtypes = [V, ctypes.POINTER(V), ctypes.c_int, ctypes.c_int, V]
+L.heif_decode_image.restype = Err
+L.heif_image_get_plane_readonly.argtypes = [V, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+L.heif_image_get_plane_readonly.restype = ctypes.POINTER(ctypes.c_uint8)
+L.heif_image_get_height.argtypes = [V, ctypes.c_int]
+L.heif_context_get_number_of_top_level_images.argtypes = [V]
+def pixels(h):
+    img = V()
+    if L.heif_decode_image(h, ctypes.byref(img), 99, 99, None).code: return None
+    hs = hashlib.sha256()
+    for ch in (0, 1, 2):
+        stride = ctypes.c_int()
+        p = L.heif_image_get_plane_readonly(img, ch, ctypes.byref(stride))
+        if p: hs.update(ctypes.string_at(p, stride.value * L.heif_image_get_height(img, ch)))
+    return hs.hexdigest()
+out = {}
+for f in sys.argv[1:]:
+    ctx = L.heif_context_alloc()
+    e = L.heif_context_read_from_file(ctx, f.encode(), None)
+    if e.code:
+        out[f] = {'error': e.message.decode()}
+        continue
+    h = V()
+    L.heif_context_get_primary_image_handle(ctx, ctypes.byref(h))
+    n = L.heif_image_handle_get_number_of_auxiliary_images(h, 0)
+    ids = (ctypes.c_uint32 * max(n, 1))()
+    L.heif_image_handle_get_list_of_auxiliary_image_IDs(h, 0, ids, n)
+    aux = []
+    for i in range(n):
+        a = V()
+        L.heif_image_handle_get_auxiliary_image_handle(h, ids[i], ctypes.byref(a))
+        t = ctypes.c_char_p()
+        L.heif_image_handle_get_auxiliary_type(a, ctypes.byref(t))
+        aux.append({'type': t.value.decode('latin1') if t.value else '', 'pixels': pixels(a)})
+    out[f] = {'primary': pixels(h), 'aux': aux, 'top': L.heif_context_get_number_of_top_level_images(ctx)}
+print(json.dumps(out))
+`);
+  }
+  const r = tryRun('python3', [script, ...files]);
+  return r.ok ? JSON.parse(r.out) : null;
+}
+
+// 0.0.3, decision 5. An iPhone HDR HEIC prepared with the default (red only) and with the
+// red-and-amber selection keeps its gain map attached under Apple's exact name, decoding to the
+// same pixels, and the photo keeps Apple's two HDR numbers (exiftool HDRHeadroom and
+// HDRGain read the same). A layer whose name is not exactly a known one must be gone.
+function heicHdrCheck(label, inFile, rec, keep) {
+  const APPLE_AUX = 'urn:com:apple:photo:2020:aux:hdrgainmap';
+  const repro = `python3 ${join(OUT, 'heif-info.py')} ${inFile} ${rec.redFile}; exiftool -s -n -AuxiliaryImageType -Apple:HDRHeadroom -Apple:HDRGain ${rec.redFile}`;
+  // The red-and-amber selection is checked too when it keeps the gain map (it ticks amber
+  // details unless they belong to an HDR gain map).
+  const outs = [['red-only', rec.redFile], ...(keep && (rec.startIds || []).includes('heic:gain-map') ? [] : [['red-and-amber', rec.startFile]])];
+  const heif = heifInfo([inFile, ...outs.map((x) => x[1])]);
+  if (!heif) { finding('medium', label, 'libheif', 'libheif could not be run through python3 ctypes, so the HDR gain map was not checked.', repro); return null; }
+  const rows = (f) => Object.fromEntries(tryRun('exiftool', ['-s', '-n', '-AuxiliaryImageType', '-Apple:HDRHeadroom', '-Apple:HDRGain', f]).out.split('\n').filter(Boolean).map((l) => l.split(/\s+:\s?/)));
+  const rin = rows(inFile);
+  const hin = heif[inFile];
+  const notes = [];
+  for (const [which, f] of outs) {
+    const h = heif[f];
+    if (!h || h.error) { finding('high', label, 'libheif', `libheif cannot read the ${which} output: ${h && h.error}`, repro); continue; }
+    if (h.primary !== hin.primary) finding('high', label, 'libheif', `The ${which} output decodes to different pixels than the input.`, repro);
+    if (!keep) {
+      if (h.aux.length) finding('critical', label, 'auxiliary image', `After the ${which} scrub an auxiliary image is still attached: ${h.aux.map((a) => a.type).join(', ')}.`, repro);
+      else notes.push(`${which}: no layer attached`);
+      continue;
+    }
+    const r = rows(f);
+    const aux = h.aux.find((a) => a.type === APPLE_AUX);
+    if (!aux) finding('high', label, 'HDR gain map', `After the ${which} scrub the HDR gain map is no longer attached under Apple's name (libheif sees ${h.aux.map((a) => a.type).join(', ') || 'no auxiliary image'}).`, repro);
+    else if (aux.pixels !== hin.aux[0].pixels) finding('high', label, 'HDR gain map', `After the ${which} scrub the HDR gain map decodes to different pixels.`, repro);
+    if (r.AuxiliaryImageType !== APPLE_AUX) finding('high', label, 'HDR gain map', `exiftool reads the ${which} output's AuxiliaryImageType as ${JSON.stringify(r.AuxiliaryImageType)}.`, repro);
+    if (r.HDRHeadroom !== rin.HDRHeadroom || r.HDRGain !== rin.HDRGain) finding('high', label, 'Apple HDR brightness', `After the ${which} scrub HDRHeadroom and HDRGain read ${r.HDRHeadroom} and ${r.HDRGain}, the input ${rin.HDRHeadroom} and ${rin.HDRGain}.`, repro);
+    if (aux && r.HDRHeadroom === rin.HDRHeadroom && r.HDRGain === rin.HDRGain) notes.push(`${which}: gain map attached as ${APPLE_AUX}, same pixels, HDRHeadroom ${r.HDRHeadroom}, HDRGain ${r.HDRGain}`);
+  }
+  const text = notes.join('; ');
+  if (notes.length === outs.length) pass(`${label}: ${text}`);
+  return text;
+}
+
 async function sectionAdversarial(records) {
   const list = buildAdversarial();
+  // A72 onwards (review of 4 October 2026): the hidden-channel probes the engine tests use
+  // (tests/probes.mjs), built into the core fixture folder.
+  {
+    const prev = process.env.MS_FIXTURE_DIR;
+    process.env.MS_FIXTURE_DIR = CORE_FIX;
+    const F = await import(pathToFileURL(join(HERE, 'core-fixtures.mjs')).href);
+    const { privacyProbes } = await import(pathToFileURL(join(HERE, 'probes.mjs')).href);
+    if (prev === undefined) delete process.env.MS_FIXTURE_DIR; else process.env.MS_FIXTURE_DIR = prev;
+    for (const p of privacyProbes(F)) {
+      writeFileSync(advPath(p.name), p.bytes);
+      list.push({ name: p.name, bytes: Buffer.from(p.bytes), canaries: p.canaries, note: p.note });
+    }
+  }
   for (const a of list) {
     const file = advPath(a.name);
     log(`[adversarial] ${a.name}`);
@@ -1230,8 +1834,9 @@ async function sectionAdversarial(records) {
     const decodes = { magick: magickIdentify(file).ok, pil: a.name.endsWith('.heic') ? null : pilHashes([file])[file]?.ok };
     const et = USE_EXIFTOOL ? tryRun('exiftool', ['-a', '-u', '-U', '-G1', '-ee3', '-s', '-m', file]).out : '';
     const shownBy = a.canaries.filter((c) => et.includes(c.string)).map((c) => c.string);
-    const rec = await evaluate(`adv/${a.name}`, file, a.bytes, a.canaries.map((c) => ({ ...c, basis: 'spec' })), { section: 'adversarial', gainMapGap: !!a.gainMapGap });
+    const rec = await evaluate(`adv/${a.name}`, file, a.bytes, a.canaries.map((c) => ({ ...c, basis: 'spec' })), { section: 'adversarial' });
     rec.note = a.note;
+    if (a.appleHdr || a.auxGone) rec.heicHdr = heicHdrCheck(`adv/${a.name}`, file, rec, !!a.appleHdr);
     rec.inputDecodes = decodes;
     rec.exiftoolShows = shownBy;
     records.push(rec);
@@ -1240,7 +1845,7 @@ async function sectionAdversarial(records) {
 
 // ======================================================================================
 // Section 3b: the re-encode path (crop, resize, rotation baked in). buildExif() with every
-// non-red detail kept (red only, stricter than the page's starting selection), inserted into
+// non-red detail kept (red only, as the page's starting selection since 0.0.3), inserted into
 // freshly encoded pictures; no red string may follow.
 
 async function sectionReencode(records) {
@@ -1586,15 +2191,69 @@ function toolChecks(records) {
           const gps = rows.filter((r) => r.group !== 'PNG' && (/GPS(Latitude|Longitude|Position|Coordinates)/i.test(r.tag) || /^(GPSCoordinates|Location)$/.test(r.tag)));
           const detail = `exiftool still reads a position from the red-only output: ${gps.map((r) => `[${r.group}] ${r.tag}: ${r.value}`).slice(0, 4).join(' ; ')}`;
           const reproduce = `exiftool -a -G1 -ee3 -U -gps:all -xmp:all ${f}`;
-          // Inside the amber HDR gain map description: the same gap as step 2c.
-          if (gps.length && o.gainMapGap && gps.every((r) => /^XMP-(hdrgm|HDRGainMap|GContainer)$/.test(r.group))) gaps.push({ fixture: o.fixture, location: 'red-only output', detail, reproduce });
-          else if (gps.length) finding('critical', o.fixture, 'red-only output', detail, reproduce, `etgps|${o.fixture}`);
+          if (gps.length) finding('critical', o.fixture, 'red-only output', detail, reproduce, `etgps|${o.fixture}`);
         }
       }
     }
+    if (o.hdrKept && o.format === 'jpeg' && USE_EXIFTOOL && !o.rec.hdrFellBack) integ.gainMap = gainMapCheck(o);
     if (rec) rec.integrity = integ;
   }
   writeFileSync(join(OUT, 'exiftool-leftovers.json'), JSON.stringify(exiftoolReport, null, 1));
+}
+
+// The HDR gain map the red-and-amber selection keeps: a whole JPEG found through MPF, with the
+// input gain map's pixels, the length the Container directory gives, and the input's
+// hdrgm values (no more, no other).
+const HDRGM_TAGS = new Set(['Version', 'GainMapMin', 'GainMapMax', 'Gamma', 'OffsetSDR', 'OffsetHDR', 'HDRCapacityMin', 'HDRCapacityMax', 'BaseRenditionIsHDR']);
+function gainMapCheck(o) {
+  const repro = `exiftool -b -MPImage2 ${o.startFile} > gm.jpg; compare with exiftool -b -MPImage2 ${o.inFile}`;
+  const bad = (detail) => { finding('high', o.fixture, 'kept HDR gain map', detail, repro); return detail; };
+  const extract = (f, tag) => spawnSync('exiftool', ['-b', `-${tag}`, f], { maxBuffer: 256 << 20 }).stdout;
+  const gIn = extract(o.inFile, 'MPImage2');
+  const gOut = extract(o.startFile, 'MPImage2');
+  if (!gOut || !gOut.length) return bad('The red-and-amber selection keeps the HDR gain map, but exiftool finds no second image through MPF.');
+  if (gOut[0] !== 0xff || gOut[1] !== 0xd8 || gOut[2] !== 0xff || gOut.indexOf(Buffer.from([0xff, 0xd9])) < 0) return bad('The image MPF points at is not a whole JPEG.');
+  const safe = o.fixture.replace(/[^A-Za-z0-9._-]+/g, '_');
+  const fIn = join(OUT, 'outputs', `${safe}.gainmap-in.jpg`);
+  const fOut = join(OUT, 'outputs', `${safe}.gainmap-start.jpg`);
+  writeFileSync(fIn, gIn);
+  writeFileSync(fOut, gOut);
+  const px = pilHashes([fIn, fOut]);
+  if (!px[fOut] || !px[fOut].ok) return bad(`Pillow cannot decode the kept gain map: ${px[fOut] && px[fOut].error}`);
+  if (px[fIn] && px[fIn].ok && px[fIn].hash !== px[fOut].hash) return bad('The kept gain map decodes to different pixels than the input gain map.');
+  const text = readFileSync(o.startFile).toString('utf8');
+  const item = /<Container:Item\b[^>]*Item:Semantic="GainMap"[^>]*>/.exec(text);
+  const len = item && /Item:Length="(\d+)"/.exec(item[0]);
+  if (len && Number(len[1]) !== gOut.length) return bad(`The Container directory gives the gain map ${len[1]} bytes, the MPF index ${gOut.length}.`);
+  const hdrgm = (f) => tryRun('exiftool', ['-s', '-n', '-XMP-hdrgm:all', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
+  // A number written with more digits than a single-precision value has is written again
+  // rounded to nine significant digits, so that rounded form counts as the input's value.
+  const rounded = (x) => { const [k, v] = x.split('='); const n = Number(v); return v && Number.isFinite(n) && /\d/.test(v) ? `${k}=${String(Number(n.toPrecision(9)))}` : x; };
+  const before = new Set(hdrgm(fIn).flatMap((x) => [x, rounded(x)]));
+  const after = hdrgm(fOut);
+  const odd = after.filter((x) => !before.has(x) || !HDRGM_TAGS.has(x.split('=')[0]));
+  if (odd.length) return bad(`The kept gain map holds hdrgm values the input did not, or fields a gain map does not need: ${odd.join(', ')}.`);
+  if ([...before].some((x) => x.startsWith('Version=')) && !after.some((x) => x.startsWith('Version='))) return bad('The kept gain map lost its hdrgm:Version.');
+  // An Apple gain map keeps HDRGainMapVersion, the exact apdi:AuxiliaryImageType Chrome
+  // requires, and the photo keeps the HDR numbers of its MakerNote (Apple tags 33 and 48).
+  const APPLE_TYPE = 'urn:com:apple:photo:2020:aux:hdrgainmap';
+  const appleXmp = (f) => tryRun('exiftool', ['-s', '-n', '-XMP-HDRGainMap:all', '-XMP-apdi:all', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
+  const aIn = appleXmp(fIn);
+  const aOut = appleXmp(fOut);
+  let apple = '';
+  if (aIn.length) {
+    const oddA = aOut.filter((x) => !aIn.includes(x) || !['HDRGainMapVersion', 'HDRGainMapHeadroom', 'AuxiliaryImageType'].includes(x.split('=')[0]) || (x.startsWith('AuxiliaryImageType=') && x !== `AuxiliaryImageType=${APPLE_TYPE}`));
+    if (oddA.length) return bad(`The kept Apple gain map holds fields a gain map does not need: ${oddA.join(', ')}.`);
+    if (aIn.includes(`AuxiliaryImageType=${APPLE_TYPE}`) && !aOut.includes(`AuxiliaryImageType=${APPLE_TYPE}`)) return bad('The kept Apple gain map lost its apdi:AuxiliaryImageType.');
+    const head = (f) => tryRun('exiftool', ['-s', '-n', '-Apple:HDRHeadroom', '-Apple:HDRGain', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
+    const hIn = head(o.inFile);
+    const hOut = head(o.startFile);
+    // Only a number counts: a zero denominator (exiftool prints "undef") gives readers no headroom.
+    const num = (x) => /^HDRHeadroom=-?\d/.test(x);
+    if (hIn.some(num) && !hOut.some(num)) return bad('The photo lost the Apple HDR headroom the gain map needs.');
+    apple = `, Apple: ${[...aOut, ...hOut].join(', ')}`;
+  }
+  return `whole JPEG, ${gOut.length} bytes, same pixels, directory length ${len ? len[1] : 'not given'}, ${after.length} hdrgm values${apple}`;
 }
 
 // ======================================================================================
@@ -1614,24 +2273,23 @@ for (const r of records.filter((x) => x.canaries)) {
   const leaksDefault = r.canaries.filter((c) => c.expected === 'red' && c.leftAfterDefault).length;
   const leaksStart = r.canaries.filter((c) => (c.expected === 'red' || c.expected === 'amber') && c.leftAfterStart).length;
   const leaksAll = r.canaries.filter((c) => c.leftAfterAll).length;
-  if (!leaksDefault && !leaksStart && !leaksAll && r.canaries.length) pass(`${r.label}: all ${r.canaries.length} planted strings behave (no red left after the red-only scrub, no red or amber left after the starting selection, nothing left with every detail ticked)`);
+  const leaksMin = r.canaries.filter((c) => (c.expected === 'red' || c.expected === 'amber') && c.leftAfterMin).length;
+  if (!leaksDefault && !leaksStart && !leaksMin && !leaksAll && r.canaries.length) pass(`${r.label}: all ${r.canaries.length} planted strings behave (no red left after the red-only scrub, no red or amber left after the red-and-amber selection${r.hdrKept ? ', which keeps the HDR gain map, or with the gain map ticked too' : ''}, nothing left with every detail ticked)`);
+  if (r.hdrKept && r.integrity && typeof r.integrity.gainMap === 'string') pass(`${r.label}: the kept HDR gain map renders (${r.integrity.gainMap})`);
 }
 const order = { critical: 0, high: 1, medium: 2, low: 3 };
 findings.sort((a, b) => order[a.severity] - order[b.severity] || a.fixture.localeCompare(b.fixture));
 const summary = Object.fromEntries(Object.keys(order).map((k) => [k, findings.filter((f) => f.severity === k).length]));
-writeFileSync(join(OUT, 'report.json'), JSON.stringify({ summary, findings, gaps, passed, records: records.map((r) => ({ ...r, items: r.items && r.items.map((i) => `${i.tier}:${i.id} ${i.label} = ${i.value}`) })) }, null, 1));
+writeFileSync(join(OUT, 'report.json'), JSON.stringify({ summary, findings, passed, records: records.map((r) => ({ ...r, items: r.items && r.items.map((i) => `${i.tier}:${i.id} ${i.label} = ${i.value}`) })) }, null, 1));
 const txt = [
   `MetadataScrubber engine audit, ${new Date().toISOString()}`,
   `Findings: ${JSON.stringify(summary)}`,
   '',
   ...findings.map((f) => `[${f.severity.toUpperCase()}] ${f.fixture} | ${f.location}\n  ${f.detail}\n  Reproduce: ${f.reproduce}`),
   '',
-  `Known engine gaps when the HDR gain map is kept (${gaps.length}; not findings, they are why the gain map starts ticked):`,
-  ...gaps.map((g) => `[GAP] ${g.fixture} | ${g.location}\n  ${g.detail}\n  Reproduce: ${g.reproduce}`),
-  '',
   'Passed:',
   ...passed.map((p) => `  ${p}`),
 ].join('\n');
 writeFileSync(join(OUT, 'report.txt'), txt + '\n');
-log(`\nDone in ${Math.round((Date.now() - t0) / 1000)} s. Findings: ${JSON.stringify(summary)}. Known gaps with the HDR gain map kept: ${gaps.length}. Report: ${join(OUT, 'report.txt')}`);
+log(`\nDone in ${Math.round((Date.now() - t0) / 1000)} s. Findings: ${JSON.stringify(summary)}. Report: ${join(OUT, 'report.txt')}`);
 process.exitCode = summary.critical || summary.high ? 1 : 0;

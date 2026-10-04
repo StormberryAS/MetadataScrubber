@@ -2,7 +2,7 @@ package no.stormberry.metadatascrubber
 
 /**
  * Makes a file name safe to write into the share cache and to offer to the system "save"
- * screen. The page already names results like `image.minimal.jpg`, but the name part is
+ * screen. The page already names results like `image.public.jpg`, but the name part is
  * typed by the user, so it is treated as untrusted here: no path separators, no control
  * characters, no names that mean "this folder", and an extension that matches the bytes.
  */

@@ -42,7 +42,7 @@ import { tmpdir } from 'node:os';
 import { crc32, deflateSync } from 'node:zlib';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GROUPS, detectFormat, inspect, privacyWord } from '../src/scrub-core.js';
+import { GROUPS, detectFormat, inspect, privacyWord, scrub } from '../src/scrub-core.js';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -86,7 +86,8 @@ const ZAPSTORE = 'https://zapstore.dev/apps/no.stormberry.metadatascrubber';
 // Preconditions
 
 const NEED = ['jpeg-everything.jpg', 'jpeg-orientation-6.jpg', 'jpeg-large.jpg', 'png-transparent.png', 'webp-everything.webp',
-  'heic-everything.heic', 'png-everything.png', 'jpeg-motion-photo.jpg', 'jpeg-ultrahdr-like.jpg', 'not-an-image.pdf', 'truncated.jpg', 'jpeg-ifd-overflow.jpg', 'canaries.tsv'];
+  'heic-everything.heic', 'png-everything.png', 'jpeg-motion-photo.jpg', 'jpeg-ultrahdr-like.jpg', 'not-an-image.pdf', 'truncated.jpg', 'jpeg-ifd-overflow.jpg', 'canaries.tsv',
+  'jpeg-uhdr-hdrgm-extra.jpg', 'jpeg-uhdr-bare-after-eoi.jpg'];
 for (const f of NEED) {
   if (!existsSync(join(FIX, f))) {
     console.error(`Missing fixture ${f}. Build the fixtures first: tests/fixtures/make-fixtures.sh`);
@@ -624,6 +625,16 @@ async function verifyDownload(page, file, { fixture, base = 'image', index = nul
 }
 
 // Presses the button when nothing would change, and returns what the page did instead.
+// A fixture with its XMP already in the engine's standard form (0.0.3: XMP is only ever
+// kept in that form, so a file whose XMP is not yet so changes even with nothing ticked).
+// Flows that need "nothing ticked, nothing changes" load this copy.
+async function standardCopy(name) {
+  mkdirSync(CHECKS, { recursive: true });
+  const out = join(CHECKS, name.replace(/\.(\w+)$/, '.standard.$1'));
+  if (!existsSync(out)) writeFileSync(out, (await scrub(new Uint8Array(readFileSync(join(FIX, name))), [])).bytes);
+  return out;
+}
+
 async function pressExpectingNothing(p) {
   await p.click('#go-btn');
   await p.waitFor("!document.getElementById('go-nothing').hidden", 10000, 'the "nothing to change" message');
@@ -741,29 +752,33 @@ flow('jpeg-default', DESKTOP, async (p) => {
   check('in a section of one group (green, all Technical), no detail repeats the group word', !mixedTier('green') && meta.rows.filter((r) => !mixedTier(r.tier)).every((r) => r.group === undefined), meta.rows.filter((r) => !mixedTier(r.tier) && r.group !== undefined).map((r) => [r.id, r.group]));
   const groupOrder = (tier) => meta.rows.filter((r) => r.tier === tier).map((r) => GROUPS.findIndex((g) => g.label === srcGroup.get(r.id)));
   check('within a section, details follow the group order', ['red', 'amber', 'green'].every((t) => groupOrder(t).every((g, i, a) => !i || a[i - 1] <= g)), ['red', 'amber', 'green'].map(groupOrder));
-  // Decision of 2026-10-03 (Marcos): red and amber are ticked to start with, green is not.
-  check('red and amber details are ticked to start with, green details are not', meta.rows.every((r) => r.checked === (r.tier !== 'green')), meta.rows.filter((r) => r.checked !== (r.tier !== 'green')).map((r) => r.id));
+  // Decision of 2026-10-04 (Marcos, 0.0.3): only red is ticked to start with; amber and
+  // green are kept unless the user ticks them.
+  check('red details are ticked to start with, amber and green details are not', meta.rows.every((r) => r.checked === (r.tier === 'red')), meta.rows.filter((r) => r.checked !== (r.tier === 'red')).map((r) => r.id));
   // Decision of 2026-10-02: the computer name is its own red detail; editing software stays amber.
   const computerRow = meta.rows.find((r) => r.id === 'exif:computer');
   check('"Computer name" is its own red detail, ticked to start with', !!computerRow && computerRow.tier === 'red' && computerRow.checked && computerRow.label === 'Computer name', computerRow);
   const softwareRow = meta.rows.find((r) => r.id === 'exif:software');
-  check('"Editing software" stays amber and, like all amber, is ticked to start with', !!softwareRow && softwareRow.tier === 'amber' && softwareRow.checked && softwareRow.label === 'Editing software', softwareRow);
+  check('"Editing software" stays amber and, like all amber, starts unticked', !!softwareRow && softwareRow.tier === 'amber' && !softwareRow.checked && softwareRow.label === 'Editing software', softwareRow);
+  // Decision of 2026-10-04: free text that can name people is red, so it is ticked.
+  const freeText = meta.rows.filter((r) => ['exif:description', 'xmp:description', 'iptc:caption', 'iptc:keywords', 'jpeg:comment'].includes(r.id));
+  check('captions, descriptions, keywords and comments are red and ticked to start with', freeText.length >= 4 && freeText.every((r) => r.tier === 'red' && r.checked), freeText);
   check('each detail shows its tier as a word as well as a colour', meta.rows.every((r) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier] && r.badgeTier === r.tier), meta.rows.filter((r) => r.badge !== { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier]).map((r) => r.id));
   const colours = new Map(meta.rows.map((r) => [r.tier, r.colour]));
   check('the three tiers have three different colours', new Set(colours.values()).size === 3, Object.fromEntries(colours));
   check('each detail shows where it was found (EXIF, XMP, IPTC and so on)', meta.rows.every((r) => r.source && r.source.length > 1));
   const MEANING = {
     red: 'Red Remove before sharing. Can identify you, your camera or the place. Removed by default.',
-    amber: 'Amber Think about it. Can reveal routines, devices or history. Removed by default.',
+    amber: 'Amber Think about it. Can reveal routines, devices or history. Kept unless you tick it.',
     green: 'Green Harmless and useful. Helps the picture display correctly. Kept by default.',
   };
   check('each section carries its tier word and its explanation, word for word', meta.sections.every((x) => x.text.replace(/\s+/g, ' ').trim() === MEANING[x.tier] && x.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[x.tier]), meta.sections);
   check('the separate colour legend is gone', !meta.legend);
   check('there are no quick choice buttons (Red only, Red and amber, Select all, None)', !meta.quick);
-  check('the intro says what is ticked to start with, word for word', meta.intro === 'Ticked details will be removed. Red and amber details are ticked to start with.', meta.intro);
-  check('the count line counts details: "34 of 42 details ticked for removal."', meta.count === `${src.items.filter((i) => i.tier !== 'green').length} of ${src.items.length} details ticked for removal.`, meta.count);
+  check('the intro says what is ticked to start with, word for word', meta.intro === 'Ticked details will be removed. Red details are ticked to start with; amber and green are kept unless you tick them.', meta.intro);
+  check(`the count line counts details: "${src.items.filter((i) => i.tier === 'red').length} of ${src.items.length} details ticked for removal."`, meta.count === `${src.items.filter((i) => i.tier === 'red').length} of ${src.items.length} details ticked for removal.`, meta.count);
   check('the page says this is lossless', /^Lossless/.test(meta.mode), meta.mode);
-  check('the expected name is image.minimal.jpg', /Expected name: image\.minimal\.jpg\./.test(meta.preview), meta.preview);
+  check('the expected name is image.public.jpg', /Expected name: image\.public\.jpg\./.test(meta.preview), meta.preview);
   check('preview drawn at the picture shape (880 x 660)', meta.canvas[0] * 660 === meta.canvas[1] * 880 && /880 × 660/.test(meta.summary), meta);
   check('the one button says "Prepare picture"', await p.ev("document.getElementById('go-btn').textContent") === 'Prepare picture');
   await textCheck(p, 'loaded file');
@@ -786,24 +801,26 @@ flow('jpeg-default', DESKTOP, async (p) => {
     return a && { tag: a.tagName, text: a.textContent, hasDownload: a.hasAttribute('download'), blob: (a.getAttribute('href') || '').startsWith('blob:'), name: a.download,
       said: document.getElementById('announcer').textContent, words: (document.getElementById('results').innerText.match(/\\bdownload\\w*/gi) || []) };
   })()`);
-  check('the result button says "Save image.minimal.jpg"', saveBtn && saveBtn.text === 'Save image.minimal.jpg', saveBtn);
-  check('the result button is still a download link to a blob: address (the Android bridge relies on it)', saveBtn && saveBtn.tag === 'A' && saveBtn.hasDownload && saveBtn.blob && saveBtn.name === 'image.minimal.jpg', saveBtn);
-  check('the announcement says the file is ready to save', saveBtn && /^Done\. image\.minimal\.jpg is ready to save\./.test(saveBtn.said), saveBtn && saveBtn.said);
+  check('the result button says "Save image.public.jpg"', saveBtn && saveBtn.text === 'Save image.public.jpg', saveBtn);
+  check('the result button is still a download link to a blob: address (the Android bridge relies on it)', saveBtn && saveBtn.tag === 'A' && saveBtn.hasDownload && saveBtn.blob && saveBtn.name === 'image.public.jpg', saveBtn);
+  check('the announcement says the file is ready to save', saveBtn && /^Done\. image\.public\.jpg is ready to save\./.test(saveBtn.said), saveBtn && saveBtn.said);
   check('the result card never says "download" to the reader', saveBtn && !saveBtn.words.length, saveBtn && saveBtn.words);
   let files = await p.download();
-  check('one file downloaded, named image.minimal.jpg', files.length === 1 && files[0].name === 'image.minimal.jpg', files.map((f) => f.name));
+  check('one file downloaded, named image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
   if (files[0]) {
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
-    // The default must keep green: a scrubber that wipes everything would also pass the red and amber checks.
-    const green = src.items.filter((i) => i.tier === 'green').map((i) => i.id).sort();
-    check(`the default removes exactly red and amber: the read-back holds every green detail and nothing else (${green.length})`, J(v.back.items.map((i) => i.id).sort()) === J(green), v.back.items.map((i) => `${i.tier}:${i.id}`));
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: true, word: 'public' });
+    // The default must keep amber and green: a scrubber that wipes everything would also pass the red checks.
+    const kept = src.items.filter((i) => i.tier !== 'red').map((i) => i.id).sort();
+    check(`the default removes exactly red: the read-back holds every amber and green detail and nothing else (${kept.length})`, J(v.back.items.map((i) => i.id).sort()) === J(kept), v.back.items.map((i) => `${i.tier}:${i.id}`));
     const meaning = await p.ev("document.querySelector('#results-list .ms-word-text').textContent");
-    check('beside the save button, the minimal word is explained: "Only technical data left: rotation, colour, size and exposure."', meaning === 'Only technical data left: rotation, colour, size and exposure.', meaning);
+    check('beside the save button, the public word is explained: "Safe to share publicly: location, serial numbers, names, captions and the hidden preview are gone. Dates and device details may remain; check them under Amber."', meaning === 'Safe to share publicly: location, serial numbers, names, captions and the hidden preview are gone. Dates and device details may remain; check them under Amber.', meaning);
     const host = registry.filter((r) => r.file === 'jpeg-everything.jpg' && /HOSTCOMPUTER/.test(r.string));
     check('the computer name is gone from the new file (read-back, bytes and exiftool)', host.length === 1 && !scan(host, v.path).length
       && !v.back.items.some((it) => /computer/.test(it.id)) && !Object.keys(v.ex || {}).some((k) => /HostComputer/i.test(k)), { registry: host.length, readBack: v.back.items.filter((it) => /computer/.test(it.id)).map((it) => it.id), exiftool: Object.keys(v.ex || {}).filter((k) => /HostComputer/i.test(k)) });
     const editor = registry.filter((r) => r.file === 'jpeg-everything.jpg' && /JPEG-EXIF-SOFTWARE/.test(r.string));
-    check('the editing software (amber) is gone from the new file', editor.length === 1 && scan(editor, v.path).length === 0 && !v.back.items.some((it) => it.id === 'exif:software'), editor.map((r) => r.string));
+    check('the editing software (amber) stays in the new file', editor.length === 1 && scan(editor, v.path).length === 1 && v.back.items.some((it) => it.id === 'exif:software'), editor.map((r) => r.string));
+    const captions = registry.filter((r) => r.file === 'jpeg-everything.jpg' && /JPEG-(IPTC-CAPTION|IPTC-KEYWORD|EXIF-DESCRIPTION|EXIF-USERCOMMENT|COM-)/.test(r.string));
+    check('the caption, keywords, description, user comment and JPEG comment (red) are gone from the new file', captions.length === 5 && !scan(captions, v.path).length, captions.map((r) => r.string));
     const facts = await p.ev("document.querySelector('.ms-result-facts').textContent");
     check('the result says the picture was not re-saved', /Lossless: the picture itself was not re-saved\./.test(facts), facts);
   }
@@ -815,9 +832,9 @@ flow('jpeg-default', DESKTOP, async (p) => {
   // A typed name is used; a typed extension is dropped and added back by the page.
   await p.typeInto('#name-input', 'holiday.jpg');
   const renamed = await p.ev("document.querySelector('#results-list .ms-download').download");
-  check('typing "holiday.jpg" renames the download to holiday.minimal.jpg', renamed === 'holiday.minimal.jpg', renamed);
+  check('typing "holiday.jpg" renames the download to holiday.public.jpg', renamed === 'holiday.public.jpg', renamed);
   files = await p.download();
-  check('the renamed file downloads under the new name', files.length === 1 && files[0].name === 'holiday.minimal.jpg', files.map((f) => f.name));
+  check('the renamed file downloads under the new name', files.length === 1 && files[0].name === 'holiday.public.jpg', files.map((f) => f.name));
 });
 
 // ---------------------------------------------------------------------------------------
@@ -931,18 +948,19 @@ flow('tier-sections', DESKTOP, async (p) => {
   const of = (t) => src.items.filter((i) => i.tier === t).map((i) => i.id);
   const n = { red: of('red').length, amber: of('amber').length, green: of('green').length };
   const total = src.items.length;
-  const defaults = [...of('red'), ...of('amber')].sort();
+  // Decision of 2026-10-04 (Marcos, 0.0.3): only red starts ticked.
+  const defaults = of('red').sort();
 
   const said = await p.ev("document.getElementById('announcer').textContent");
-  check(`the load is announced with the count of red and amber details: "Picture loaded. ${total} metadata details found. ${n.red + n.amber} of them are red or amber and ticked for removal."`,
-    said === `Picture loaded. ${total} metadata details found. ${n.red + n.amber} of them are red or amber and ticked for removal.`, said);
-  // Decision of 2026-10-03 (Marcos): every colour starts closed; red and amber start ticked.
+  check(`the load is announced with the count of red details: "Picture loaded. ${total} metadata details found. ${n.red} of them are red and ticked for removal."`,
+    said === `Picture loaded. ${total} metadata details found. ${n.red} of them are red and ticked for removal.`, said);
+  // Decision of 2026-10-03 (Marcos): every colour starts closed.
   let st = await tierState(p);
   check('every section starts closed: red, amber and green', allClosed(st) && J(Object.keys(st)) === J(['red', 'amber', 'green']), st);
   check('each arrow names the list it opens (aria-controls)', st.red.controls && st.amber.controls && st.green.controls, st);
-  check(`each section counts its details: "${n.red} details, ${n.red} ticked", "${n.amber} details, ${n.amber} ticked", "${n.green} details, 0 ticked"`,
-    st.red.count === `${n.red} details, ${n.red} ticked` && st.amber.count === `${n.amber} details, ${n.amber} ticked` && st.green.count === `${n.green} details, 0 ticked`, [st.red.count, st.amber.count, st.green.count]);
-  check('the red and amber tick boxes are ticked, green is not, none half-ticked', st.red.checked && !st.red.mixed && st.amber.checked && !st.amber.mixed && !st.green.checked && !st.green.mixed, st);
+  check(`each section counts its details: "${n.red} details, ${n.red} ticked", "${n.amber} details, 0 ticked", "${n.green} details, 0 ticked"`,
+    st.red.count === `${n.red} details, ${n.red} ticked` && st.amber.count === `${n.amber} details, 0 ticked` && st.green.count === `${n.green} details, 0 ticked`, [st.red.count, st.amber.count, st.green.count]);
+  check('the red tick box is ticked, amber and green are not, none half-ticked', st.red.checked && !st.red.mixed && !st.amber.checked && !st.amber.mixed && !st.green.checked && !st.green.mixed, st);
   check('every closed arrow points down', st.red.turned === 'none' && st.amber.turned === 'none' && st.green.turned === 'none', [st.red.turned, st.amber.turned, st.green.turned]);
   check('there are no quick choice buttons', await p.ev("!document.getElementById('quick') && !document.querySelector('[data-preset]')"));
 
@@ -951,7 +969,7 @@ flow('tier-sections', DESKTOP, async (p) => {
   check('the red tick box is a checkbox named after its tier ("Red: Remove before sharing. Every red detail."), with the meaning and count as its description',
     box.role === 'checkbox' && /^Red: Remove before sharing\. Every red detail\.$/.test(box.name || '') && /Can identify you/.test(box.description || '') && (box.description || '').includes(`${n.red} details, ${n.red} ticked`), box);
   const amberBox = await axOf(p, '#m-tier-amber-all');
-  check('the amber tick box says amber is removed by default', /^Amber: Think about it\. Every amber detail\.$/.test(amberBox.name || '') && /Removed by default\./.test(amberBox.description || ''), amberBox);
+  check('the amber tick box says amber is kept unless ticked', /^Amber: Think about it\. Every amber detail\.$/.test(amberBox.name || '') && /Can reveal routines, devices or history\. Kept unless you tick it\./.test(amberBox.description || ''), amberBox);
   const arrow = await axOf(p, '#m-tier-amber-toggle');
   check('the amber arrow is a button, "Amber details", collapsed', arrow.role === 'button' && arrow.name === 'Amber details' && arrow.expanded === false, arrow);
   const grp = await axOf(p, '#m-tier-red');
@@ -977,19 +995,19 @@ flow('tier-sections', DESKTOP, async (p) => {
   check('Space on the green arrow closes it again', st.green.expanded === 'false' && !st.green.visible, st.green);
   check('opening and closing a section changes no tick', J(await tickedIds(p)) === J(defaults));
 
-  // The tick box unticks and ticks a whole colour while its section stays closed.
+  // The tick box ticks and unticks a whole colour while its section stays closed.
   await p.click('#m-tier-amber-all');
   st = await tierState(p);
-  check('unticking the amber tick box from a closed section unticks every amber detail, and amber stays closed', !st.amber.checked && !st.amber.mixed && st.amber.ticked === 0 && st.amber.count === `${n.amber} details, 0 ticked` && st.amber.expanded === 'false' && !st.amber.visible, st.amber);
-  check('the count line follows', await countLine(p) === `${n.red} of ${total} details ticked for removal.`, await countLine(p));
+  check('ticking the amber tick box from a closed section ticks every amber detail, and amber stays closed', st.amber.checked && !st.amber.mixed && st.amber.ticked === n.amber && st.amber.count === `${n.amber} details, ${n.amber} ticked` && st.amber.expanded === 'false' && !st.amber.visible, st.amber);
+  check('the count line follows', await countLine(p) === `${n.red + n.amber} of ${total} details ticked for removal.`, await countLine(p));
+  await p.click('#m-tier-amber-all');
   await p.click('#m-tier-red-all');
   st = await tierState(p);
   check('unticking the red tick box from a closed section unticks every red detail', !st.red.checked && !st.red.mixed && st.red.ticked === 0 && st.red.count === `${n.red} details, 0 ticked` && st.red.expanded === 'false', st.red);
   check('with nothing ticked the count line says 0', await countLine(p) === `0 of ${total} details ticked for removal.`, await countLine(p));
   await p.click('#m-tier-red-all');
-  await p.click('#m-tier-amber-all');
   st = await tierState(p);
-  check('ticking both again brings back the starting selection, sections still closed', J(await tickedIds(p)) === J(defaults) && allClosed(st), st);
+  check('ticking red again brings back the starting selection, sections still closed', J(await tickedIds(p)) === J(defaults) && allClosed(st), st);
 
   // Opening a section and unticking one detail makes its tick box half-ticked; pressing
   // the tick box then ticks the whole colour again.
@@ -999,7 +1017,7 @@ flow('tier-sections', DESKTOP, async (p) => {
   await p.click('#m-tier-red-list .ms-item', 0);
   st = await tierState(p);
   check('opening red and unticking one red detail makes the red tick box half-ticked (indeterminate)', st.red.mixed && !st.red.checked && st.red.ticked === n.red - 1 && st.red.count === `${n.red} details, ${n.red - 1} ticked`, st.red);
-  check('the count line follows the single detail', await countLine(p) === `${n.red - 1 + n.amber} of ${total} details ticked for removal.`, await countLine(p));
+  check('the count line follows the single detail', await countLine(p) === `${n.red - 1} of ${total} details ticked for removal.`, await countLine(p));
   const mixedAx = await axOf(p, '#m-tier-red-all');
   check('a screen reader hears the half-ticked state ("mixed")', mixedAx.checked === 'mixed', mixedAx);
   await p.click('#m-tier-red-all');
@@ -1015,7 +1033,7 @@ flow('tier-sections', DESKTOP, async (p) => {
   const sw0 = await p.ev("[...document.querySelectorAll('#m-tier-amber-list .ms-check')].findIndex((b) => b.dataset.id === 'exif:software')");
   await p.click('#m-tier-amber-list .ms-item', sw0);
   st = await tierState(p);
-  check('opening amber and unticking "Editing software" makes amber half-ticked, red stays fully ticked', st.amber.mixed && st.amber.ticked === n.amber - 1 && st.red.checked && !st.red.mixed, st);
+  check('opening amber and ticking "Editing software" makes amber half-ticked, red stays fully ticked', st.amber.mixed && st.amber.ticked === 1 && st.red.checked && !st.red.mixed, st);
   await p.click('#m-tier-amber-all');
   await p.click('#m-tier-amber-toggle');
 
@@ -1041,7 +1059,7 @@ flow('tier-sections', DESKTOP, async (p) => {
   await setTiers(p, { red: true });
   await prepareExactly(p, 'only red, by the red tick box', 'jpeg-everything.jpg', src, of('red'), ['red']);
   await setTiers(p, { red: true, amber: true });
-  await prepareExactly(p, 'red and amber, by their tick boxes', 'jpeg-everything.jpg', src, defaults, ['red', 'amber']);
+  await prepareExactly(p, 'red and amber, by their tick boxes', 'jpeg-everything.jpg', src, [...of('red'), ...of('amber')], ['red', 'amber']);
   await setTiers(p, {});
   await p.click('#m-tier-amber-toggle');
   const sw = await p.ev("[...document.querySelectorAll('#m-tier-amber-list .ms-check')].findIndex((b) => b.dataset.id === 'exif:software')");
@@ -1050,24 +1068,30 @@ flow('tier-sections', DESKTOP, async (p) => {
   check('one amber detail ticked by hand: amber half-ticked, red and green unticked', st.amber.mixed && !st.red.checked && !st.red.mixed && !st.green.checked, st);
   const one = await prepareExactly(p, 'a single detail (Editing software)', 'jpeg-everything.jpg', src, ['exif:software'], []);
   if (one) check('the single detail is gone and the red details are all still there', !one.back.items.some((i) => i.id === 'exif:software') && of('red').every((id) => one.back.items.some((i) => i.id === id)));
+  // Nothing ticked: the file's XMP is not in the standard form yet, so a file is still made.
+  // It keeps every detail; only the layout of its XMP changes.
   await setTiers(p, {});
-  const idle = await pressExpectingNothing(p);
-  check('nothing ticked and nothing else chosen: no file, and the reason', idle.results && !idle.links && /^Nothing to change yet/.test(idle.text), idle);
+  await p.press();
+  const kept = await p.download();
+  if (check('nothing ticked, XMP not yet in the standard form: one file is still made', kept.length === 1, kept.map((f) => f.name))) {
+    const back = await inspect(kept[0].bytes);
+    check('it keeps every detail, and its XMP is now in the standard form', !back.normalise && JSON.stringify(back.items.map((i) => i.id).sort()) === JSON.stringify(src.items.map((i) => i.id).sort()), back.items.map((i) => i.id));
+  }
 
   // A second file: whatever was open or ticked, every section closes again and the
-  // starting selection comes back. Prepare with it removes exactly red and amber.
+  // starting selection comes back. Prepare with it removes exactly red.
   await p.click('#m-tier-green-toggle');
   await setTiers(p, { green: true });
   await p.load(['jpeg-everything.jpg']);
   st = await tierState(p);
   check('after loading another file every section is closed again', allClosed(st), st);
-  check('after loading another file red and amber are ticked again and green is not', st.red.checked && st.amber.checked && !st.green.checked && !st.green.mixed && J(await tickedIds(p)) === J(defaults), st);
+  check('after loading another file red is ticked again and amber and green are not', st.red.checked && !st.amber.checked && !st.amber.mixed && !st.green.checked && !st.green.mixed && J(await tickedIds(p)) === J(defaults), st);
   const preview = await p.ev("document.getElementById('name-preview').textContent");
-  check('the expected name uses the minimal word again', /Expected name: image\.minimal\.jpg\./.test(preview), preview);
-  const v = await prepareExactly(p, 'Prepare with the starting selection', 'jpeg-everything.jpg', src, defaults, ['red', 'amber']);
+  check('the expected name uses the public word again', /Expected name: image\.public\.jpg\./.test(preview), preview);
+  const v = await prepareExactly(p, 'Prepare with the starting selection', 'jpeg-everything.jpg', src, defaults, ['red']);
   if (v) {
-    check('the starting selection gives the minimal word in the name and the read-back', v.measured === 'minimal' && await p.ev("document.querySelector('#results-list .ms-download').download") === 'image.minimal.jpg', v.measured);
-    check('the description beside the download matches minimal', await p.ev("document.querySelector('#results-list .ms-word-text').textContent") === 'Only technical data left: rotation, colour, size and exposure.');
+    check('the starting selection gives the public word in the name and the read-back', v.measured === 'public' && await p.ev("document.querySelector('#results-list .ms-download').download") === 'image.public.jpg', v.measured);
+    check('the description beside the download matches public', await p.ev("document.querySelector('#results-list .ms-word-text').textContent") === 'Safe to share publicly: location, serial numbers, names, captions and the hidden preview are gone. Dates and device details may remain; check them under Amber.');
   }
 
   // Start again after changing the selection: the hidden list is emptied, and the next
@@ -1079,8 +1103,8 @@ flow('tier-sections', DESKTOP, async (p) => {
   check('Start again empties the list and the count line, not just hides them', cleared.ws && !cleared.sections && !cleared.boxes && cleared.count === '', cleared);
   await p.load(['jpeg-everything.jpg']);
   st = await tierState(p);
-  check('after Start again and a new load, every section is closed and red and amber are ticked again', allClosed(st) && st.red.checked && st.amber.checked && !st.green.checked && !st.green.mixed && J(await tickedIds(p)) === J(defaults), st);
-  check('and the count line is back to the starting count', await countLine(p) === `${n.red + n.amber} of ${total} details ticked for removal.`, await countLine(p));
+  check('after Start again and a new load, every section is closed and only red is ticked again', allClosed(st) && st.red.checked && !st.amber.checked && !st.amber.mixed && !st.green.checked && !st.green.mixed && J(await tickedIds(p)) === J(defaults), st);
+  check('and the count line is back to the starting count', await countLine(p) === `${n.red} of ${total} details ticked for removal.`, await countLine(p));
   await p.layout('tier sections');
   await textCheck(p, 'tier sections');
 });
@@ -1096,7 +1120,7 @@ flow('tier-absent', DESKTOP, async (p) => {
     const n = await p.ev("document.querySelectorAll('#meta-groups .ms-check').length");
     check(`${fixture}: every detail it has is listed (${src.items.length})`, n === src.items.length, n);
     const st = await tierState(p);
-    check(`${fixture}: its sections start closed, red and amber ticked, green not`, allClosed(st) && Object.entries(st).every(([t, x]) => x.checked === (t !== 'green') && !x.mixed), st);
+    check(`${fixture}: its sections start closed, red ticked, amber and green not`, allClosed(st) && Object.entries(st).every(([t, x]) => x.checked === (t === 'red') && !x.mixed), st);
   }
   // A file with no red details: a PNG with only an editing software text (amber) and a
   // print resolution (green), built here so no fixture has to change.
@@ -1110,14 +1134,17 @@ flow('tier-absent', DESKTOP, async (p) => {
     const shown = await p.ev("[...document.querySelectorAll('#meta-groups .ms-tier')].map((s) => s.dataset.tier)");
     check('no-red.png: only the amber and green sections are shown', J(shown) === J(['amber', 'green']), shown);
     const st = await tierState(p);
-    check('no-red.png: both sections start closed, amber ticked, green not', allClosed(st) && st.amber.checked && !st.amber.mixed && !st.green.checked && !st.green.mixed, st);
+    check('no-red.png: both sections start closed and unticked', allClosed(st) && !st.amber.checked && !st.amber.mixed && !st.green.checked && !st.green.mixed, st);
     const total = src.items.length;
-    const amber = src.items.filter((i) => i.tier === 'amber').length;
-    check(`no-red.png: the count line reads "${amber} of ${total} details ticked for removal."`, await countLine(p) === `${amber} of ${total} details ticked for removal.`, await countLine(p));
+    check(`no-red.png: the count line reads "0 of ${total} details ticked for removal."`, await countLine(p) === `0 of ${total} details ticked for removal.`, await countLine(p));
     const said = await p.ev("document.getElementById('announcer').textContent");
-    check(`no-red.png: the load is announced as "${amber === 1 ? '1 of them is' : `${amber} of them are`} red or amber"`, said === `Picture loaded. ${total} metadata details found. ${amber === 1 ? '1 of them is' : `${amber} of them are`} red or amber and ticked for removal.`, said);
+    check('no-red.png: the load is announced as "None of them is red, so nothing is ticked."', said === `Picture loaded. ${total} metadata details found. None of them is red, so nothing is ticked.`, said);
+    const idle = await pressExpectingNothing(p);
+    check('no-red.png: with nothing ticked no file is made, and the page says why', idle.results && !idle.links && idle.text === 'Nothing to change yet: tick something to remove, or choose a crop, size or format.', idle);
+    // Ticking amber by its tick box removes the software text.
+    await setTiers(p, { amber: true });
     const preview = await p.ev("document.getElementById('name-preview').textContent");
-    check('no-red.png: the expected name is image.minimal.png', /Expected name: image\.minimal\.png\./.test(preview), preview);
+    check('no-red.png: with amber ticked, the expected name is image.minimal.png', /Expected name: image\.minimal\.png\./.test(preview), preview);
     await p.press();
     const files = await p.download();
     check('no-red.png: one file downloaded, named image.minimal.png', files.length === 1 && files[0].name === 'image.minimal.png', files.map((f) => f.name));
@@ -1134,14 +1161,16 @@ flow('tier-absent', DESKTOP, async (p) => {
   await p.load([onlyGreen]);
   {
     const said = await p.ev("document.getElementById('announcer').textContent");
-    check('only-green.png: the load is announced as "1 metadata detail found. None of them is red or amber, so nothing is ticked."', said === 'Picture loaded. 1 metadata detail found. None of them is red or amber, so nothing is ticked.', said);
+    check('only-green.png: the load is announced as "1 metadata detail found. None of them is red, so nothing is ticked."', said === 'Picture loaded. 1 metadata detail found. None of them is red, so nothing is ticked.', said);
     const st = await tierState(p);
     check('only-green.png: only the green section, closed and unticked', J(Object.keys(st)) === J(['green']) && allClosed(st) && !st.green.checked && !st.green.mixed, st);
   }
 
-  // A detail whose value cannot be read is still listed, and says so.
+  // A detail whose value cannot be read is still listed, and says so. Since the review of
+  // 4 October 2026 a damaged make and model cannot be checked, so they are the red detail
+  // Unexpected text in date or device details.
   await p.load(['jpeg-ifd-overflow.jpg']);
-  const cam = await p.ev("(() => { const b = [...document.querySelectorAll('#meta-groups .ms-check')].find((x) => x.dataset.id === 'exif:camera'); return b ? b.closest('.ms-item').querySelector('.ms-item-value')?.textContent : null; })()");
+  const cam = await p.ev("(() => { const b = [...document.querySelectorAll('#meta-groups .ms-check')].find((x) => x.dataset.id === 'exif:device-text'); return b ? b.closest('.ms-item').querySelector('.ms-item-value')?.textContent : null; })()");
   check('jpeg-ifd-overflow.jpg: the damaged camera detail is listed with "Present, but its value cannot be read."', cam === 'Present, but its value cannot be read.', cam);
 });
 
@@ -1149,7 +1178,7 @@ flow('tier-absent', DESKTOP, async (p) => {
 // neutral button at the bottom. Not everybody wants to remove metadata, so pressing it
 // with nothing to change says so instead of making an identical copy.
 flow('one-column', DESKTOP, async (p) => {
-  await p.load(['jpeg-everything.jpg']);
+  await p.load([await standardCopy('jpeg-everything.jpg')]);
   const st = await p.ev(`(() => {
     const ids = ['pick-card', 'preview-card', 'meta-card', 'edit-card', 'action-card'];
     const boxes = ids.map((id) => { const r = document.getElementById(id).getBoundingClientRect(); return { id, left: Math.round(r.left), width: Math.round(r.width), top: r.top + scrollY, bottom: r.bottom + scrollY }; });
@@ -1178,7 +1207,7 @@ flow('one-column', DESKTOP, async (p) => {
   // Typing a name in that card renames only; it does not count as a change of choice.
   await p.typeInto('#name-input', 'beach');
   const named = await p.ev("({ stale: !document.getElementById('go-stale').hidden, preview: document.getElementById('name-preview').textContent })");
-  check('typing a name updates the expected name and clears nothing', !named.stale && /Expected name: beach\.minimal\.jpg/.test(named.preview), named);
+  check('typing a name updates the expected name and clears nothing', !named.stale && /Expected name: beach\.public\.jpg/.test(named.preview), named);
   await p.typeInto('#name-input', 'image');
 
   // Nothing ticked, nothing else chosen: no file, a plain message beside the button.
@@ -1212,7 +1241,7 @@ flow('one-column', DESKTOP, async (p) => {
 });
 
 flow('jpeg-tick-all', DESKTOP, async (p) => {
-  await p.load(['jpeg-everything.jpg']);
+  await p.load([await standardCopy('jpeg-everything.jpg')]);
   // Nothing ticked alone would give back the same file, so no file is made.
   await setTiers(p, {});
   const idle = await pressExpectingNothing(p);
@@ -1279,7 +1308,7 @@ flow('jpeg-size-limit', DESKTOP, async (p) => {
   check('one file downloaded', files.length === 1, files.map((f) => f.name));
   if (files[0]) {
     const size = files[0].bytes.length;
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-large.jpg', removed: ['red', 'amber'], lossless: false, expectFormat: 'jpeg' });
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-large.jpg', removed: ['red'], lossless: false, expectFormat: 'jpeg' });
     check(`file is at most 1,000,000 bytes and close to 950,000 (${size.toLocaleString('en-GB')} bytes, ${ms} ms)`, size <= 950000 && size >= 0.85 * 950000, size);
     const ratio = v.back.width / v.back.height;
     check(`shape kept: ${v.back.width} x ${v.back.height} (6000 x 4000 is 1.5)`, Math.abs(v.back.width * 4000 - v.back.height * 6000) <= 6000, ratio);
@@ -1299,7 +1328,7 @@ flow('resize-and-convert', DESKTOP, async (p) => {
   await p.press();
   let files = await p.download();
   if (check('one file downloaded', files.length === 1, files.map((f) => f.name))) {
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red', 'amber'], lossless: false, expectFormat: 'jpeg' });
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: false, expectFormat: 'jpeg' });
     check(`33,5 % of 880 x 660 gives 295 x 221 (got ${v.back.width} x ${v.back.height})`, v.back.width === 295 && v.back.height === 221);
   }
   // Longest side, and a change of format to WebP.
@@ -1310,7 +1339,7 @@ flow('resize-and-convert', DESKTOP, async (p) => {
   await p.press();
   files = await p.download();
   if (check('one .webp file downloaded', files.length === 1 && /^image\.\w+\.webp$/.test(files[0].name), files.map((f) => f.name))) {
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red', 'amber'], lossless: false, expectFormat: 'webp' });
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: false, expectFormat: 'webp' });
     check(`longest side 400 gives 400 x 300 (got ${v.back.width} x ${v.back.height})`, v.back.width === 400 && v.back.height === 300);
   }
   // A typing mistake is explained, and the button then moves to the field.
@@ -1331,7 +1360,10 @@ flow('jpeg-crop', DESKTOP, async (p) => {
   const mode = await p.ev("document.getElementById('mode-line').textContent");
   check('the page says cropping re-saves the picture before the button is pressed', mode === 'Cropping, resizing or changing format re-saves the picture.', mode);
   const reasonsDefault = await p.ev("document.getElementById('mode-reasons').textContent");
-  check('with the starting selection only green is kept, so the page does not warn that kept XMP, IPTC or PNG text is left out', /Only the EXIF details you keep are written back, and colours are converted to sRGB/.test(reasonsDefault) && !/Other kept details/.test(reasonsDefault), reasonsDefault);
+  check('with the starting selection (red only) amber is kept, so the page warns that kept XMP, IPTC and PNG text are left out', /Other kept details, such as XMP, IPTC and PNG text, are left out/.test(reasonsDefault), reasonsDefault);
+  await setTiers(p, { red: true, amber: true });
+  const reasonsRedAmber = await p.ev("document.getElementById('mode-reasons').textContent");
+  check('with red and amber ticked only green is kept, so the page does not warn that kept XMP, IPTC or PNG text is left out', /Only the EXIF details you keep are written back, and colours are converted to sRGB/.test(reasonsRedAmber) && !/Other kept details/.test(reasonsRedAmber), reasonsRedAmber);
   // Drag the bottom-right corner in with the mouse, then move the frame.
   const h = await p.point('[data-handle="se"]');
   await p.s('Input.dispatchMouseEvent', { type: 'mousePressed', x: h.x, y: h.y, button: 'left', clickCount: 1 });
@@ -1358,7 +1390,7 @@ flow('jpeg-crop', DESKTOP, async (p) => {
     const thumbs = scan(registry.filter((r) => r.file === 'jpeg-everything.jpg' && /THUMB/.test(r.string)), v.path);
     check('the uncropped preview images are gone byte for byte', !thumbs.length, thumbs.map((r) => r.string), 'engine');
     const lostNote = await p.ev("[...document.querySelectorAll('#results-list .ms-note')].map(n => n.textContent).find(t => /left them out/.test(t)) || ''");
-    check('with the starting selection every kept detail survives the re-save, so no "left them out" note', lostNote === '' && v.back.items.length === src0.items.filter((i) => i.tier === 'green').length, { lostNote, kept: v.back.items.map((i) => i.id) });
+    check('with red and amber ticked every kept detail survives the re-save, so no "left them out" note', lostNote === '' && v.back.items.length === src0.items.filter((i) => i.tier === 'green').length, { lostNote, kept: v.back.items.map((i) => i.id) });
   }
   await p.shot('3-crop-result', { selector: '#results' });
   // With amber kept, re-saving drops the kept XMP, IPTC and similar details, and the page says which.
@@ -1387,7 +1419,7 @@ flow('png-to-jpeg', DESKTOP, async (p) => {
   const files = await p.download();
   check('one .jpg file downloaded', files.length === 1 && /\.jpg$/.test(files[0].name), files.map((f) => f.name));
   if (files[0]) {
-    const v = await verifyDownload(p, files[0], { fixture: 'png-transparent.png', removed: ['red', 'amber'], lossless: false, expectFormat: 'jpeg' });
+    const v = await verifyDownload(p, files[0], { fixture: 'png-transparent.png', removed: ['red'], lossless: false, expectFormat: 'jpeg' });
     const r = py(CORNERS_PY, v.path);
     check('see-through corners come out white, not the hidden orange', r.format === 'JPEG' && r.corners.every((c) => c.every((x) => x > 245)), r);
     check('the opaque centre is kept (white disc)', r.centre.every((x) => x > 230), r.centre);
@@ -1402,8 +1434,8 @@ flow('webp-default', DESKTOP, async (p) => {
   check(`all ${src.items.length} WebP details are listed`, n === src.items.length, n);
   await p.press();
   const files = await p.download();
-  check('one file downloaded, named image.minimal.webp', files.length === 1 && files[0].name === 'image.minimal.webp', files.map((f) => f.name));
-  if (files[0]) await verifyDownload(p, files[0], { fixture: 'webp-everything.webp', removed: ['red', 'amber'], lossless: true, word: 'minimal', expectFormat: 'webp' });
+  check('one file downloaded, named image.public.webp', files.length === 1 && files[0].name === 'image.public.webp', files.map((f) => f.name));
+  if (files[0]) await verifyDownload(p, files[0], { fixture: 'webp-everything.webp', removed: ['red'], lossless: true, word: 'public', expectFormat: 'webp' });
 });
 
 flow('png-default', DESKTOP, async (p) => {
@@ -1413,8 +1445,8 @@ flow('png-default', DESKTOP, async (p) => {
   check(`all ${src.items.length} PNG details are listed`, n === src.items.length, n);
   await p.press();
   const files = await p.download();
-  check('one file downloaded, named image.minimal.png', files.length === 1 && files[0].name === 'image.minimal.png', files.map((f) => f.name));
-  if (files[0]) await verifyDownload(p, files[0], { fixture: 'png-everything.png', removed: ['red', 'amber'], lossless: true, word: 'minimal', expectFormat: 'png' });
+  check('one file downloaded, named image.public.png', files.length === 1 && files[0].name === 'image.public.png', files.map((f) => f.name));
+  if (files[0]) await verifyDownload(p, files[0], { fixture: 'png-everything.png', removed: ['red'], lossless: true, word: 'public', expectFormat: 'png' });
 });
 
 flow('heic', DESKTOP, async (p) => {
@@ -1436,10 +1468,13 @@ flow('heic', DESKTOP, async (p) => {
   await p.shot('heic-loaded', { selector: '#workspace' });
   await p.press();
   const files = await p.download();
-  check('one file downloaded, named image.minimal.heic', files.length === 1 && files[0].name === 'image.minimal.heic', files.map((f) => f.name));
+  check('one file downloaded, named image.public.heic', files.length === 1 && files[0].name === 'image.public.heic', files.map((f) => f.name));
   if (files[0]) {
-    const v = await verifyDownload(p, files[0], { fixture: 'heic-everything.heic', removed: ['red', 'amber'], lossless: true, word: 'minimal', expectFormat: 'heic' });
-    check('HEIC keeps its exact size (edited in place)', files[0].bytes.length === statSync(join(FIX, 'heic-everything.heic')).size, files[0].bytes.length);
+    const v = await verifyDownload(p, files[0], { fixture: 'heic-everything.heic', removed: ['red'], lossless: true, word: 'public', expectFormat: 'heic' });
+    // Only the XMP changes length (written in the standard form): the same boxes, and no
+    // more than the XMP's own difference in size.
+    const inSize = statSync(join(FIX, 'heic-everything.heic')).size;
+    check('HEIC: only the XMP changed length (written in the standard form), everything else edited in place', files[0].bytes.length <= inSize && inSize - files[0].bytes.length < 4096, [inSize, files[0].bytes.length]);
     check('ImageMagick still decodes the HEIC', !!rgbaHash(v.path));
   }
 });
@@ -1456,7 +1491,7 @@ flow('motion-photo', DESKTOP, async (p) => {
   const files = await p.download();
   check('one file downloaded', files.length === 1, files.map((f) => f.name));
   if (files[0]) {
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-motion-photo.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-motion-photo.jpg', removed: ['red'], lossless: true, word: 'public' });
     const before = statSync(join(FIX, 'jpeg-motion-photo.jpg')).size;
     const tail = Buffer.from(files[0].bytes).indexOf('ftyp');
     check(`the video is gone: no MP4 left after the picture (${before.toLocaleString('en-GB')} to ${files[0].bytes.length.toLocaleString('en-GB')} bytes)`, tail < 0 && before - files[0].bytes.length > 60000, { tail, size: files[0].bytes.length });
@@ -1467,91 +1502,329 @@ flow('motion-photo', DESKTOP, async (p) => {
   }
 });
 
+// The checks a kept HDR gain map must pass in a downloaded file: found through MPF as a
+// whole JPEG with the input's pixels, the length the Container directory gives, and its
+// hdrgm description in both the photo and the gain map.
+function keptGainMap(v, fixture, label) {
+  const gm = spawnSync('exiftool', ['-b', '-MPImage2', v.path], { maxBuffer: 16 * 1024 * 1024 }).stdout;
+  const orig = spawnSync('exiftool', ['-b', '-MPImage2', join(FIX, fixture)], { maxBuffer: 16 * 1024 * 1024 }).stdout;
+  const gmFile = join(CHECKS, `${label}-gainmap-out.jpg`);
+  const origFile = join(CHECKS, `${label}-gainmap-orig.jpg`);
+  writeFileSync(gmFile, gm);
+  writeFileSync(origFile, orig);
+  const whole = gm.length > 100 && gm[0] === 0xff && gm[1] === 0xd8 && gm[gm.length - 2] === 0xff && gm[gm.length - 1] === 0xd9;
+  check(`${label}: the kept gain map is still found through the MPF index, as a whole JPEG`, whole, { out: gm.length, orig: orig.length }, 'engine');
+  let px = null;
+  try { px = py(SAME_PIXELS_PY, origFile, gmFile); } catch (e) { px = { error: String(e.message).slice(0, 200) }; }
+  check(`${label}: the kept gain map has the same pixels as before (Pillow)`, px && px.same, px, 'engine');
+  const text = readFileSync(v.path).toString('utf8');
+  const item = /<Container:Item\b[^>]*Item:Semantic="GainMap"[^>]*>/.exec(text);
+  const len = item && /Item:Length="(\d+)"/.exec(item[0]);
+  check(`${label}: the Container directory gives the gain map's real length`, !!len && Number(len[1]) === gm.length, { directory: len && len[1], mpf: gm.length }, 'engine');
+  const gmKeys = exiftoolKeys(gmFile);
+  check(`${label}: the kept gain map still carries its gain map description (hdrgm)`, Object.keys(gmKeys).some((k) => /^XMP-hdrgm:/.test(k)), Object.keys(gmKeys).filter((k) => /XMP/.test(k)), 'engine');
+  check(`${label}: the photo itself still says it has a gain map (hdrgm in its XMP)`, Object.keys(v.ex).some((k) => /^XMP-hdrgm:/.test(k)), Object.keys(v.ex).filter((k) => /XMP/.test(k)), 'engine');
+}
+
+const GAIN_KEEP = ['jpeg:trailing:gain-map', 'xmp:gainmap'];
+const GAIN_NOTE = 'The HDR gain map stays, so the photo keeps its brightness on HDR screens. Tick HDR gain map under Amber for a minimal file.';
+const rowsOf = (p) => p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier, group: b.closest('.ms-item').querySelector('.ms-group-word')?.textContent || '' }))");
+
 flow('ultrahdr', DESKTOP, async (p) => {
   await p.load(['jpeg-ultrahdr-like.jpg']);
-  const rows = await p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier }))");
+  const rows = await rowsOf(p);
   const gain = rows.find((r) => r.id === 'jpeg:trailing:gain-map');
   const desc = rows.find((r) => r.id === 'xmp:gainmap');
   check('the extra HDR image (gain map) is offered, amber', gain && gain.tier === 'amber', gain || rows.map((r) => r.id));
-  // The gain map starts ticked like the rest of amber. Keeping it by default waits for an
-  // engine change (see app.js and the audit's known gaps).
-  check('the gain map starts ticked', gain && gain.checked, gain);
-  check('its XMP description (HDR gain map details) is amber and starts ticked', desc && desc.tier === 'amber' && desc.checked, desc || rows.map((r) => r.id));
-  const notGreen = rows.filter((r) => r.tier !== 'green');
-  check('every red and amber detail starts ticked', notGreen.length > 0 && notGreen.every((r) => r.checked), notGreen.filter((r) => !r.checked));
+  // The gain map changes how the photo looks, not who took it, so it starts unticked; the
+  // engine keeps only what it needs to render and lists everything else on its own.
+  check('the gain map starts unticked', gain && !gain.checked, gain);
+  check('its XMP description (HDR gain map details) is amber and starts unticked', desc && desc.tier === 'amber' && !desc.checked, desc || rows.map((r) => r.id));
+  const others = rows.filter((r) => r.tier !== 'green' && !GAIN_KEEP.includes(r.id));
+  check('every other red detail starts ticked, and every other amber detail unticked (0.0.3)', others.length > 0 && others.every((r) => r.checked === (r.tier === 'red')), others.filter((r) => r.checked !== (r.tier === 'red')));
   // The gain map is a second JPEG with its own metadata (here an author name). That is
   // offered on its own and follows its own tier, so the gain map can stay while what it says
   // about the photo goes.
   const inner = rows.find((r) => r.id === 'jpeg:trailing:gain-map:metadata');
   check('the metadata inside the gain map is offered on its own, red and ticked', inner && inner.tier === 'red' && inner.checked, inner || rows.map((r) => r.id));
+  const said = await p.ev("document.getElementById('announcer').textContent");
+  check('the load announcement counts the red details only (amber, the gain map with it, is kept)', /of them (is|are) red and ticked for removal\.$/.test(said) && !/HDR gain map/.test(said), said);
   const amberBox = () => p.ev("(() => { const b = document.getElementById('m-tier-amber-all'); return { checked: b.checked, mixed: b.indeterminate, count: document.getElementById('m-tier-amber-count').textContent }; })()");
   const box0 = await amberBox();
-  check('the amber tick box starts fully ticked', box0.checked && !box0.mixed, box0);
+  check('the amber tick box starts unticked', !box0.checked && !box0.mixed, box0);
   const preview0 = await p.ev("document.getElementById('name-preview').textContent");
-  check('the expected name uses the minimal word', /Expected name: image\.minimal\.jpg\./.test(preview0), preview0);
+  check('the expected name uses the public word (an amber gain map stays)', /Expected name: image\.public\.jpg\./.test(preview0), preview0);
 
-  // Prepare with the starting selection: the gain map, its MPF index and its description go.
+  // Prepare with the starting selection (red only): the gain map stays with its description
+  // and the other amber details, and everything red in and around it goes.
+  const uSrc = await inspect(new Uint8Array(readFileSync(join(FIX, 'jpeg-ultrahdr-like.jpg'))));
   await p.press();
   let files = await p.download();
-  check('one file downloaded', files.length === 1, files.map((f) => f.name));
+  check('one file downloaded, named image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
   if (files[0]) {
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-ultrahdr-like.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
-    check('the starting selection removes the gain map, its MPF index and its description', !v.back.items.some((i) => /gain|mpf/.test(i.id)) && !Object.keys(v.ex).some((k) => /MPImage2|XMP-hdrgm/.test(k)), { readBack: v.back.items.map((i) => i.id), exiftool: Object.keys(v.ex).filter((k) => /MP|hdrgm/.test(k)) });
-    const note0 = await p.ev("(document.querySelector('#results-list .ms-word-note') || {}).textContent || ''");
-    check('no gain map note when the gain map went', note0 === '', note0);
-  }
-
-  // Keeping HDR: untick the gain map and its description.
-  await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"jpeg:trailing:gain-map\"]').click()");
-  await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"xmp:gainmap\"]').click()");
-  const unticked = await p.ev("['jpeg:trailing:gain-map', 'xmp:gainmap'].map((id) => document.querySelector(`#meta-groups .ms-check[data-id=\"${id}\"]`).checked)");
-  check('the gain map and its description can be unticked', J(unticked) === J([false, false]), unticked);
-  const box1 = await amberBox();
-  check('the amber tick box is then half-ticked', !box1.checked && box1.mixed, box1);
-  const preview1 = await p.ev("document.getElementById('name-preview').textContent");
-  check('the expected name then uses the public word (an amber gain map stays)', /Expected name: image\.public\.jpg\./.test(preview1), preview1);
-  await p.press();
-  files = await p.download();
-  check('gain map kept: one file downloaded', files.length === 1, files.map((f) => f.name));
-  if (files[0]) {
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-ultrahdr-like.jpg', removed: ['red', 'amber'], keep: ['jpeg:trailing:gain-map', 'xmp:gainmap'], lossless: true, word: 'public' });
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-ultrahdr-like.jpg', removed: ['red'], lossless: true, word: 'public' });
     const left = v.back.items.filter((i) => i.tier !== 'green').map((i) => i.id).sort();
-    check('only the gain map and its description stay of red and amber', J(left) === J(['jpeg:trailing:gain-map', 'xmp:gainmap']), left);
+    const amber = uSrc.items.filter((i) => i.tier === 'amber').map((i) => i.id).sort();
+    check('no red stays; every amber detail stays, the gain map and its description among them', J(left) === J(amber) && GAIN_KEEP.every((id) => left.includes(id)), left);
     const note = await p.ev("(document.querySelector('#results-list .ms-word-note') || {}).textContent || ''");
-    check('the result says why the word is public and how to get minimal', note === 'The HDR gain map stays, so the photo keeps its brightness on HDR screens. Tick HDR gain map under Amber for a minimal file.', note);
-    const gm = spawnSync('exiftool', ['-b', '-MPImage2', v.path], { maxBuffer: 16 * 1024 * 1024 }).stdout;
-    const orig = spawnSync('exiftool', ['-b', '-MPImage2', join(FIX, 'jpeg-ultrahdr-like.jpg')], { maxBuffer: 16 * 1024 * 1024 }).stdout;
-    const gmFile = join(CHECKS, 'ultrahdr-gainmap-out.jpg');
-    const origFile = join(CHECKS, 'ultrahdr-gainmap-orig.jpg');
-    writeFileSync(gmFile, gm);
-    writeFileSync(origFile, orig);
-    const ends = gm.length > 100 && gm[0] === 0xff && gm[1] === 0xd8 && gm[gm.length - 2] === 0xff && gm[gm.length - 1] === 0xd9;
-    check('the kept gain map is still found through the MPF index, as a whole JPEG', ends, { out: gm.length, orig: orig.length });
-    let px = null;
-    try { px = py(SAME_PIXELS_PY, origFile, gmFile); } catch (e) { px = { error: String(e.message).slice(0, 200) }; }
-    check('the kept gain map has the same pixels as before (Pillow)', px && px.same, px);
-    const gmKeys = exiftoolKeys(gmFile);
-    check('the kept gain map still carries its gain map description (hdrgm)', Object.keys(gmKeys).some((k) => /^XMP-hdrgm:/.test(k)), Object.keys(gmKeys).filter((k) => /XMP/.test(k)));
-    check('the photo itself still says it has a gain map (hdrgm in its XMP)', Object.keys(v.ex).some((k) => /^XMP-hdrgm:/.test(k)), Object.keys(v.ex).filter((k) => /XMP/.test(k)));
+    check('no gain map note, since other amber details stay too', note === '', note);
+    keptGainMap(v, 'jpeg-ultrahdr-like.jpg', 'ultrahdr');
     const inside = scan(registry.filter((r) => r.file === 'jpeg-ultrahdr-like.jpg' && /GAINMAP/.test(r.string) && r.tier === 'red'), v.path);
     check('the author name inside the gain map is gone', !inside.length, inside.map((r) => r.string), 'engine');
   }
+
+  // Amber ticked too, the gain map and its description unticked: they alone stay of red and
+  // amber, and the result says why the word is public and how to get minimal.
+  await setTiers(p, { red: true, amber: true });
+  for (const id of GAIN_KEEP) await p.ev(`document.querySelector('#meta-groups .ms-check[data-id="${id}"]').click()`);
+  await p.press();
+  files = await p.download();
+  check('amber ticked, gain map kept: one file downloaded, named image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
+  if (files[0]) {
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-ultrahdr-like.jpg', removed: ['red', 'amber'], keep: GAIN_KEEP, lossless: true, word: 'public' });
+    const left = v.back.items.filter((i) => i.tier !== 'green').map((i) => i.id).sort();
+    check('only the gain map and its description stay of red and amber', J(left) === J(GAIN_KEEP), left);
+    const note = await p.ev("(document.querySelector('#results-list .ms-word-note') || {}).textContent || ''");
+    check('the result says why the word is public and how to get minimal', note === GAIN_NOTE, note);
+    keptGainMap(v, 'jpeg-ultrahdr-like.jpg', 'ultrahdr-amber');
+  }
+
+  // Ticking the gain map gives the minimal word: the gain map, its MPF index, any ISO
+  // segment and the hdrgm description all go.
+  await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"jpeg:trailing:gain-map\"]').click()");
+  const ticked = await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"jpeg:trailing:gain-map\"]').checked");
+  check('the gain map can be ticked', ticked === true, ticked);
+  const preview1 = await p.ev("document.getElementById('name-preview').textContent");
+  check('the expected name then uses the minimal word', /Expected name: image\.minimal\.jpg\./.test(preview1), preview1);
+  await p.press();
+  files = await p.download();
+  check('gain map ticked: one file downloaded, named image.minimal.jpg', files.length === 1 && files[0].name === 'image.minimal.jpg', files.map((f) => f.name));
+  if (files[0]) {
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-ultrahdr-like.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
+    check('the gain map, its MPF index and its description are gone', !v.back.items.some((i) => /gain|mpf|isogain/.test(i.id)) && !Object.keys(v.ex).some((k) => /MPImage2|XMP-hdrgm|MPF0/.test(k)), { readBack: v.back.items.map((i) => i.id), exiftool: Object.keys(v.ex).filter((k) => /MP|hdrgm/.test(k)) });
+    const raw = readFileSync(v.path).toString('latin1');
+    check('no MPF index, ISO 21496-1 segment or hdrgm text is left in the bytes', !raw.includes('MPF\0') && !raw.includes('urn:iso:std:iso:ts:21496') && !raw.includes('hdrgm'), null, 'engine');
+    const note0 = await p.ev("(document.querySelector('#results-list .ms-word-note') || {}).textContent || ''");
+    check('no gain map note when the gain map went', note0 === '', note0);
+  }
 });
 
-// An HDR photo in a batch with another photo: the starting selection is the same for both.
+// An HDR photo in a batch with another photo: the gain map stays for the HDR photo only.
 flow('hdr-batch', DESKTOP, async (p) => {
   await p.load(['jpeg-ultrahdr-like.jpg', 'jpeg-everything.jpg']);
-  const rows = await p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier }))");
-  const notGreen = rows.filter((r) => r.tier !== 'green');
-  check('batch: every red and amber detail starts ticked, the gain map included', notGreen.some((r) => r.id === 'jpeg:trailing:gain-map') && notGreen.every((r) => r.checked), notGreen.filter((r) => !r.checked));
+  const rows = await rowsOf(p);
+  const kept = rows.filter((r) => GAIN_KEEP.includes(r.id));
+  const others = rows.filter((r) => r.tier !== 'green' && !GAIN_KEEP.includes(r.id));
+  check('batch: the gain map and its description start unticked', kept.length === 2 && kept.every((r) => !r.checked), kept);
+  check('batch: every other red detail starts ticked, every other amber detail unticked', others.length > 0 && others.every((r) => r.checked === (r.tier === 'red')), others.filter((r) => r.checked !== (r.tier === 'red')));
   await p.press();
   const files = await p.download();
   const names = files.map((f) => f.name).sort();
-  check('batch: two files, both minimal', J(names) === J(['image-1.minimal.jpg', 'image-2.minimal.jpg']), names);
+  check('batch: both photos are public (amber stays; the HDR photo keeps its gain map)', J(names) === J(['image-1.public.jpg', 'image-2.public.jpg']), names);
   for (const f of files) {
-    const fixture = f.name.startsWith('image-1') ? 'jpeg-ultrahdr-like.jpg' : 'jpeg-everything.jpg';
+    const hdr = f.name.startsWith('image-1');
+    const fixture = hdr ? 'jpeg-ultrahdr-like.jpg' : 'jpeg-everything.jpg';
+    const v = await verifyDownload(p, f, { fixture, index: hdr ? 1 : 2, removed: ['red'], lossless: true, word: 'public' });
+    if (hdr) keptGainMap(v, fixture, 'hdr-batch');
+    else check(`batch: ${f.name} has no gain map`, !v.back.items.some((i) => /gain|mpf/.test(i.id)), v.back.items.map((i) => i.id));
+  }
+});
+
+// An HDR photo in a batch with a file whose second picture is not plausibly a gain map: that
+// file's gain map description is red, which makes the merged row red. It still starts
+// unticked, so the real gain map keeps its description; the other file's description goes
+// with its own red picture.
+flow('hdr-batch-mixed', DESKTOP, async (p) => {
+  await p.load(['jpeg-ultrahdr-like.jpg', 'jpeg-uhdr-not-gainmap.jpg']);
+  const rows = await rowsOf(p);
+  const desc = rows.find((r) => r.id === 'xmp:gainmap');
+  const gain = rows.find((r) => r.id === 'jpeg:trailing:gain-map');
+  check('mixed batch: the merged description row is red but starts unticked', desc && desc.tier === 'red' && !desc.checked, desc);
+  check('mixed batch: the gain map starts unticked', gain && !gain.checked, gain);
+  const extra = rows.find((r) => r.id === 'jpeg:trailing:mpf-image');
+  check('mixed batch: the other second picture is red and ticked', extra && extra.tier === 'red' && extra.checked, extra);
+  await p.press();
+  const files = await p.download();
+  const names = files.map((f) => f.name).sort();
+  check('mixed batch: image-1.public.jpg keeps its gain map, image-2 is minimal', J(names) === J(['image-1.public.jpg', 'image-2.minimal.jpg']), names);
+  for (const f of files) {
+    const hdr = f.name.startsWith('image-1');
+    const fixture = hdr ? 'jpeg-ultrahdr-like.jpg' : 'jpeg-uhdr-not-gainmap.jpg';
+    const v = await verifyDownload(p, f, { fixture, index: hdr ? 1 : 2, removed: ['red'], lossless: true, word: hdr ? 'public' : 'minimal' });
+    if (hdr) {
+      keptGainMap(v, fixture, 'hdr-batch-mixed');
+      const text = readFileSync(v.path).toString('utf8');
+      check('mixed batch: the HDR photo keeps hdrgm:Version and its Container directory', /hdrgm:Version="1\.0"/.test(text) && /Container:Directory/.test(text), null, 'engine');
+    } else {
+      check('mixed batch: the other file has no gain map description, index or second picture', !v.back.items.some((i) => /gain|mpf/.test(i.id)) && !readFileSync(v.path).toString('latin1').includes('hdrgm'), v.back.items.map((i) => i.id), 'engine');
+    }
+  }
+});
+
+// Ticking only "HDR gain map details" takes the gain map along, so no gain map is left that
+// readers could no longer find; the expected name says minimal before the file is made.
+flow('hdr-description', DESKTOP, async (p) => {
+  await p.load(['jpeg-ultrahdr-like.jpg']);
+  // Every red and amber detail ticked except the gain map itself, so only its description
+  // is ticked of the two.
+  await setTiers(p, { red: true, amber: true });
+  await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"jpeg:trailing:gain-map\"]').click()");
+  check('description ticked, gain map unticked', J(await p.ev("['jpeg:trailing:gain-map', 'xmp:gainmap'].map((id) => document.querySelector(`#meta-groups .ms-check[data-id=\"${id}\"]`).checked)")) === J([false, true]));
+  const preview = await p.ev("document.getElementById('name-preview').textContent");
+  check('description ticked: the expected name uses the minimal word', /Expected name: image\.minimal\.jpg\./.test(preview), preview);
+  await p.press();
+  const files = await p.download();
+  check('description ticked: image.minimal.jpg', files.length === 1 && files[0].name === 'image.minimal.jpg', files.map((f) => f.name));
+  if (files[0]) {
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-ultrahdr-like.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
+    const raw = readFileSync(v.path).toString('latin1');
+    check('description ticked: no gain map, MPF index or hdrgm text is left', !v.back.items.some((i) => /gain|mpf|isogain/.test(i.id)) && !raw.includes('MPF\0') && !raw.includes('hdrgm'), v.back.items.map((i) => i.id), 'engine');
+  }
+});
+
+// HDR photos with something hidden in or around the gain map: each extra is listed, red and
+// ticked, under the group its name says; the gain map stays and the extras go.
+flow('hdr-planted', DESKTOP, async (p) => {
+  await p.load(['jpeg-uhdr-hdrgm-extra.jpg', 'jpeg-uhdr-bare-after-eoi.jpg']);
+  const rows = await rowsOf(p);
+  const want = [['xmp:serial', 'Who'], ['xmp:gps', 'Where'], ['jpeg:trailing:gain-map:after', 'Hidden extras']];
+  for (const [id, group] of want) {
+    const r = rows.find((x) => x.id === id);
+    check(`${id} is offered red and ticked, under ${group}`, r && r.tier === 'red' && r.checked && r.group === group, r || rows.map((x) => x.id));
+  }
+  check('the gain map and its description start unticked', rows.filter((r) => GAIN_KEEP.includes(r.id)).every((r) => !r.checked), rows.filter((r) => GAIN_KEEP.includes(r.id)));
+  await p.press();
+  const files = await p.download();
+  const names = files.map((f) => f.name).sort();
+  check('both HDR photos are public', J(names) === J(['image-1.public.jpg', 'image-2.public.jpg']), names);
+  for (const f of files) {
+    const fixture = f.name.startsWith('image-1') ? 'jpeg-uhdr-hdrgm-extra.jpg' : 'jpeg-uhdr-bare-after-eoi.jpg';
+    const v = await verifyDownload(p, f, { fixture, index: f.name.startsWith('image-1') ? 1 : 2, removed: ['red'], lossless: true, word: 'public' });
+    keptGainMap(v, fixture, `hdr-planted-${fixture.replace(/\.jpg$/, '')}`);
+  }
+});
+
+// An iPhone HDR JPEG: the gain map, Apple's HDR brightness (two numbers from the MakerNote)
+// and the gain map's apdi label stay; the rest of the MakerNote and the extra apdi field go.
+flow('hdr-apple', DESKTOP, async (p) => {
+  const fixture = 'jpeg-uhdr-apple.jpg';
+  await p.load([fixture]);
+  const rows = await rowsOf(p);
+  const row = (id) => rows.find((r) => r.id === id);
+  check('apple: the gain map is amber and starts unticked', row('jpeg:trailing:gain-map') && row('jpeg:trailing:gain-map').tier === 'amber' && !row('jpeg:trailing:gain-map').checked, row('jpeg:trailing:gain-map') || rows.map((r) => r.id));
+  check('apple: the HDR brightness is amber and starts unticked', row('exif:apple-hdr') && row('exif:apple-hdr').tier === 'amber' && !row('exif:apple-hdr').checked, row('exif:apple-hdr') || rows.map((r) => r.id));
+  check('apple: the rest of the maker notes is red and ticked', row('exif:makernote') && row('exif:makernote').tier === 'red' && row('exif:makernote').checked, row('exif:makernote'));
+  const preview = await p.ev("document.getElementById('name-preview').textContent");
+  check('apple: the expected name uses the public word', /Expected name: image\.public\.jpg\./.test(preview), preview);
+  const keep = ['jpeg:trailing:gain-map', 'exif:apple-hdr'];
+  // The starting selection (red only): the gain map, the HDR brightness and the camera
+  // (amber) stay; the rest of the maker notes goes.
+  await p.press();
+  const first = await p.download();
+  check('apple: the starting selection gives image.public.jpg', first.length === 1 && first[0].name === 'image.public.jpg', first.map((f) => f.name));
+  if (first[0]) {
+    const v0 = await verifyDownload(p, first[0], { fixture, removed: ['red'], lossless: true, word: 'public' });
+    const left0 = v0.back.items.filter((i) => i.tier !== 'green').map((i) => i.id).sort();
+    check('apple: with the starting selection the gain map, the HDR brightness and the camera stay, nothing red', J(left0) === J([...keep, 'exif:camera'].sort()), left0);
+    check('apple: and the photo keeps the two HDR numbers', v0.ex['Apple:HDRHeadroom'] !== undefined && v0.ex['Apple:HDRGain'] !== undefined, Object.keys(v0.ex).filter((k) => /^Apple:/.test(k)), 'engine');
+  }
+  // Amber ticked too, the gain map and the HDR brightness unticked.
+  await setTiers(p, { red: true, amber: true });
+  for (const id of keep) await p.ev(`document.querySelector('#meta-groups .ms-check[data-id="${id}"]').click()`);
+  await p.press();
+  const files = await p.download();
+  check('apple: amber ticked, gain map kept: one file downloaded, named image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
+  if (!files[0]) return;
+  const v = await verifyDownload(p, files[0], { fixture, removed: ['red', 'amber'], keep, lossless: true, word: 'public' });
+  const left = v.back.items.filter((i) => i.tier !== 'green').map((i) => i.id).sort();
+  check('apple: only the gain map and the HDR brightness stay of red and amber', J(left) === J([...keep].sort()), left);
+  const noteText = await p.ev("(document.querySelector('#results-list .ms-word-note') || {}).textContent || ''");
+  check('apple: the result says why the word is public', noteText === GAIN_NOTE, noteText);
+  check('apple: the photo keeps the two HDR numbers Chrome and Apple read', v.ex['Apple:HDRHeadroom'] !== undefined && v.ex['Apple:HDRGain'] !== undefined, Object.keys(v.ex).filter((k) => /^Apple:/.test(k)), 'engine');
+  check('apple: and nothing else from the maker notes', Object.keys(v.ex).filter((k) => /^Apple:/.test(k)).every((k) => /HDRHeadroom|HDRGain$/.test(k)), Object.keys(v.ex).filter((k) => /^Apple:/.test(k)), 'engine');
+  const gm = spawnSync('exiftool', ['-b', '-MPImage2', v.path], { maxBuffer: 16 * 1024 * 1024 }).stdout;
+  const orig = spawnSync('exiftool', ['-b', '-MPImage2', join(FIX, fixture)], { maxBuffer: 16 * 1024 * 1024 }).stdout;
+  const gmFile = join(CHECKS, 'hdr-apple-gainmap-out.jpg');
+  const origFile = join(CHECKS, 'hdr-apple-gainmap-orig.jpg');
+  writeFileSync(gmFile, gm);
+  writeFileSync(origFile, orig);
+  check('apple: the kept gain map is a whole JPEG found through MPF', gm.length > 100 && gm[0] === 0xff && gm[1] === 0xd8 && gm[gm.length - 2] === 0xff && gm[gm.length - 1] === 0xd9, gm.length, 'engine');
+  let px = null;
+  try { px = py(SAME_PIXELS_PY, origFile, gmFile); } catch (e) { px = { error: String(e.message).slice(0, 200) }; }
+  check('apple: the kept gain map has the same pixels (Pillow)', px && px.same, px, 'engine');
+  const gk = exiftoolKeys(gmFile);
+  const xmp = Object.keys(gk).filter((k) => /^XMP-/.test(k)).sort();
+  check('apple: the gain map keeps HDRGainMapVersion and the apdi label, and nothing else in XMP', J(xmp) === J(['XMP-HDRGainMap:HDRGainMapVersion', 'XMP-apdi:AuxiliaryImageType']) && gk['XMP-apdi:AuxiliaryImageType'] === 'urn:com:apple:photo:2020:aux:hdrgainmap', { xmp, type: gk['XMP-apdi:AuxiliaryImageType'] }, 'engine');
+});
+
+// Free text in green details: names in a colour profile and in technical XMP fields are red
+// and ticked; the colour profile and the numbers stay, and the colours do not change.
+flow('green-text', DESKTOP, async (p) => {
+  await p.load(['jpeg-icc-text.jpg', 'jpeg-green-xmp.jpg']);
+  const rows = await rowsOf(p);
+  const row = (id) => rows.find((r) => r.id === id);
+  // The group word shows only in a section that mixes kinds; here every red detail is hidden.
+  check('green text: the text inside the colour profile is red and ticked', row('icc:text') && row('icc:text').tier === 'red' && row('icc:text').checked && ['', 'Hidden extras'].includes(row('icc:text').group), row('icc:text') || rows.map((r) => r.id));
+  check('green text: the colour profile itself is green and unticked', row('icc:profile') && row('icc:profile').tier === 'green' && !row('icc:profile').checked, row('icc:profile'));
+  check('green text: unexpected text in technical XMP fields is red and ticked', row('xmp:technical-text') && row('xmp:technical-text').tier === 'red' && row('xmp:technical-text').checked, row('xmp:technical-text') || rows.map((r) => r.id));
+  check('green text: the technical XMP fields that hold numbers stay green and unticked', row('xmp:technical') && row('xmp:technical').tier === 'green' && !row('xmp:technical').checked, row('xmp:technical'));
+  await p.press();
+  const files = await p.download();
+  const names = files.map((f) => f.name).sort();
+  check('green text: both files are minimal', J(names) === J(['image-1.minimal.jpg', 'image-2.minimal.jpg']), names);
+  for (const f of files) {
+    const fixture = f.name.startsWith('image-1') ? 'jpeg-icc-text.jpg' : 'jpeg-green-xmp.jpg';
     const v = await verifyDownload(p, f, { fixture, index: f.name.startsWith('image-1') ? 1 : 2, removed: ['red', 'amber'], lossless: true, word: 'minimal' });
-    check(`batch: ${f.name} keeps no gain map`, !v.back.items.some((i) => /gain|mpf/.test(i.id)), v.back.items.map((i) => i.id));
+    if (fixture === 'jpeg-icc-text.jpg') {
+      check('green text: the colour profile stays and still opens', !!v.ex['ICC_Profile:ProfileDescription'] && v.back.items.some((i) => i.id === 'icc:profile'), Object.keys(v.ex).filter((k) => /ICC/.test(k)), 'engine');
+      const a = spawnSync('exiftool', ['-b', '-ICC_Profile', join(FIX, fixture)], { maxBuffer: 1 << 24 }).stdout;
+      const b = spawnSync('exiftool', ['-b', '-ICC_Profile', v.path], { maxBuffer: 1 << 24 }).stdout;
+      const tags = (x) => { const o = {}; for (let i = 0; i < x.readUInt32BE(128); i++) { const e = 132 + i * 12; const off = x.readUInt32BE(e + 4); const len = x.readUInt32BE(e + 8); o[x.toString('latin1', e, e + 4)] = x.subarray(off, off + len).toString('hex'); } return o; };
+      const ta = tags(a);
+      const tb = tags(b);
+      const changed = Object.keys(ta).filter((k) => /^(rXYZ|gXYZ|bXYZ|rTRC|gTRC|bTRC|wtpt|chad|chrm|A2B0|B2A0)$/.test(k) && ta[k] !== tb[k]);
+      check('green text: every colour tag of the profile is byte for byte the same', a.length === b.length && !changed.length, { sizes: [a.length, b.length], changed }, 'engine');
+    } else {
+      const raw = readFileSync(v.path).toString('utf8');
+      check('green text: the numbers in technical XMP fields stay', /photoshop:ColorMode="3"/.test(raw) && /GPano:PoseHeadingDegrees="12.5"/.test(raw), null, 'engine');
+    }
+  }
+});
+
+// The default result loaded again: nothing is red, amber (the gain map with it) stays
+// unticked, so nothing would change and the page says so instead of making a copy.
+flow('hdr-again', DESKTOP, async (p) => {
+  await p.load(['jpeg-ultrahdr-like.jpg']);
+  await p.press();
+  const files = await p.download();
+  check('first pass: image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
+  if (!files[0]) return;
+  const again = join(CHECKS, 'hdr-again.jpg');
+  writeFileSync(again, files[0].bytes);
+  await p.click('#reset-btn');
+  await p.load([again]);
+  const ticked = await tickedIds(p);
+  check('loaded again, nothing is ticked', ticked.length === 0, ticked);
+  const said = await p.ev("document.getElementById('announcer').textContent");
+  check('the announcement says nothing is ticked, as nothing is red', /None of them is red, so nothing is ticked\.$/.test(said), said);
+  const r = await pressExpectingNothing(p);
+  check('pressing the button makes no copy and says there is nothing to change', r.links === 0 && /^Nothing to change yet/.test(r.text), r);
+});
+
+// Cropping re-saves the picture, and a re-saved picture cannot carry a gain map: the result
+// says so, because the gain map was kept.
+flow('hdr-crop', DESKTOP, async (p) => {
+  await p.load(['jpeg-ultrahdr-like.jpg']);
+  await p.click('label[for="crop-toggle"]');
+  await p.click('#crop-ratios [data-ratio="1:1"]');
+  await p.press();
+  const files = await p.download();
+  check('one file downloaded', files.length === 1, files.map((f) => f.name));
+  if (files[0]) {
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-ultrahdr-like.jpg', removed: ['red'], lossless: false, expectFormat: 'jpeg' });
+    check('the cropped file has no gain map', !v.back.items.some((i) => /gain|mpf/.test(i.id)), v.back.items.map((i) => i.id), 'engine');
+    const lostNote = await p.ev("[...document.querySelectorAll('#results-list .ms-note')].map(n => n.textContent).find(t => /left them out/.test(t)) || ''");
+    check('the result says re-saving left out the HDR gain map', /left them out: .*HDR gain map/.test(lostNote), lostNote);
   }
 });
 
@@ -1569,7 +1842,7 @@ flow('two-files', DESKTOP, async (p) => {
   check('two files: image-1.<word>.jpg and image-2.<word>.webp', names.length === 2 && /^image-1\.\w+\.jpg$/.test(names[0]) && /^image-2\.\w+\.webp$/.test(names[1]), names);
   for (const f of files) {
     const fixture = f.name.endsWith('.jpg') ? 'jpeg-everything.jpg' : 'webp-everything.webp';
-    await verifyDownload(p, f, { fixture, index: f.name.startsWith('image-1') ? 1 : 2, removed: ['red', 'amber'], lossless: true, word: 'minimal' });
+    await verifyDownload(p, f, { fixture, index: f.name.startsWith('image-1') ? 1 : 2, removed: ['red'], lossless: true, word: 'public' });
   }
   await p.layout('two results');
   await p.shot('two-files-result', { selector: '#results' });
@@ -1579,17 +1852,17 @@ flow('two-files', DESKTOP, async (p) => {
   const b = await inspect(new Uint8Array(readFileSync(join(FIX, 'webp-everything.webp'))));
   const amberIds = [...new Set([...a.items, ...b.items].filter((i) => i.tier === 'amber').map((i) => i.id))];
   let ts = await tierState(p);
-  check('two files: the sections are red, amber and green, all closed, red and amber ticked', J(Object.keys(ts)) === J(['red', 'amber', 'green']) && allClosed(ts) && ts.red.checked && ts.amber.checked && !ts.green.checked, ts);
+  check('two files: the sections are red, amber and green, all closed, only red ticked', J(Object.keys(ts)) === J(['red', 'amber', 'green']) && allClosed(ts) && ts.red.checked && !ts.amber.checked && !ts.green.checked, ts);
   check(`two files: amber counts the details of both files once each (${amberIds.length})`, ts.amber.n === amberIds.length, ts.amber);
   await p.click('#m-tier-amber-all');
   ts = await tierState(p);
-  check('two files: the amber tick box unticks amber in both, from a closed section', !ts.amber.checked && ts.amber.ticked === 0 && ts.amber.expanded === 'false', ts.amber);
+  check('two files: the amber tick box ticks amber in both, from a closed section', ts.amber.checked && ts.amber.ticked === ts.amber.n && ts.amber.expanded === 'false', ts.amber);
   await p.press();
   const both = await p.download();
-  check('two files with only red ticked: two files, each with the public word', both.length === 2 && both.every((f) => /\.public\./.test(f.name)), both.map((f) => f.name));
+  check('two files with red and amber ticked: two files, each with the minimal word', both.length === 2 && both.every((f) => /\.minimal\./.test(f.name)), both.map((f) => f.name));
   for (const f of both) {
     const fixture = f.name.endsWith('.jpg') ? 'jpeg-everything.jpg' : 'webp-everything.webp';
-    await verifyDownload(p, f, { fixture, index: f.name.startsWith('image-1') ? 1 : 2, removed: ['red'], lossless: true, word: 'public' });
+    await verifyDownload(p, f, { fixture, index: f.name.startsWith('image-1') ? 1 : 2, removed: ['red', 'amber'], lossless: true, word: 'minimal' });
   }
 });
 
@@ -1614,7 +1887,7 @@ flow('bad-files', DESKTOP, async (p) => {
     check('pressing the button gives a file or a plain explanation', outcome.links === 1 || outcome.error.length > 0, outcome);
     if (outcome.links) {
       const files = await p.download();
-      if (files[0]) await verifyDownload(p, files[0], { fixture: 'truncated.jpg', removed: ['red', 'amber'] });
+      if (files[0]) await verifyDownload(p, files[0], { fixture: 'truncated.jpg', removed: ['red'] });
     }
     await p.shot('bad-truncated', { selector: '#workspace' });
   }
@@ -1624,7 +1897,7 @@ flow('bad-files', DESKTOP, async (p) => {
   check('a bad file next to a good one: the good one loads, the bad one is named', mix.ws && mix.n > 0 && /not-an-image\.pdf/.test(mix.err), mix);
   await p.press();
   const files = await p.download();
-  check('and the good one still downloads as image.minimal.jpg', files.length === 1 && files[0].name === 'image.minimal.jpg', files.map((f) => f.name));
+  check('and the good one still downloads as image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
 });
 
 flow('offline', DESKTOP, async (p) => {
@@ -1635,8 +1908,8 @@ flow('offline', DESKTOP, async (p) => {
   await p.load(['jpeg-everything.jpg']);
   await p.press();
   const files = await p.download();
-  check('offline: the file is still made and downloaded', files.length === 1 && files[0].name === 'image.minimal.jpg', files.map((f) => f.name));
-  if (files[0]) await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
+  check('offline: the file is still made and downloaded', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
+  if (files[0]) await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: true, word: 'public' });
   const tried = record.requests.slice(mark).filter((r) => r.flow === 'offline' && /^https?:/.test(r.url));
   check('offline: the page did not even try the network', !tried.length, tried.map((r) => r.url));
   await p.s('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
@@ -1667,12 +1940,12 @@ flow('phone', PHONE, async (p) => {
   await p.shot('2-tiers-all-open', { selector: '#meta-card' });
   await p.click('#m-tier-amber-all');
   tiers = await tierState(p);
-  check('phone: a tap on the amber tick box unticks every amber detail', !tiers.amber.checked && tiers.amber.ticked === 0, tiers.amber);
+  check('phone: a tap on the amber tick box ticks every amber detail', tiers.amber.checked && tiers.amber.ticked === tiers.amber.n, tiers.amber);
   await p.click('#m-tier-amber-all');
   await p.click('#m-tier-amber-toggle');
   await p.click('#m-tier-green-toggle');
   tiers = await tierState(p);
-  check('phone: and taps close them again, back to red and amber ticked', allClosed(tiers) && tiers.red.checked && tiers.amber.checked && !tiers.green.checked, tiers);
+  check('phone: and taps close them again, back to only red ticked', allClosed(tiers) && tiers.red.checked && !tiers.amber.checked && !tiers.amber.mixed && !tiers.green.checked, tiers);
   const sizes = await p.ev(`(() => {
     const small = [];
     for (const el of document.querySelectorAll('#workspace button, #workspace input, #workspace select, #workspace label.ms-item')) {
@@ -1712,7 +1985,7 @@ flow('phone', PHONE, async (p) => {
   let files = await p.download();
   check('cropped file downloaded as image.<word>.jpg', files.length === 1 && /^image\.\w+\.jpg$/.test(files[0].name), files.map((f) => f.name));
   if (files[0]) {
-    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red', 'amber'], lossless: false });
+    const v = await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: false });
     check('4:5 crop gives a 4:5 picture', Math.abs(v.back.width * 5 - v.back.height * 4) <= 5, [v.back.width, v.back.height]);
   }
   await p.layout('result');
@@ -1724,8 +1997,8 @@ flow('phone', PHONE, async (p) => {
   await p.click('label[for="crop-toggle"]');
   await p.press();
   files = await p.download();
-  check('phone: default scrub downloads image.minimal.jpg', files.length === 1 && files[0].name === 'image.minimal.jpg', files.map((f) => f.name));
-  if (files[0]) await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
+  check('phone: default scrub downloads image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
+  if (files[0]) await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: true, word: 'public' });
 
   // Start again returns to the beginning.
   await p.click('#reset-btn');
@@ -1755,8 +2028,8 @@ flow(ANDROID_FLOW, ANDROID, async (p) => {
   check('android: the picture loads and its details are listed', n > 0, n);
   await p.press();
   const files = await p.download();
-  check('android: Save gives image.minimal.jpg', files.length === 1 && files[0].name === 'image.minimal.jpg', files.map((f) => f.name));
-  if (files[0]) await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red', 'amber'], lossless: true, word: 'minimal' });
+  check('android: Save gives image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
+  if (files[0]) await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: true, word: 'public' });
   await p.layout('result');
   check('android: the section stays hidden after a result', await p.ev("document.getElementById('android-app').hidden && document.getElementById('android-app').getBoundingClientRect().height === 0"));
 });

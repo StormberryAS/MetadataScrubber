@@ -4,12 +4,12 @@
 // and "XMP " (announced by flags in VP8X) and sometimes in C2PA or private chunks. After
 // removal the VP8X flags are brought in line and the RIFF size is rewritten.
 
-import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=b373c219';
-import { describeC2pa } from './c2pa.js?v=366e87df';
-import { iccDescription } from './icc.js?v=1ac906b0';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=5970adfd';
-import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=262e0fe8';
-import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=f2cbf417';
+import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=4d7df4d3';
+import { describeC2pa } from './c2pa.js?v=fcdff418';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=15403b52';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=93d7f069';
+import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=f010e347';
+import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=79671502';
 
 const STRUCTURAL = new Set(['VP8 ', 'VP8L', 'VP8X', 'ALPH', 'ANIM', 'ANMF']);
 const FLAG_ICC = 0x20;
@@ -113,7 +113,11 @@ export function analyseWebp(b, set) {
   for (const c of w.chunks) {
     if (STRUCTURAL.has(c.type) || c.broken) continue;
     if (c.type === 'ICCP') {
-      set.add({ id: 'icc:profile', group: 'technical', tier: 'green', label: 'Colour profile', value: iccDescription(b.subarray(c.dataStart, c.dataEnd)), source: 'ICC profile', note: 'Keeps colours accurate on different screens.' }, { kind: 'chunks', chunks: [c] });
+      const prof = b.subarray(c.dataStart, c.dataEnd);
+      const info = inspectIcc(prof);
+      if (!info.ok) { set.add({ ...ICC_UNREADABLE_ITEM, value: formatBytes(prof.length) }, { kind: 'chunks', chunks: [c] }); continue; }
+      set.add({ id: 'icc:profile', group: 'technical', tier: 'green', label: 'Colour profile', value: iccDescription(prof), source: 'ICC profile', note: 'Keeps colours accurate on different screens.' }, { kind: 'chunks', chunks: [c] });
+      if (!info.clean) set.add({ ...ICC_TEXT_ITEM, value: iccFreeText(info) }, { kind: 'icctext', chunk: c });
       continue;
     }
     if (c.type === 'EXIF') {
@@ -129,6 +133,9 @@ export function analyseWebp(b, set) {
       if (!model.exif.length) model.orientation = tiffOrientation(m);
       const entry = { chunk: c, off };
       model.exif.push(entry);
+      // The chunk holds the TIFF data from its first byte (WebP container specification);
+      // bytes before the TIFF header are free, so a chunk that stays loses them.
+      if (off > 0) set.normalise = true;
       for (const it of tiffItems(m)) {
         const pub = { id: `exif:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'EXIF' };
         if (it.note) pub.note = it.note;
@@ -190,11 +197,13 @@ export function scrubWebp(b, model, set, remove) {
   const replace = new Map();
   let cutTrailing = false;
   const exifKeys = new Map();
+  const iccTexts = [];
   for (const id of remove) {
     const it = set.get(id);
     if (!it) continue;
     if (it.kind === 'chunks') for (const c of it.chunks) drop.add(c);
     else if (it.kind === 'trailing') cutTrailing = true;
+    else if (it.kind === 'icctext') iccTexts.push(it.chunk);
     else if (it.kind === 'exif') {
       if (!exifKeys.has(it.entry)) exifKeys.set(it.entry, new Set());
       exifKeys.get(it.entry).add(it.key);
@@ -205,14 +214,28 @@ export function scrubWebp(b, model, set, remove) {
     const m = parseTiff(out.subarray(c.dataStart + entry.off, c.dataEnd));
     if (removeTiffKeys(m, keys).empty) drop.add(c);
   }
+  for (const entry of model.exif) {
+    const c = entry.chunk;
+    if (entry.off > 0 && !drop.has(c)) replace.set(c, makeChunk('EXIF', out.slice(c.dataStart + entry.off, c.dataEnd)));
+  }
   for (const entry of model.xmp) {
     const plan = planXmp(entry.parsed, entry.items, remove);
     if (plan.warning) warnings.push(plan.warning);
     if (plan.action === 'drop') drop.add(entry.chunk);
     else if (plan.action === 'rewrite') replace.set(entry.chunk, makeChunk('XMP ', encodeUtf8(plan.text)));
   }
+  // Text inside the colour profile: rewritten in place, same length, colour tags untouched.
+  for (const c of iccTexts) {
+    if (drop.has(c)) continue;
+    const cleaned = cleanIcc(out.slice(c.dataStart, c.dataEnd));
+    if (cleaned) out.set(cleaned, c.dataStart);
+    else {
+      drop.add(c);
+      warnings.push('The text inside the colour profile could not be removed safely, so the whole colour profile was removed. Colours may look slightly different.');
+    }
+  }
   const c2paItem = set.has('webp:c2pa');
-  if (model.c2pa && c2paItem && !remove.has('webp:c2pa') && (drop.size || replace.size || exifKeys.size || cutTrailing)) {
+  if (model.c2pa && c2paItem && !remove.has('webp:c2pa') && (drop.size || replace.size || exifKeys.size || cutTrailing || iccTexts.length)) {
     warnings.push('Content Credentials were kept, but any change to the file makes their signature fail, so checkers will report the picture as altered.');
   }
   const asm = new Assembler(out);

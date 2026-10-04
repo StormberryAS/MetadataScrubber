@@ -11,7 +11,7 @@ export const GROUPS = [
 
 export const TIERS = {
   red: { label: 'Remove before sharing', description: 'Can identify you, your camera or the place. Removed by default.' },
-  amber: { label: 'Think about it', description: 'Can reveal routines, devices or history. Removed by default.' },
+  amber: { label: 'Think about it', description: 'Can reveal routines, devices or history. Kept unless you tick it.' },
   green: { label: 'Harmless and useful', description: 'Helps the picture display correctly. Kept by default.' },
 };
 
@@ -26,6 +26,11 @@ export const SOURCES = {
 };
 
 export const TIER_ORDER = { red: 0, amber: 1, green: 2 };
+
+// Text a person or an app writes freely (captions, titles, descriptions, keywords,
+// comments) can name people, so it is red. Amber holds only structured details: dates,
+// time zone, camera, lens, software, other camera data and the HDR details.
+// Each format module says so in the note of such a detail.
 
 // The strictest of several tiers: red beats amber beats green.
 export function strictest(tiers) {

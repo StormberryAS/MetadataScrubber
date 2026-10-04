@@ -161,12 +161,16 @@ const MAX_INFLATE = 64 * 1024 * 1024;
 const isNode = typeof process !== 'undefined' && !!(process.versions && process.versions.node);
 
 // Inflates a zlib stream. Node uses node:zlib; browsers use DecompressionStream.
-// Returns null when the data is not valid zlib.
+// Returns null when the data is not valid zlib, or when anything follows the end of the
+// stream: such bytes are skipped by readers and could hold anything. DecompressionStream
+// refuses them by itself; in Node the bytes the inflater used are counted.
 export async function inflate(data) {
   if (isNode) {
     try {
       const zlib = await import('node:zlib');
-      return new Uint8Array(zlib.inflateSync(data, { maxOutputLength: MAX_INFLATE }));
+      const res = zlib.inflateSync(data, { maxOutputLength: MAX_INFLATE, info: true });
+      if (res.engine.bytesWritten !== data.length) return null;
+      return new Uint8Array(res.buffer);
     } catch {
       return null;
     }

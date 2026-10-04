@@ -5,20 +5,24 @@
 // metadata by dropping whole parts or overwriting them with zeros.
 //
 //   detectFormat(bytes)            'jpeg' | 'png' | 'webp' | 'heic' | null
-//   inspect(bytes)                 async, { format, width, height, orientation, items, warnings }
+//   inspect(bytes)                 async, { format, width, height, orientation, items, warnings, normalise }
 //   scrub(bytes, removeIds)        async, { bytes, warnings }
+//
+// XMP is only ever kept in one canonical form (see rewriteXmp in core/xmp.js), so a scrub
+// that removes nothing still writes the file again when its XMP is not already in that
+// form; inspect() says so with normalise: true.
 //   buildExif(sourceBytes, keepIds)            fresh EXIF block with only kept simple tags, or null
 //   insertExif(bytes, format, exifPayload)     adds that block to a freshly encoded picture
 //   privacyWord(remainingItems)    'public' | 'minimal' | 'clean' | 'custom'
 //   GROUPS, TIERS
 
-import { latin1, toU8 } from './core/bytes.js?v=b373c219';
-import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=5970adfd';
-import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=9b1d2d73';
-import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=6139903e';
-import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=6dc5794d';
-import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=1b8d4ee1';
-import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=262e0fe8';
+import { latin1, toU8 } from './core/bytes.js?v=4d7df4d3';
+import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=93d7f069';
+import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=4654129f';
+import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=779cf432';
+import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=8df81a7e';
+import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=951a9931';
+import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=f010e347';
 
 export { GROUPS, TIERS };
 
@@ -53,6 +57,7 @@ export async function inspect(input) {
     orientation: model.orientation >= 1 && model.orientation <= 8 ? model.orientation : 1,
     items: set.items.map((i) => ({ ...i })),
     warnings: [...set.warnings],
+    normalise: !!set.normalise,
   };
 }
 
@@ -65,12 +70,15 @@ export async function scrub(input, removeIds) {
     if (set.has(id)) remove.add(id);
     else warnings.push(`Nothing called "${id}" was found in this file, so it was skipped.`);
   }
-  if (!remove.size) return { bytes: b.slice(), warnings };
+  if (!remove.size && !set.normalise) return { bytes: b.slice(), warnings };
   let res;
   if (format === 'jpeg') res = scrubJpeg(b, model, set, remove);
   else if (format === 'png') res = await scrubPng(b, model, set, remove);
   else if (format === 'webp') res = scrubWebp(b, model, set, remove);
   else res = scrubHeic(b, model, set, remove);
+  // A colour profile that could not be read goes whole; say what that can do to colours.
+  const iccNote = 'The colour profile could not be read, so it was removed. Colours may look slightly different.';
+  if (remove.has('icc:unreadable') && !res.warnings.some((w) => /colour profile/i.test(w))) warnings.push(iccNote);
   return { bytes: res.bytes, warnings: [...warnings, ...res.warnings] };
 }
 

@@ -55,12 +55,12 @@ compressed `iTXt` and `iCCP` chunks, every hex-decoded PNG raw profile, and
 UTF-16 text in either byte order. A plain `grep -c CANARY- file` finds only the
 `raw` ones.
 
-What the page's starting selection (every red and amber detail ticked) must
-achieve, per fixture: no red or amber string left; green strings still there
-unless the user ticked them. That gives "minimal", which leaves only green
-strings; "clean" leaves none. The red-only scrub, which the audit also runs as
-the strictest test for red, must leave no red string while amber and green
-strings stay.
+What the page's starting selection (since 0.0.3, every red detail ticked and
+nothing else) must achieve, per fixture: no red string left; amber and green
+strings still there unless the user ticked them. That gives "public" when amber
+details remain. Ticking amber as well (the audit's red-and-amber selection,
+which keeps an HDR gain map) must leave no red or amber string, which gives
+"minimal" and leaves only green strings; "clean" leaves none.
 
 A baseline for comparison: `exiftool -all=` on the fixtures removes every
 planted string except two, the unknown PNG chunk `prVt` and the unknown WebP
@@ -85,15 +85,18 @@ that is:
 
 - `spec`: the spec names the item, or an item of the same kind, and its tier.
   The computer name (HostComputer) is red by the owner's decision of
-  2026-10-02, because it often names the owner ("Astrid-Laptop").
+  2026-10-02, because it often names the owner ("Astrid-Laptop"). Free text
+  and the edit history (which lists file names) are red by the owner's
+  decision of 2026-10-04, because they can name people.
 - `inferred`: the spec is silent. The tier follows the closest rule:
-  - free text (descriptions, comments, captions, keywords, titles) is amber,
-    because it is "think about it" material that can hold anything;
+  - free text (descriptions, comments, captions, keywords, titles) is red,
+    because it can name people (owner's decision, 2026-10-04; it was amber
+    before 0.0.3);
   - unknown or unparsed data (MakerNote, private tags, the APP5 segment,
     unknown PNG and RIFF chunks, bytes after the end of the image, the Samsung
     trailer) is red, because the page cannot show the user what is in it and
     maker notes routinely hold serial numbers;
-  - the PDF Author is red and Title amber, by the same rules, for phase 2.
+  - the PDF Author and Title are red, by the same rules, for phase 2.
 
 **Stored as** is how the string sits in the file: `raw` (verbatim bytes),
 `zlib` (inside a compressed PNG chunk), `hex` (inside a PNG "Raw profile type
@@ -117,6 +120,7 @@ exif" text chunk, where 72-character line breaks can split it) or `utf16`
 | `jpeg-orientation-6.jpg` | 33,658 | Camera-style rotated photo, Orientation 6, big-endian EXIF |
 | `jpeg-progressive.jpg` | 44,286 | Progressive (SOF2) encoding with EXIF, XMP and COM |
 | `jpeg-ultrahdr-like.jpg` | 82,149 | MPF index pointing to a gain map JPEG after EOI |
+| `jpeg-uhdr-*.jpg` (20 files) | 80,872 to 157,671 | Ultra HDR and iPhone HDR variants: one thing hidden in or around a gain map that starts unticked |
 | `jpeg-motion-photo.jpg` | 117,412 | Google-style motion photo: XMP container directory plus an appended MP4 |
 | `jpeg-samsung-trailer.jpg` | 50,829 | Samsung SEFH/SEFT trailer after EOI |
 | `jpeg-extended-xmp.jpg` | 186,030 | XMP too large for one segment, split into Extended XMP |
@@ -130,6 +134,11 @@ exif" text chunk, where 72-character line breaks can split it) or `utf16`
 | `jpeg-double-exif.jpg` | 14,334 | Two EXIF APP1 segments |
 | `jpeg-ifd-cycle.jpg` | 13,850 | TIFF directories that point back at each other |
 | `jpeg-ifd-overflow.jpg` | 13,858 | TIFF counts and offsets far outside the segment |
+| `jpeg-icc-text.jpg` | 29,507 | Names in the description, copyright and device maker of a colour profile (APP2) |
+| `png-icc-text.png` | 143,593 | Names in a compressed iCCP profile and in its profile name |
+| `webp-icc-text.webp` | 4,712 | Names in the copyright and device model of an ICCP profile |
+| `heic-icc-text.heic` | 41,947 | Names in the description and copyright of a colr profile |
+| `jpeg-green-xmp.jpg` | 14,523 | Names in technical XMP fields (`xmp:Rating`, `photoshop:ICCProfile`, `GPano:ProjectionType`) |
 
 Byte counts are from this machine's tool versions and will differ slightly
 elsewhere.
@@ -186,6 +195,39 @@ image size and the gain map offset must be rewritten or the gain map is lost.
 And the gain map's own XMP holds an author name: either clean it or drop the
 gain map (the spec does not tier the gain map itself; it is a low-resolution
 copy of the picture, so after a crop it is as revealing as the preview).
+
+### jpeg-uhdr-*.jpg: Ultra HDR variants
+
+Twenty HDR shaped files built by `fixturekit.py uhdr` from plain JPEGs
+of the same scene, so each carries only its own planted strings. The photo has
+XMP with `hdrgm:Version` and a `Container:Directory` (Primary, GainMap with its
+length) and a big-endian MPF index; the gain map (200 x 150, greyscale) has the
+full `hdrgm` description. The page keeps an HDR gain map by default, so each
+file hides one thing in or around it that must still be listed and removed
+while the gain map stays and still renders:
+
+| Fixture | What is hidden |
+|---|---|
+| `jpeg-uhdr-hdrgm-extra.jpg` | `hdrgm:CameraSerialNumber` and `hdrgm:GPSLatitude` in the photo XMP |
+| `jpeg-uhdr-item-label.jpg` | `Item:Label` on the GainMap entry of the directory |
+| `jpeg-uhdr-apple-owner.jpg` | `HDRGainMap:OwnerName` next to Apple's `HDRGainMapVersion` |
+| `jpeg-uhdr-after-eoi.jpg` | Bytes after the gain map's end marker, inside its MPF size; the gain map also has an XMP toolkit name |
+| `jpeg-uhdr-bare-after-eoi.jpg` | The same bytes after a gain map with no other metadata |
+| `jpeg-uhdr-mpf-tail.jpg` | Bytes after the MP entry table in the MPF segment |
+| `jpeg-uhdr-inner-hdrgm.jpg` | `hdrgm:CameraSerialNumber` in the gain map's own XMP |
+| `jpeg-uhdr-iso-tail.jpg` | Bytes after the version field of the photo's ISO 21496-1 segment |
+| `jpeg-uhdr-inner-mpf.jpg` | An MPF segment inside the gain map |
+| `jpeg-uhdr-inner-iso.jpg` | Bytes after the version field of the gain map's ISO 21496-1 segment |
+| `jpeg-uhdr-version-text.jpg` | Text inside the value of `hdrgm:Version` |
+| `jpeg-uhdr-mpf-extras.jpg` | Little-endian MPF with `ImageUIDList` (B003), `TotalFrames` (B004) and an MP Attribute IFD holding an unknown ASCII tag |
+| `jpeg-uhdr-dir-semantic.jpg` | A third directory entry whose `Item:Semantic` and `Item:Mime` are free text, standing for no part |
+| `jpeg-uhdr-dir-mime.jpg` | Free text as the `Item:Mime` of the GainMap entry |
+| `jpeg-uhdr-inner-gpano.jpg` | A name in `GPano:Note` (a technical namespace) in the gain map's own XMP |
+| `jpeg-uhdr-iso-full.jpg` | Nothing: a full three-channel ISO 21496-1 block in the gain map and `hdrgm:GainMapMax` as an `rdf:Seq` |
+| `jpeg-uhdr-zero-pad.jpg` | Nothing: 32 zero bytes before the gain map and 64 after it, with `Item:Padding` |
+| `jpeg-uhdr-not-gainmap.jpg` | A full-size colour second picture listed as MPF type 0 with hdrgm in the photo XMP: not a gain map at all, with a comment inside |
+| `jpeg-uhdr-apple.jpg` | iPhone shaped: no XMP in the photo, an Apple MakerNote whose text tag 0x000B holds a name next to the HDR numbers (tags 33 and 48), and text in `apdi:StoredFormat` in the gain map's XMP. The gain map, its `apdi:AuxiliaryImageType` and the two numbers must stay |
+| `jpeg-uhdr-apple-wrong.jpg` | The same, with text after the fixed value of `apdi:AuxiliaryImageType` |
 
 ### jpeg-motion-photo.jpg
 
@@ -289,6 +331,18 @@ Both keep one well-formed Artist tag. The engine must finish quickly, report
 the Artist, add warnings, and never allocate gigabytes. exiftool reports seven
 warnings on the overflow file and two loop warnings on the cycle file.
 
+### Free text in green details: jpeg-icc-text.jpg, png-icc-text.png, webp-icc-text.webp, heic-icc-text.heic, jpeg-green-xmp.jpg
+
+A colour profile and a technical XMP field are green and kept by default, so a
+name hidden in them must be offered as a red detail of its own and go by
+default, with the colour tags of the profile byte for byte the same. The
+profiles are the build's ICC source with text tags replaced by
+`fixturekit.py icc-text`: as `mluc` (UTF-16) in the JPEG and HEIC files, as
+`desc` and `text` (Latin-1, compressed in PNG) in the PNG and WebP files. The
+PNG's iCCP profile name holds a name too. `jpeg-green-xmp.jpg` has names in
+`xmp:Rating`, `photoshop:ICCProfile` and `GPano:ProjectionType`, next to
+`photoshop:ColorMode="3"` and `GPano:PoseHeadingDegrees="12.5"`, which stay.
+
 ## Values grep cannot find
 
 GPS coordinates are binary rationals in EXIF, so they cannot be planted as
@@ -316,8 +370,8 @@ too short to grep reliably); exposure settings (green); the PNG `tIME` chunk
 
 ## What exiftool cannot see
 
-With `exiftool -a -u -G1 -ee`, 102 of the 124 planted strings appear verbatim,
-7 more appear reformatted, and 15 do not appear. The deeper route for each:
+With `exiftool -a -u -G1 -ee`, 115 of the 142 planted strings appear verbatim,
+7 more appear reformatted, and 20 do not appear. The deeper route for each:
 
 | Planted in | Reach it with |
 |---|---|
@@ -341,9 +395,11 @@ With `exiftool -a -u -G1 -ee`, 102 of the 124 planted strings appear verbatim,
   motion photo directory, the Extended XMP GUID, the RIFF size and VP8X flags,
   the PNG CRCs and the IPTC digest in the Photoshop block all depend on what
   is removed.
-- **Content Credentials.** Keeping the C2PA manifest (amber, removed by default)
-  while removing anything else breaks its hash binding in a real file, so it
-  will no longer validate. Worth saying in the one-line explanation.
+- **Content Credentials.** The C2PA manifest is red and removed by default
+  since the review of 4 October 2026: its signer's certificate, generator name,
+  ingredient names and compressed assertions can all name a person, and it
+  carries a unique ID. Keeping it (by unticking it) while removing anything else
+  breaks its hash binding in a real file, so it will no longer validate.
 - **Hostile input.** The cycle and overflow files must finish fast with
   warnings. `truncated.jpg` must not crash. `not-an-image.pdf` must be refused.
 
@@ -354,7 +410,8 @@ With `exiftool -a -u -G1 -ee`, 102 of the 124 planted strings appear verbatim,
 - The colour profile comes from the build machine: a Display P3 profile if one
   is installed under `/usr/share/color/icc`, else colord's sRGB (used here,
   version 4.4), else Ghostscript's sRGB. Each gets a private `CNRY` tag with the
-  fixture's green canary.
+  fixture's canary, which is red since 0.0.3: text in a colour profile that is
+  not a well-known profile name or vendor line is a red detail of its own.
 - The C2PA manifest and the MakerNote are structurally plausible but fake; no
   validator or camera software will accept them.
 - The motion photo video is MPEG-4 Part 2, not H.264 or HEVC; the scrubber
@@ -372,14 +429,14 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 |---|---|---|---|---|---|---|
 | `CANARY-JPEG-THUMB-COM-004a` | EXIF IFD1 thumbnail (uncropped original), COM inside it | hidden | red | spec | raw | no |
 | `CANARY-JPEG-PSTHUMB-COM-3240` | Photoshop IRB thumbnail (uncropped original), COM inside it | hidden | red | spec | raw | no |
-| `CANARY-JPEG-ICC-PRIVATE-3529` | ICC profile (APP2), private CNRY text tag | technical | green | spec | raw | yes |
+| `CANARY-JPEG-ICC-PRIVATE-3529` | ICC profile (APP2), private CNRY text tag | hidden | red | spec | raw | yes |
 | `CANARY-JPEG-EXIF-MAKERNOTE-a118` | EXIF MakerNote (binary) | hidden | red | inferred | raw | no |
 | `CANARY-JPEG-EXIF-MAKE-719d` | EXIF IFD0 Make | device | amber | spec | raw | yes |
 | `CANARY-JPEG-EXIF-MODEL-e21e` | EXIF IFD0 Model | device | amber | spec | raw | yes |
 | `CANARY-JPEG-EXIF-SOFTWARE-5d74` | EXIF IFD0 Software | device | amber | spec | raw | yes |
 | `CANARY-JPEG-EXIF-ARTIST-c2a7` | EXIF IFD0 Artist | who | red | spec | raw | yes |
 | `CANARY-JPEG-EXIF-COPYRIGHT-a053` | EXIF IFD0 Copyright | who | red | spec | raw | yes |
-| `CANARY-JPEG-EXIF-DESCRIPTION-ba29` | EXIF IFD0 ImageDescription | hidden | amber | inferred | raw | yes |
+| `CANARY-JPEG-EXIF-DESCRIPTION-ba29` | EXIF IFD0 ImageDescription | hidden | red | inferred | raw | yes |
 | `2024:06:15 18:02:11` | EXIF IFD0 DateTime (ModifyDate) | when | amber | spec | raw | yes |
 | `CANARY-JPEG-EXIF-HOSTCOMPUTER-18f6` | EXIF IFD0 HostComputer | who | red | spec | raw | yes |
 | `CANARY-JPEG-EXIF-PRIVATE-IFD0-d2b5` | EXIF IFD0 unknown tag 0xBEEF | hidden | red | inferred | raw | yes |
@@ -390,7 +447,7 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | `CANARY-JPEG-EXIF-LENSMODEL-16d9` | EXIF LensModel | device | amber | spec | raw | yes |
 | `CANARY-JPEG-EXIF-OWNER-caa2` | EXIF CameraOwnerName (exiftool: OwnerName) | who | red | spec | raw | yes |
 | `CANARY-JPEG-EXIF-UNIQUEID-3c33` | EXIF ImageUniqueID | hidden | red | spec | raw | yes |
-| `CANARY-JPEG-EXIF-USERCOMMENT-26ca` | EXIF UserComment | hidden | amber | inferred | raw | yes |
+| `CANARY-JPEG-EXIF-USERCOMMENT-26ca` | EXIF UserComment | hidden | red | inferred | raw | yes |
 | `CANARY-JPEG-EXIF-PRIVATE-EXIF-1eae` | EXIF Exif IFD unknown tag 0xBEF0 | hidden | red | inferred | raw | yes |
 | `CANARY-JPEG-GPS-AREA-fa0a` | EXIF GPS IFD GPSAreaInformation | where | red | spec | raw | yes |
 | `CANARY-JPEG-XMP-CREATOR-6d4a` | XMP dc:creator | who | red | spec | raw | yes |
@@ -398,20 +455,20 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | `CANARY-JPEG-XMP-CITY-861e` | XMP photoshop:City | where | red | spec | raw | yes |
 | `CANARY-JPEG-XMP-DOCUMENTID-1902` | XMP xmpMM:DocumentID | hidden | red | spec | raw | yes |
 | `CANARY-JPEG-XMP-INSTANCEID-b4d3` | XMP xmpMM:InstanceID | hidden | red | spec | raw | yes |
-| `CANARY-JPEG-XMP-HISTORY-8d27` | XMP xmpMM:History stEvt:softwareAgent | hidden | amber | spec | raw | yes |
+| `CANARY-JPEG-XMP-HISTORY-8d27` | XMP xmpMM:History stEvt:softwareAgent | hidden | red | spec | raw | yes |
 | `CANARY-JPEG-XMP-AUXSERIAL-38ee` | XMP aux:SerialNumber | who | red | spec | raw | yes |
 | `CANARY-JPEG-IPTC-BYLINE-fb3e` | IPTC By-line | who | red | spec | raw | yes |
 | `CANARY-JPEG-IPTC-CITY-f70e` | IPTC City | where | red | spec | raw | yes |
-| `CANARY-JPEG-IPTC-CAPTION-2171` | IPTC Caption-Abstract | hidden | amber | inferred | raw | yes |
-| `CANARY-JPEG-IPTC-KEYWORD-277b` | IPTC Keywords | hidden | amber | inferred | raw | yes |
+| `CANARY-JPEG-IPTC-CAPTION-2171` | IPTC Caption-Abstract | hidden | red | inferred | raw | yes |
+| `CANARY-JPEG-IPTC-KEYWORD-277b` | IPTC Keywords | hidden | red | inferred | raw | yes |
 | `CANARY-JPEG-IPTC-COPYRIGHT-5c6e` | IPTC CopyrightNotice | who | red | spec | raw | yes |
-| `CANARY-JPEG-COM-b5c4` | JPEG COM segment | hidden | amber | inferred | raw | yes |
-| `CANARY-JPEG-DUCKY-COMMENT-29ab` | APP12 Ducky Comment (UTF-16) | hidden | amber | inferred | utf16 | yes |
+| `CANARY-JPEG-COM-b5c4` | JPEG COM segment | hidden | red | inferred | raw | yes |
+| `CANARY-JPEG-DUCKY-COMMENT-29ab` | APP12 Ducky Comment (UTF-16) | hidden | red | inferred | utf16 | yes |
 | `CANARY-JPEG-DUCKY-COPYRIGHT-e8f6` | APP12 Ducky Copyright (UTF-16) | who | red | spec | utf16 | yes |
 | `48,51.5022N` | XMP exif:GPSLatitude (as exiftool writes it) | where | red | spec | raw | reformatted: `48 deg 51' 30.13" N` |
 | `2024-06-14T09:41:27.456+02:00` | XMP xmp:CreateDate | when | amber | spec | raw | reformatted: `2024:06:14 09:41:27.456+02:00` |
-| `CANARY-JPEG-C2PA-AUTHOR-9cf5` | APP11 C2PA, CreativeWork author (JUMBF segment 1) | hidden | amber | spec | raw | yes |
-| `CANARY-JPEG-C2PA-GENERATOR-0c22` | APP11 C2PA, claim_generator in CBOR claim (JUMBF segment 2) | hidden | amber | spec | raw | yes |
+| `CANARY-JPEG-C2PA-AUTHOR-9cf5` | APP11 C2PA, CreativeWork author (JUMBF segment 1) | hidden | red | spec | raw | yes |
+| `CANARY-JPEG-C2PA-GENERATOR-0c22` | APP11 C2PA, claim_generator in CBOR claim (JUMBF segment 2) | hidden | red | spec | raw | yes |
 | `CANARY-JPEG-APP5-86b9` | Unidentified APP5 segment, placed after DQT | hidden | red | inferred | raw | no |
 
 ### jpeg-orientation-6.jpg
@@ -433,7 +490,7 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | `2023:05:20 11:12:13` | EXIF DateTimeOriginal | when | amber | spec | raw | yes |
 | `CANARY-PROG-GPS-AREA-cda7` | EXIF GPS IFD GPSAreaInformation | where | red | spec | raw | yes |
 | `CANARY-PROG-XMP-CREATOR-be36` | XMP dc:creator | who | red | spec | raw | yes |
-| `CANARY-PROG-COM-ac62` | JPEG COM segment | hidden | amber | inferred | raw | yes |
+| `CANARY-PROG-COM-ac62` | JPEG COM segment | hidden | red | inferred | raw | yes |
 
 ### jpeg-ultrahdr-like.jpg
 
@@ -445,6 +502,117 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | `CANARY-UHDR-GAINMAP-XMP-CREATOR-f0b1` | Gain map (second JPEG after EOI, found through MPF): its own XMP dc:creator | who | red | spec | raw | yes |
 | `CANARY-UHDR-XMP-CREATORTOOL-5bf5` | Primary image XMP xmp:CreatorTool | device | amber | spec | raw | yes |
 
+### jpeg-uhdr-hdrgm-extra.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-HDRGM-SERIAL-48a8` | Photo XMP, unknown hdrgm:CameraSerialNumber next to the gain map fields | who | red | spec | raw | yes |
+| `CANARY-UHDRV-HDRGM-GPS-22b5` | Photo XMP, unknown hdrgm:GPSLatitude next to the gain map fields | where | red | spec | raw | yes |
+
+### jpeg-uhdr-item-label.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-ITEM-LABEL-c40c` | Photo XMP, Item:Label on the GainMap entry of the Container directory | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-apple-owner.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-APPLE-OWNER-6ae7` | Photo XMP, HDRGainMap:OwnerName next to HDRGainMap:HDRGainMapVersion | who | red | spec | raw | yes |
+
+### jpeg-uhdr-after-eoi.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-AFTER-EOI-0c7c` | Bytes after the gain map end marker, inside its MPF size (the gain map also has an XMP toolkit name) | hidden | red | spec | raw | no |
+
+### jpeg-uhdr-bare-after-eoi.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-BARE-AFTER-EOI-23ae` | Bytes after the end marker of a gain map with no other metadata, inside its MPF size | hidden | red | spec | raw | no |
+
+### jpeg-uhdr-mpf-tail.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-MPF-TAIL-4939` | MPF APP2, bytes after the MP entry table that no structure uses | hidden | red | spec | raw | no |
+
+### jpeg-uhdr-inner-hdrgm.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-INNER-HDRGM-6fde` | Gain map XMP, unknown hdrgm:CameraSerialNumber | who | red | spec | raw | yes |
+
+### jpeg-uhdr-iso-tail.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-ISO-TAIL-403e` | Photo ISO 21496-1 APP2, bytes after its version field | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-inner-mpf.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-INNER-MPF-b3c5` | Gain map, an MPF APP2 segment of its own with a tail | hidden | red | spec | raw | no |
+
+### jpeg-uhdr-inner-iso.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-INNER-ISO-a6f0` | Gain map ISO 21496-1 APP2, bytes after its version field | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-version-text.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-VERSION-TEXT-26ba` | Photo XMP, text inside the value of hdrgm:Version | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-mpf-extras.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-MPF-UID-ef11` | MPF APP2 (little-endian), B003 ImageUIDList of the photo | hidden | red | spec | raw | no |
+| `CANARY-UHDRV-MPF-ATTR-TAG-9bbe` | MPF APP2, unknown ASCII tag B2EE in the MP Attribute IFD | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-dir-semantic.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-DIR-SEMANTIC-2cf8` | Photo XMP, Item:Semantic of a third Container directory entry that stands for no part | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-dir-mime.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-DIR-MIME-87c8` | Photo XMP, Item:Mime of the GainMap entry of the Container directory | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-inner-gpano.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-INNER-GPANO-e15b` | Gain map XMP, a name in GPano:Note (a technical namespace) | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-apple.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-APPLE-MAKERNOTE-a2f7` | Photo EXIF, Apple MakerNote text tag 0x000B next to the HDR numbers (tags 33 and 48) | hidden | red | spec | raw | yes |
+| `CANARY-UHDRV-APPLE-APDI-ee70` | Gain map XMP, text in apdi:StoredFormat (an apdi field a gain map does not need) | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-apple-wrong.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-APPLE-AUXTYPE-ef76` | Gain map XMP, text after the fixed value of apdi:AuxiliaryImageType | hidden | red | spec | raw | yes |
+
+### jpeg-uhdr-not-gainmap.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-UHDRV-NOT-GAINMAP-48a9` | COM in a full-size colour second picture listed by MPF as type 0, with hdrgm in the photo XMP | hidden | red | spec | raw | yes |
+
 ### jpeg-motion-photo.jpg
 
 | String | Location | Group | Tier | Basis | Stored as | exiftool sees |
@@ -454,8 +622,8 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | `2025:07:04 17:45:12` | Still image EXIF DateTimeOriginal | when | amber | spec | raw | yes |
 | `+40.6892-074.0445+010.000/` | Appended MP4: moov/udta/©xyz (QuickTime ISO 6709 location) | where | red | spec | raw | no |
 | `CANARY-MOTION-MP4-LOCI-NAME-4204` | Appended MP4: moov/udta/loci place name (3GPP location box) | where | red | spec | raw | no |
-| `CANARY-MOTION-MP4-TITLE-f0c4` | Appended MP4: moov/udta/meta/ilst/©nam (title) | hidden | amber | inferred | raw | no |
-| `CANARY-MOTION-MP4-COMMENT-73a6` | Appended MP4: moov/udta/meta/ilst/©cmt (comment) | hidden | amber | inferred | raw | no |
+| `CANARY-MOTION-MP4-TITLE-f0c4` | Appended MP4: moov/udta/meta/ilst/©nam (title) | hidden | red | inferred | raw | no |
+| `CANARY-MOTION-MP4-COMMENT-73a6` | Appended MP4: moov/udta/meta/ilst/©cmt (comment) | hidden | red | inferred | raw | no |
 
 ### jpeg-samsung-trailer.jpg
 
@@ -478,7 +646,7 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 
 | String | Location | Group | Tier | Basis | Stored as | exiftool sees |
 |---|---|---|---|---|---|---|
-| `CANARY-PNG-ICCP-PRIVATE-b9c6` | iCCP profile (compressed), private CNRY text tag | technical | green | spec | zlib | yes |
+| `CANARY-PNG-ICCP-PRIVATE-b9c6` | iCCP profile (compressed), private CNRY text tag | hidden | red | spec | zlib | yes |
 | `CANARY-PNG-EXIF-ARTIST-cf6e` | eXIf chunk, IFD0 Artist | who | red | spec | raw | yes |
 | `CANARY-PNG-EXIF-SOFTWARE-d0b2` | eXIf chunk, IFD0 Software | device | amber | spec | raw | yes |
 | `CANARY-PNG-RAWEXIF-ARTIST-8a4d` | tEXt "Raw profile type exif" (hex), IFD0 Artist | who | red | spec | hex | yes |
@@ -488,14 +656,14 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | `CANARY-PNG-XMP-CITY-d0cc` | iTXt XMP photoshop:City | where | red | spec | raw | yes |
 | `51,30.04374N` | iTXt XMP exif:GPSLatitude | where | red | spec | raw | reformatted: `51 deg 30' 2.62" N` |
 | `CANARY-PNG-XMP-CREATOR-dc01` | iTXt XMP dc:creator | who | red | spec | raw | yes |
-| `CANARY-PNG-ICCP-NAME-ccd5` | iCCP profile name field | technical | green | spec | raw | yes |
+| `CANARY-PNG-ICCP-NAME-ccd5` | iCCP profile name field | hidden | red | spec | raw | yes |
 | `CANARY-PNG-TEXT-AUTHOR-9ac0` | tEXt Author | who | red | spec | raw | yes |
 | `Sun, 21 Jul 2024 14:03:09 +0100` | tEXt Creation Time | when | amber | spec | raw | reformatted: `2024:07:21 14:03:09+01:00` |
 | `CANARY-PNG-TEXT-SOFTWARE-cebf` | tEXt Software | device | amber | spec | raw | yes |
 | `CANARY-PNG-PRVT-bdfb` | Unknown ancillary chunk prVt | hidden | red | inferred | raw | no |
-| `CANARY-PNG-TEXT-COMMENT-5816` | tEXt Comment, after IDAT | hidden | amber | inferred | raw | yes |
-| `CANARY-PNG-ZTXT-DESCRIPTION-ce5b` | zTXt Description (compressed), after IDAT | hidden | amber | inferred | zlib | yes |
-| `CANARY-PNG-ITXT-TITLE-7516` | iTXt Title, nb-NO, compressed, after IDAT | hidden | amber | inferred | zlib | yes |
+| `CANARY-PNG-TEXT-COMMENT-5816` | tEXt Comment, after IDAT | hidden | red | inferred | raw | yes |
+| `CANARY-PNG-ZTXT-DESCRIPTION-ce5b` | zTXt Description (compressed), after IDAT | hidden | red | inferred | zlib | yes |
+| `CANARY-PNG-ITXT-TITLE-7516` | iTXt Title, nb-NO, compressed, after IDAT | hidden | red | inferred | zlib | yes |
 | `CANARY-PNG-AFTER-IEND-d5e1` | Bytes after IEND | hidden | red | inferred | raw | no |
 
 ### png-transparent.png
@@ -509,7 +677,7 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 
 | String | Location | Group | Tier | Basis | Stored as | exiftool sees |
 |---|---|---|---|---|---|---|
-| `CANARY-WEBP-ICCP-PRIVATE-bba6` | ICCP chunk, private CNRY text tag | technical | green | spec | raw | yes |
+| `CANARY-WEBP-ICCP-PRIVATE-bba6` | ICCP chunk, private CNRY text tag | hidden | red | spec | raw | yes |
 | `CANARY-WEBP-EXIF-MAKE-7279` | EXIF chunk, IFD0 Make | device | amber | spec | raw | yes |
 | `CANARY-WEBP-EXIF-ARTIST-3c29` | EXIF chunk, IFD0 Artist | who | red | spec | raw | yes |
 | `2024:09:08 12:34:56` | EXIF chunk, DateTimeOriginal | when | amber | spec | raw | yes |
@@ -546,7 +714,7 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | String | Location | Group | Tier | Basis | Stored as | exiftool sees |
 |---|---|---|---|---|---|---|
 | `CANARY-PDF-INFO-AUTHOR-ef4d` | PDF Info dictionary /Author | who | red | inferred | raw | yes |
-| `CANARY-PDF-INFO-TITLE-5e7f` | PDF Info dictionary /Title | hidden | amber | inferred | raw | yes |
+| `CANARY-PDF-INFO-TITLE-5e7f` | PDF Info dictionary /Title | hidden | red | inferred | raw | yes |
 
 ### truncated.jpg
 
@@ -574,3 +742,41 @@ Generated by `make-fixtures.sh` into `out/canaries-tables.md` and copied here.
 | String | Location | Group | Tier | Basis | Stored as | exiftool sees |
 |---|---|---|---|---|---|---|
 | `CANARY-OVERFLOW-EXIF-ARTIST-783a` | EXIF IFD0 Artist, the one well-formed tag in a hostile IFD (overflow) | who | red | spec | raw | yes |
+
+### jpeg-icc-text.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-ICCTEXT-JPEG-DESC-e070` | ICC profile (APP2), mluc description | hidden | red | spec | utf16 | yes |
+| `CANARY-ICCTEXT-JPEG-CPRT-ab2c` | ICC profile (APP2), mluc copyright | hidden | red | spec | utf16 | yes |
+| `CANARY-ICCTEXT-JPEG-DMND-266f` | ICC profile (APP2), mluc device manufacturer description | hidden | red | spec | utf16 | yes |
+
+### png-icc-text.png
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-ICCTEXT-PNG-DESC-1396` | iCCP profile (compressed), description | hidden | red | spec | zlib | yes |
+| `CANARY-ICCTEXT-PNG-CPRT-1de7` | iCCP profile (compressed), copyright | hidden | red | spec | zlib | yes |
+| `CANARY-ICCTEXT-PNG-NAME-22d5` | iCCP profile name field (a name, not a known profile name) | hidden | red | spec | raw | yes |
+
+### webp-icc-text.webp
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-ICCTEXT-WEBP-CPRT-f47f` | ICCP chunk, copyright | hidden | red | spec | raw | yes |
+| `CANARY-ICCTEXT-WEBP-DMDD-a2fc` | ICCP chunk, device model description | hidden | red | spec | raw | yes |
+
+### heic-icc-text.heic
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-ICCTEXT-HEIC-DESC-4365` | colr property (ICC profile), mluc description | hidden | red | spec | utf16 | yes |
+| `CANARY-ICCTEXT-HEIC-CPRT-3c21` | colr property (ICC profile), mluc copyright | hidden | red | spec | utf16 | yes |
+
+### jpeg-green-xmp.jpg
+
+| String | Location | Group | Tier | Basis | Stored as | exiftool sees |
+|---|---|---|---|---|---|---|
+| `CANARY-GREENXMP-RATING-a280` | XMP xmp:Rating holding text instead of a number | hidden | red | spec | raw | yes |
+| `CANARY-GREENXMP-ICCPROFILE-eb0f` | XMP photoshop:ICCProfile holding a name, not a known profile name | hidden | red | spec | raw | yes |
+| `CANARY-GREENXMP-GPANO-PROJECTION-e34c` | XMP GPano:ProjectionType holding text, not one of the projection names | hidden | red | spec | raw | yes |

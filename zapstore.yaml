@@ -30,16 +30,28 @@ description: |
 
   - Shows every detail with its value before it removes, grouped in a Red,
     an Amber and a Green section.
-  - Red and amber details are ticked for removal to start with; green
-    (rotation, colour profile, size and exposure) is kept.
-  - In a JPEG, an HDR gain map is amber and goes too; untick HDR gain map
-    and HDR gain map details to keep HDR photos bright on HDR screens.
+  - Only red details are ticked for removal to start with. Amber (dates,
+    time zone, camera, lens and editing software) is kept unless you tick
+    it. Captions, titles, descriptions, keywords, comments and Content
+    Credentials are red, because they can name people.
+  - Amber keeps a date or device name only in the form it should have:
+    text hidden after it, in a field the page does not show, or in the
+    file's own structure is a red detail and is removed.
+  - Green (rotation, colour profile, size and exposure) is kept too, and
+    holds only numbers, fixed words and well-known profile names: a name
+    hidden in a colour profile or a technical field is a red detail of its
+    own.
+  - HDR photos keep their gain map by default, so Ultra HDR JPEGs and
+    iPhone HDR JPEG and HEIC photos stay bright on HDR screens; anything
+    else in it or around it is still listed and removed.
+  - XMP, IPTC and PNG text that stay are always written again in a
+    standard form, so their layout cannot carry hidden information.
   - Tick a whole colour at once, or open it to choose single details.
   - Lossless by default: the picture is not saved again unless you crop,
     resize, convert or remove a sideways rotation.
   - Crop, resize and convert JPEG, PNG and WebP when you need to.
   - Reads the result back, so you see what remains before you share.
-  - Neutral file names such as image.minimal.jpg.
+  - Neutral file names such as image.public.jpg.
   - Share a photo in from your gallery, then Save or Share the clean copy.
 
   JPEG, PNG, WebP and HEIC. HEIC metadata can be removed, but cropping and

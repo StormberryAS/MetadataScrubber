@@ -77,8 +77,9 @@ android {
         targetSdk = 36
         // 0.0.1 (code 1): the first release, published to Zapstore as an early version (Marcos, 2026-10-03).
         // 0.0.2 (code 2): details in collapsed Red, Amber and Green sections, red and amber ticked to start, the result button reads "Save <name>" (2026-10-03).
-        versionCode = 2
-        versionName = "0.0.2"
+        // 0.0.3 (code 3): only red is ticked to start with, and captions, titles, descriptions, keywords and comments are red; amber is kept unless ticked. HDR JPEGs and iPhone HEICs keep their gain map and HDR brightness, holding only what they need to render. XMP is always written in a standard form. Green details keep only what the specifications define (2026-10-04).
+        versionCode = 3
+        versionName = "0.0.3"
 
         // Density PNGs generated from vectors are a source of build nondeterminism, and the
         // app ships vector icons only.

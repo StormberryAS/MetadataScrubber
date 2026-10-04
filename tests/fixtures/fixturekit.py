@@ -186,6 +186,211 @@ def cmd_mpf(args):
     write(out, primary[:pos] + seg + primary[pos:] + gain)
 
 
+XMP_HEADER = b'http://ns.adobe.com/xap/1.0/\0'
+ISO_GAIN_ID = b'urn:iso:std:iso:ts:21496:-1\0'
+
+
+def xmp_segment_payload(xml):
+    packet = (b'<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+              + xml + b'\n<?xpacket end="w"?>')
+    return XMP_HEADER + packet
+
+
+def tiff_ifd(bo, tags, off, nxt):
+    """One TIFF IFD at offset OFF (from the TIFF header) with out-of-line values right after it.
+    tags: [(tag, type, count, value bytes)] in order. Returns the IFD and its values as bytes."""
+    head = struct.pack(bo + 'H', len(tags))
+    values = b''
+    at = off + 2 + 12 * len(tags) + 4
+    for tag, typ, count, data in tags:
+        if len(data) <= 4:
+            field = data + b'\0' * (4 - len(data))
+        else:
+            field = struct.pack(bo + 'I', at + len(values))
+            values += data + (b'\0' if len(data) % 2 else b'')
+        head += struct.pack(bo + 'HHI', tag, typ, count) + field
+    return head + struct.pack(bo + 'I', nxt) + values
+
+
+def mpf_payload(le, entries, ids=None, b004=None, attr=None, tail=b''):
+    """'MPF\0' and an MP header with an MP Index IFD (B000, B001, B002 and optionally B003 and
+    B004), the MP entry table, optionally an MP Attribute IFD, then TAIL. entries are
+    (attribute, size, offset, dependent 1, dependent 2)."""
+    bo = '<' if le else '>'
+    n = len(entries)
+    table = b''.join(struct.pack(bo + 'IIIHH', *e) for e in entries)
+    tags = [(0xB000, 7, 4, b'0100'), (0xB001, 4, 1, struct.pack(bo + 'I', n)), (0xB002, 7, 16 * n, table)]
+    if ids is not None:
+        tags.append((0xB003, 7, len(ids), ids))
+    if b004 is not None:
+        tags.append((0xB004, 4, 1, struct.pack(bo + 'I', b004)))
+    index_len = len(tiff_ifd(bo, tags, 8, 0))
+    attr_at = 8 + index_len if attr else 0
+    body = tiff_ifd(bo, tags, 8, attr_at)
+    if attr:
+        body += tiff_ifd(bo, attr, attr_at, 0)
+    head = (b'II' if le else b'MM') + struct.pack(bo + 'HI', 42, 8)
+    return b'MPF\0' + head + body + tail
+
+
+def iso_full_block():
+    """An ISO 21496-1 gain map block: three channels, each value with its own denominator."""
+    out = ISO_GAIN_ID + struct.pack('>HH', 0, 0) + bytes([0x80])
+    out += struct.pack('>IIII', 0, 1, 23, 10)  # base and alternate HDR headroom
+    for _ in range(3):
+        out += struct.pack('>iIiIIIiIiI', 0, 1, 23, 10, 1, 1, 1, 64, 1, 64)
+    return out
+
+
+def cmd_uhdr(args):
+    """uhdr PRIMARY GAINMAP OUT KIND [CANARY ...]: build an Ultra HDR style picture from two plain JPEGs.
+
+    The photo gets an XMP packet with hdrgm:Version and a Container directory, and an MPF
+    index whose second entry is the gain map, appended after its EOI. The gain map gets its
+    own hdrgm description. KIND adds one thing a scrubber must find while keeping the gain
+    map: hdrgm-extra, item-label, apple-owner, after-eoi, bare-after-eoi, mpf-tail,
+    apple (an iPhone-style picture: no XMP in the photo, an Apple MakerNote holding the HDR
+    headroom and a planted text tag, a gain map named by apdi:AuxiliaryImageType with
+    HDRGainMapVersion and a planted extra apdi field), apple-wrong (the same with planted
+    text in the apdi:AuxiliaryImageType value),
+    inner-hdrgm, iso-tail, inner-mpf, inner-iso, version-text, mpf-extras, dir-semantic
+    (a third directory entry whose role is free text), dir-mime (free text as the gain
+    map entry's file type), inner-gpano (a name in a technical XMP field of the gain map)
+    (no canary needed for iso-full and zero-pad) or not-gainmap (PRIMARY is then also the
+    second picture, a full-size colour copy, so it is no gain map at all)."""
+    primary, gain, out, kind = read(args[0]), read(args[1]), args[2], args[3]
+    can = [c.encode('ascii') for c in args[4:]]
+    need = {'hdrgm-extra': 2, 'mpf-extras': 2, 'apple': 2, 'iso-full': 0, 'zero-pad': 0}.get(kind, 1)
+    if len(can) != need:
+        die('uhdr %s takes %d planted strings' % (kind, need))
+    if not primary.endswith(b'\xff\xd9') or not gain.startswith(b'\xff\xd8'):
+        die('uhdr: the photo must end with EOI and the gain map must start with SOI')
+    hdrgm = b'xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"'
+    gm_fields = (b' hdrgm:Version="1.0" hdrgm:GainMapMin="0" hdrgm:GainMapMax="2.3" hdrgm:Gamma="1"'
+                 b' hdrgm:OffsetSDR="0.015625" hdrgm:OffsetHDR="0.015625" hdrgm:HDRCapacityMin="0"'
+                 b' hdrgm:HDRCapacityMax="2.3" hdrgm:BaseRenditionIsHDR="False"')
+    gm_extra, gm_toolkit, gm_body = b'', b'', b''
+    if kind == 'inner-hdrgm':
+        gm_extra = b' hdrgm:CameraSerialNumber="SN-' + can[0] + b'"'
+    if kind == 'after-eoi':
+        gm_toolkit = b' x:xmptk="Fjord XMP Core 1.0"'
+    if kind == 'inner-gpano':
+        gm_extra = b' xmlns:GPano="http://ns.google.com/photos/1.0/panorama/" GPano:Note="Astrid Holmvik ' + can[0] + b'"'
+    if kind == 'iso-full':
+        gm_fields = gm_fields.replace(b' hdrgm:GainMapMax="2.3"', b'')
+        gm_body = (b'\n   <hdrgm:GainMapMax><rdf:Seq><rdf:li>2.3</rdf:li><rdf:li>2.2</rdf:li>'
+                   b'<rdf:li>2.1</rdf:li></rdf:Seq></hdrgm:GainMapMax>\n  ')
+    desc_close = (b'>' + gm_body + b'</rdf:Description>') if gm_body else b'/>'
+    gm_xml = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/"' + gm_toolkit + b'>\n <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+              b'  <rdf:Description rdf:about="" ' + hdrgm + gm_fields + gm_extra + desc_close + b'\n </rdf:RDF>\n</x:xmpmeta>')
+    if kind.startswith('apple'):
+        aux = b'urn:com:apple:photo:2020:aux:hdrgainmap'
+        stored = b'1278226488'
+        if kind == 'apple':
+            stored = b'Astrid Holmvik ' + can[1]
+        else:
+            aux += b' Astrid Holmvik ' + can[0]
+        gm_xml = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/">\n <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+                  b'  <rdf:Description rdf:about="" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/"'
+                  b' xmlns:apdi="http://ns.apple.com/pixeldatainfo/1.0/">\n'
+                  b'   <HDRGainMap:HDRGainMapVersion>65536</HDRGainMap:HDRGainMapVersion>\n'
+                  b'   <apdi:AuxiliaryImageType>' + aux + b'</apdi:AuxiliaryImageType>\n'
+                  b'   <apdi:NativeFormat>1278226488</apdi:NativeFormat>\n'
+                  b'   <apdi:StoredFormat>' + stored + b'</apdi:StoredFormat>\n'
+                  b'  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>')
+    gm_segs = segment(0xE1, xmp_segment_payload(gm_xml))
+    if kind == 'iso-full':
+        gm_segs += segment(0xE2, iso_full_block())
+    if kind == 'inner-iso':
+        gm_segs += segment(0xE2, ISO_GAIN_ID + b'\0\0\0\0' + b' Astrid Holmvik ' + can[0])
+    if kind == 'inner-mpf':
+        gm_segs += segment(0xE2, b'MPF\0MM\0\x2a\0\0\0\x08\0\0\0\0\0\0' + b' Astrid Holmvik ' + can[0])
+    if kind == 'not-gainmap':
+        gm = primary[:2] + segment(0xFE, b'Uncropped original ' + can[0]) + primary[2:]
+    else:
+        pos = jpeg_position(gain, 'after:e0')
+        gm = gain[:pos] + gm_segs + gain[pos:]
+    lead = b'\0' * 32 if kind == 'zero-pad' else b''
+    after = b''
+    if kind in ('after-eoi', 'bare-after-eoi'):
+        after = b'Astrid Holmvik SN998877 ' + can[0]
+    if kind == 'zero-pad':
+        after = b'\0' * 64
+    gm_len = len(gm) + len(after)
+
+    p_attrs, p_item, g_item, p_ns, more_li = b'', b'', b'', b'', b''
+    version = b'1.0'
+    g_mime = b'image/jpeg'
+    if kind == 'dir-semantic':
+        more_li = (b'     <rdf:li rdf:parseType="Resource">\n      <Container:Item Item:Semantic="AstridHolmvik' + can[0]
+                   + b'" Item:Mime="image/astrid.holmvik" Item:Length="0"/>\n     </rdf:li>\n')
+    if kind == 'dir-mime':
+        g_mime = b'image/' + can[0]
+    if kind == 'hdrgm-extra':
+        p_attrs = (b'\n    hdrgm:CameraSerialNumber="Astrid Holmvik ' + can[0] + b'"'
+                   b'\n    hdrgm:GPSLatitude="59,24.5N ' + can[1] + b'"')
+    if kind == 'item-label':
+        g_item = b' Item:Label="Astrid Holmvik ' + can[0] + b'"'
+    if kind == 'apple-owner':
+        p_ns = b'\n    xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/"'
+        p_attrs = b'\n    HDRGainMap:HDRGainMapVersion="65536" HDRGainMap:OwnerName="Astrid Holmvik ' + can[0] + b'"'
+    if kind == 'version-text':
+        version = b'1.0 ' + can[0]
+    if kind == 'zero-pad':
+        # Padding on both entries: exiftool 13.25 fails on a directory where only one has it.
+        p_item = b' Item:Padding="32"'
+        g_item = b' Item:Padding="0"'
+    p_xml = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/">\n <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+             b'  <rdf:Description rdf:about=""\n    ' + hdrgm + p_ns +
+             b'\n    xmlns:Container="http://ns.google.com/photos/1.0/container/"'
+             b'\n    xmlns:Item="http://ns.google.com/photos/1.0/container/item/"'
+             b'\n    hdrgm:Version="' + version + b'"' + p_attrs + b'>\n'
+             b'   <Container:Directory>\n    <rdf:Seq>\n'
+             b'     <rdf:li rdf:parseType="Resource">\n      <Container:Item Item:Semantic="Primary" Item:Mime="image/jpeg"' + p_item + b'/>\n     </rdf:li>\n'
+             b'     <rdf:li rdf:parseType="Resource">\n      <Container:Item Item:Semantic="GainMap" Item:Mime="' + g_mime + b'" Item:Length="'
+             + str(gm_len).encode() + b'"' + g_item + b'/>\n     </rdf:li>\n' + more_li +
+             b'    </rdf:Seq>\n   </Container:Directory>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>')
+    head = segment(0xE1, xmp_segment_payload(p_xml))
+    if kind.startswith('apple'):
+        # Apple's MakerNote: "Apple iOS", version 1, big-endian, offsets from its own start;
+        # tag 33 = 1.02 and tag 48 = 0.0064 (the HDR headroom), tag 11 a text tag.
+        note_text = (b'Astrid Holmvik ' + can[0] if kind == 'apple' else b'FJORD-BURST-0001') + b'\0'
+        mn_tags = [(0x0001, 9, 1, struct.pack('>i', 14)), (0x000B, 2, len(note_text), note_text),
+                   (0x0021, 10, 1, struct.pack('>ii', 10200, 10000)), (0x0030, 10, 1, struct.pack('>ii', 64, 10000))]
+        makernote = b'Apple iOS\0\0\x01MM' + tiff_ifd('>', mn_tags, 14, 0)
+        ifd0 = [(0x010F, 2, 6, b'Apple\0'), (0x0112, 3, 1, struct.pack('>H', 1)), (0x8769, 4, 1, b'')]
+        ifd0_len = len(tiff_ifd('>', [(t, ty, c, d if t != 0x8769 else b'\0\0\0\0') for t, ty, c, d in ifd0], 8, 0))
+        exif_at = 8 + ifd0_len
+        ifd0[2] = (0x8769, 4, 1, struct.pack('>I', exif_at))
+        exif_ifd = tiff_ifd('>', [(0x927C, 7, len(makernote), makernote), (0xA001, 3, 1, struct.pack('>H', 1))], exif_at, 0)
+        tiff = b'MM\0\x2a' + struct.pack('>I', 8) + tiff_ifd('>', ifd0, 8, 0) + exif_ifd
+        head = segment(0xE1, b'Exif\0\0' + tiff)
+    if kind == 'iso-tail':
+        head += segment(0xE2, ISO_GAIN_ID + b'\0\0\0\0' + b' Astrid Holmvik ' + can[0])
+    if kind == 'iso-full':
+        head += segment(0xE2, ISO_GAIN_ID + b'\0\0\0\0')
+    le = kind == 'mpf-extras'
+    extra = {}
+    if kind == 'mpf-extras':
+        uid = can[0].ljust(32, b'0')[:32] + b'\0'
+        extra['ids'] = uid + b'0' * 32 + b'\0'
+        extra['b004'] = 2
+        extra['attr'] = [(0xB101, 4, 1, struct.pack('<I', 1)), (0xB2EE, 2, len(can[1]) + 1, can[1] + b'\0')]
+    if kind == 'mpf-tail':
+        extra['tail'] = b' Astrid Holmvik ' + can[0]
+    pos = jpeg_position(primary, 'after:e0')
+    gm_type = 0x00000000
+
+    def build(primary_len, gain_off):
+        entries = [(0x20030000, primary_len, 0, 0, 0), (gm_type, gm_len, gain_off, 0, 0)]
+        return segment(0xE2, mpf_payload(le, entries, **extra))
+
+    size = len(primary) + len(head) + len(build(0, 0))
+    mp_header = pos + len(head) + 8
+    photo = primary[:pos] + head + build(size, size + len(lead) - mp_header) + primary[pos:]
+    write(out, photo + lead + gm + after)
+
+
 def cmd_samsung(args):
     """samsung OUT UTC_MS MCC REEDIT_TEXT: build a Samsung SEFH/SEFT trailer (little-endian)."""
     out, utc, mcc, reedit = args[0], args[1], args[2], args[3]
@@ -314,6 +519,48 @@ def cmd_icc(args):
     blob = bytes(header) + struct.pack('>I', count + 1)
     blob += b''.join(struct.pack('>4sII', *t) for t in new_table) + body + tail
     write(out, blob)
+
+
+def cmd_icc_text(args):
+    """icc-text SRC OUT FORM SIG=TEXT ...: copy an ICC profile with text tags replaced or added.
+
+    FORM is mluc (one en-US record, UTF-16 text, as version 4 profiles store it) or ascii
+    ('desc' type for the description, 'text' for the others, as version 2 stores it). The
+    profile is laid out again: every other tag keeps its bytes (shared data stays shared),
+    the size field is updated and the profile ID is cleared (all zeros means 'not
+    computed', which is valid)."""
+    icc, out, form = read(args[0]), args[1], args[2]
+    new = {}
+    for a in args[3:]:
+        sig, text = a.split('=', 1)
+        if len(sig) != 4:
+            die('icc-text: a tag signature has four characters: ' + sig)
+        t = text.encode('latin-1')
+        if form == 'mluc':
+            u = text.encode('utf-16-be')
+            new[sig.encode('latin-1')] = b'mluc\0\0\0\0' + struct.pack('>II', 1, 12) + b'enUS' + struct.pack('>II', len(u), 28) + u
+        elif sig == 'desc':
+            new[sig.encode('latin-1')] = (b'desc\0\0\0\0' + struct.pack('>I', len(t) + 1) + t + b'\0'
+                                          + b'\0' * 8 + b'\0' * 3 + b'\0' * 67)
+        else:
+            new[sig.encode('latin-1')] = b'text\0\0\0\0' + t + b'\0'
+    count = struct.unpack('>I', icc[128:132])[0]
+    tags = []
+    for i in range(count):
+        sig, off, size = struct.unpack('>4sII', icc[132 + 12 * i:144 + 12 * i])
+        tags.append((sig, icc[off:off + size] if sig not in new else new.pop(sig)))
+    tags += sorted(new.items())
+    table, body, placed = [], b'', {}
+    start = 132 + 12 * len(tags)
+    for sig, data in tags:
+        if data not in placed:
+            placed[data] = start + len(body)
+            body += data + b'\0' * ((-len(data)) % 4)
+        table.append(struct.pack('>4sII', sig, placed[data], len(data)))
+    header = bytearray(icc[:128])
+    struct.pack_into('>I', header, 0, start + len(body))
+    header[84:100] = b'\0' * 16
+    write(out, bytes(header) + struct.pack('>I', len(tags)) + b''.join(table) + body)
 
 
 # PNG
@@ -805,7 +1052,8 @@ def cmd_scan(args):
 COMMANDS = {
     'jpeg-insert': cmd_jpeg_insert, 'jpeg-exif': cmd_jpeg_exif, 'jpeg-segment': cmd_jpeg_segment,
     'sos-offset': cmd_sos_offset, 'xmp-payload': cmd_xmp_payload, 'xpacket': cmd_xpacket,
-    'blob': cmd_blob, 'mpf': cmd_mpf, 'samsung': cmd_samsung, 'c2pa': cmd_c2pa, 'icc': cmd_icc,
+    'blob': cmd_blob, 'mpf': cmd_mpf, 'uhdr': cmd_uhdr, 'samsung': cmd_samsung, 'c2pa': cmd_c2pa, 'icc': cmd_icc,
+    'icc-text': cmd_icc_text,
     'png-build': cmd_png_build, 'webp-build': cmd_webp_build, 'mp4-udta': cmd_mp4_udta,
     'mp4-minimal': cmd_mp4_minimal, 'hostile-exif': cmd_hostile_exif, 'pdf': cmd_pdf,
     'verify': cmd_verify, 'visibility': cmd_visibility, 'report': cmd_report, 'scan': cmd_scan,

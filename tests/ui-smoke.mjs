@@ -311,7 +311,7 @@ try {
     const p = await openPage(w, h);
     const tag = `w${w}`;
 
-    // A full JPEG, default choice: red and amber removed, lossless.
+    // A full JPEG, default choice: red removed (0.0.3: red only is ticked), lossless.
     check(`${tag} page loads without errors`, p.log.errors.length === 0, p.log.errors);
 
     // The Android app section at the foot of the page, on the website.
@@ -343,11 +343,13 @@ try {
     check(`${tag} sections are red, amber, green, in that order`, meta.tiers.join() === 'red,amber,green', meta.tiers);
     check(`${tag} each detail sits in its own tier's section; red and amber name their group, green (all Technical) does not repeat it`, meta.rows.every((r) => r.section === r.tier && (r.tier === 'green' ? r.group === undefined : ['Where', 'Who', 'When', 'Device', 'Hidden extras'].includes(r.group))), meta.rows.filter((r) => r.section !== r.tier || (r.tier === 'green') === !!r.group).map((r) => [r.id, r.group]));
     check(`${tag} the separate colour legend is gone`, !meta.legend);
-    check(`${tag} red and amber details are ticked to start with, green details are not`, meta.rows.every((r) => r.checked === (r.tier !== 'green')), meta.rows.filter((r) => r.checked !== (r.tier !== 'green')).map((r) => r.id));
+    check(`${tag} red details are ticked to start with, amber and green details are not`, meta.rows.every((r) => r.checked === (r.tier === 'red')), meta.rows.filter((r) => r.checked !== (r.tier === 'red')).map((r) => r.id));
     check(`${tag} every tier is shown in words`, meta.rows.every((r) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier]));
     check(`${tag} the quick choice buttons are gone`, !meta.quick);
-    check(`${tag} the intro says red and amber are ticked to start with`, meta.intro === 'Ticked details will be removed. Red and amber details are ticked to start with.', meta.intro);
-    check(`${tag} the expected name uses the minimal word`, /Expected name: image\.minimal\.jpg\./.test(meta.preview), meta.preview);
+    check(`${tag} the intro says red is ticked to start with and amber and green are kept`, meta.intro === 'Ticked details will be removed. Red details are ticked to start with; amber and green are kept unless you tick them.', meta.intro);
+    check(`${tag} the expected name uses the public word, as amber stays`, /Expected name: image\.public\.jpg\./.test(meta.preview), meta.preview);
+    const tierText = await p.ev("[...document.querySelectorAll('#meta-groups .ms-tier-desc')].map((d) => d.textContent)");
+    check(`${tag} the section descriptions: red removed, amber kept unless ticked, green kept`, JSON.stringify(tierText) === JSON.stringify(['Can identify you, your camera or the place. Removed by default.', 'Can reveal routines, devices or history. Kept unless you tick it.', 'Helps the picture display correctly. Kept by default.']), tierText);
     check(`${tag} lossless is announced`, /^Lossless/.test(meta.mode), meta.mode);
     const buttons = await p.ev("[...document.querySelectorAll('button')].filter(b => !b.closest('[hidden]') && /remove metadata|prepare/i.test(b.textContent)).map(b => b.textContent.trim())");
     check(`${tag} one action button, "Prepare picture"`, buttons.length === 1 && buttons[0] === 'Prepare picture', buttons);
@@ -364,9 +366,9 @@ try {
     const countLine = () => p.ev("document.getElementById('select-count').textContent");
     let t = await tiers();
     check(`${tag} every section starts closed`, closed(t), t);
-    check(`${tag} red and amber tick boxes ticked, green not, with counts`, t.red.checked && t.amber.checked && !t.green.checked && !t.green.mixed
-      && t.red.count === `${t.red.n} details, ${t.red.n} ticked` && t.amber.count === `${t.amber.n} details, ${t.amber.n} ticked` && t.green.count === `${t.green.n} details, 0 ticked`, t);
-    check(`${tag} the count line says how many details are ticked`, await countLine() === `${t.red.n + t.amber.n} of ${t.red.n + t.amber.n + t.green.n} details ticked for removal.`, await countLine());
+    check(`${tag} the red tick box ticked, amber and green not, with counts`, t.red.checked && !t.amber.checked && !t.amber.mixed && !t.green.checked && !t.green.mixed
+      && t.red.count === `${t.red.n} details, ${t.red.n} ticked` && t.amber.count === `${t.amber.n} details, 0 ticked` && t.green.count === `${t.green.n} details, 0 ticked`, t);
+    check(`${tag} the count line says how many details are ticked`, await countLine() === `${t.red.n} of ${t.red.n + t.amber.n + t.green.n} details ticked for removal.`, await countLine());
     await p.ev("document.getElementById('m-tier-amber-toggle').click()");
     t = await tiers();
     check(`${tag} the amber arrow opens amber (aria-expanded true)`, t.amber.expanded === 'true' && t.amber.shown, t.amber);
@@ -376,10 +378,10 @@ try {
     check(`${tag} and closes it again (aria-expanded false)`, t.amber.expanded === 'false' && !t.amber.shown, t.amber);
     await p.ev("document.getElementById('m-tier-amber-all').click()");
     t = await tiers();
-    check(`${tag} the amber tick box unticks every amber detail while amber stays closed`, !t.amber.checked && !t.amber.mixed && t.amber.ticked === 0 && t.amber.expanded === 'false' && !t.amber.shown, t.amber);
+    check(`${tag} the amber tick box ticks every amber detail while amber stays closed`, t.amber.checked && !t.amber.mixed && t.amber.ticked === t.amber.n && t.amber.expanded === 'false' && !t.amber.shown, t.amber);
     await p.ev("document.getElementById('m-tier-amber-all').click()");
     t = await tiers();
-    check(`${tag} and ticks them all again`, t.amber.checked && t.amber.ticked === t.amber.n, t.amber);
+    check(`${tag} and unticks them all again`, !t.amber.checked && !t.amber.mixed && t.amber.ticked === 0, t.amber);
     await p.ev("document.getElementById('m-tier-green-toggle').click()");
     await p.ev("document.querySelector('#m-tier-green-list .ms-check').click()");
     t = await tiers();
@@ -415,12 +417,27 @@ try {
     await p.tick({});
     await p.ev("document.querySelector('#m-tier-amber-list .ms-check[data-id=\"exif:software\"]').click()");
     await exactly('a single detail', ['exif:software']);
-    await p.tick({ red: true, amber: true });
-    await exactly('the default (red and amber, by their tick boxes)', ofTier('red', 'amber'));
+    await p.tick({ red: true });
+    await exactly('the default (red, by its tick box)', ofTier('red'));
 
-    // The default file is on screen now; the checks below download it once more.
+    // The default file is on screen now: red gone, amber kept, so the word is public.
     let files = await p.download();
     let name = Object.keys(files)[0];
+    check(`${tag} the default download is named image.public.jpg`, name === 'image.public.jpg', Object.keys(files));
+    if (name) {
+      const out = await inspect(files[name]);
+      check(`${tag} the default leaves no red detail and keeps every amber one`, !out.items.some((i) => i.tier === 'red') && ofTier('amber').every((id) => out.items.some((i) => i.id === id)), out.items.map((i) => i.tier + ':' + i.id));
+      check(`${tag} the default: privacy word public`, privacyWord(out.items) === 'public');
+      check(`${tag} the description beside the download fits public`, await p.ev("document.querySelector('.ms-word-text').textContent") === 'Safe to share publicly: location, serial numbers, names, captions and the hidden preview are gone. Dates and device details may remain; check them under Amber.');
+      const btn = await p.ev("(() => { const a = document.querySelector('#results-list .ms-download'); return a && a.textContent; })()");
+      check(`${tag} the result button says "Save image.public.jpg"`, btn === 'Save image.public.jpg', btn);
+    }
+
+    // Amber ticked as well gives the minimal word.
+    await p.tick({ red: true, amber: true });
+    await exactly('red and amber, by their tick boxes', ofTier('red', 'amber'));
+    files = await p.download();
+    name = Object.keys(files)[0];
     check(`${tag} download is named image.minimal.jpg`, name === 'image.minimal.jpg', Object.keys(files));
     if (name) {
       const out = await inspect(files[name]);
@@ -440,11 +457,21 @@ try {
     check(`${tag} typed name is used, extension dropped`, await p.ev("document.querySelector('.ms-download').download") === 'holiday.minimal.jpg');
     await p.ev("(() => { const i = document.getElementById('name-input'); i.value = 'image'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
 
-    // Nothing ticked changes nothing, so no file is made and the page says why.
+    // Nothing ticked: this file's XMP is not in the engine's standard form (it has spare
+    // white space), and XMP is only ever kept in that form, so a file is still made: it
+    // keeps every detail, and its XMP is written again. (A file already in that form makes
+    // no copy; see the plain file and jpeg-orientation-6.jpg below.)
     await p.tick({});
     check(`${tag} changing the choice clears the old file`, await p.ev("document.getElementById('results').hidden && !document.getElementById('go-stale').hidden"));
-    const idle = await p.pressIdle();
-    check(`${tag} nothing ticked and nothing else chosen makes no file and says why`, idle.results && !idle.links && idle.text === 'Nothing to change yet: tick something to remove, or choose a crop, size or format.' && idle.focus === 'go-btn', idle);
+    await p.press();
+    files = await p.download();
+    name = Object.keys(files)[0];
+    {
+      const src = await inspect(new Uint8Array(readFileSync(join(FIX, 'jpeg-everything.jpg'))));
+      const kept = name ? await inspect(files[name]) : null;
+      check(`${tag} nothing ticked still writes the XMP in the standard form and keeps every detail`, !!kept && src.normalise && !kept.normalise
+        && JSON.stringify(kept.items.map((i) => i.id).sort()) === JSON.stringify(src.items.map((i) => i.id).sort()), kept && { name, normalise: kept.normalise, ids: kept.items.map((i) => i.id) });
+    }
     // Nothing ticked with a resize: everything kept, so the word is custom with the red warning.
     await p.ev("(() => { const i = document.getElementById('resize-percent'); i.value = '50'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
     check(`${tag} choosing a size takes the message away`, await p.ev("document.getElementById('go-nothing').hidden"));
@@ -471,10 +498,14 @@ try {
     await p.load(['jpeg-orientation-6.jpg']);
     t = await tiers();
     check(`${tag} a second file: every section closed again`, ['red', 'amber', 'green'].filter((k) => t[k]).every((k) => t[k].expanded === 'false' && !t[k].shown), t);
-    check(`${tag} a second file: red and amber ticked again, green not`, (!t.red || t.red.checked) && (!t.amber || t.amber.checked) && (!t.green || (!t.green.checked && !t.green.mixed)), t);
+    check(`${tag} a second file: red ticked again, amber and green not`, (!t.red || t.red.checked) && (!t.amber || (!t.amber.checked && !t.amber.mixed)) && (!t.green || (!t.green.checked && !t.green.mixed)), t);
     const pre = await p.ev("({ summary: document.getElementById('file-summary').textContent, mode: document.getElementById('mode-line').textContent, canvas: [document.getElementById('preview-canvas').width, document.getElementById('preview-canvas').height] })");
     check(`${tag} sideways picture is shown upright`, pre.canvas[1] > pre.canvas[0] && /480 × 640/.test(pre.summary), pre);
     check(`${tag} rotation kept: lossless`, /^Lossless/.test(pre.mode), pre.mode);
+    // This file has no XMP, so with nothing ticked nothing changes: no file, and the reason.
+    await p.tick({});
+    const idle = await p.pressIdle();
+    check(`${tag} nothing ticked and nothing else chosen makes no file and says why`, idle.results && !idle.links && idle.text === 'Nothing to change yet: tick something to remove, or choose a crop, size or format.' && idle.focus === 'go-btn', idle);
     await p.tick({ red: true, amber: true, green: true });
     const bake = await p.ev("document.getElementById('mode-line').textContent + ' | ' + document.getElementById('mode-reasons').textContent");
     check(`${tag} removing rotation says the picture is re-saved and turned`, /re-saves the picture/.test(bake) && /right way up/.test(bake), bake);
@@ -600,9 +631,19 @@ try {
     check(`${tag} HEIC download keeps its type`, /^image\.\w+\.heic$/.test(name || ''), name);
     if (name) {
       const out = await inspect(files[name]);
-      check(`${tag} HEIC: no red or amber left`, !out.items.some((i) => i.tier !== 'green'), out.items.map((i) => i.id));
+      check(`${tag} HEIC: no red left, word ${privacyWord(out.items)}`, !out.items.some((i) => i.tier === 'red') && name === `image.${privacyWord(out.items)}.heic`, out.items.map((i) => i.id));
     }
     await p.shot(`${tag}-6-heic`);
+
+    // An HDR photo: amber starts unticked, the gain map and its details with it, and the
+    // amber tick box then ticks every amber detail, the gain map included.
+    await p.load(['jpeg-ultrahdr-like.jpg']);
+    const gm = () => p.ev("['jpeg:trailing:gain-map', 'xmp:gainmap'].map((id) => document.querySelector(`#meta-groups .ms-check[data-id=\"${id}\"]`).checked)");
+    t = await tiers();
+    check(`${tag} HDR photo: amber starts unticked, the gain map and its details with it; red is ticked`, !t.amber.mixed && !t.amber.checked && t.amber.ticked === 0 && JSON.stringify(await gm()) === '[false,false]' && t.red.checked, t);
+    await p.ev("document.getElementById('m-tier-amber-all').click()");
+    t = await tiers();
+    check(`${tag} HDR photo: pressing the amber box ticks every amber detail, the gain map included`, t.amber.checked && !t.amber.mixed && t.amber.ticked === t.amber.n && JSON.stringify(await gm()) === '[true,true]', t);
 
     // Several files at once, plus one that is not a picture.
     await p.load(['jpeg-everything.jpg', 'webp-everything.webp', 'not-an-image.pdf']);
@@ -611,14 +652,14 @@ try {
     check(`${tag} two pictures listed, crop off`, multi.files === 2 && multi.crop, multi);
     check(`${tag} the button says "Prepare pictures" for several`, await p.ev("document.getElementById('go-btn').textContent") === 'Prepare pictures');
     t = await tiers();
-    check(`${tag} several files: every section closed, red and amber ticked for all of them, green not`, closed(t) && t.red.checked && t.red.ticked === t.red.n && t.amber.checked && t.amber.ticked === t.amber.n && !t.green.checked && t.green.ticked === 0, t);
+    check(`${tag} several files: every section closed, red ticked for all of them, amber and green not`, closed(t) && t.red.checked && t.red.ticked === t.red.n && !t.amber.checked && t.amber.ticked === 0 && !t.green.checked && t.green.ticked === 0, t);
     await p.press();
     files = await p.download();
     const names = Object.keys(files).sort();
     check(`${tag} numbered names`, names.length === 2 && /^image-1\.\w+\.jpg$/.test(names[0]) && /^image-2\.\w+\.webp$/.test(names[1]), names);
     for (const nm of names) {
       const out = await inspect(files[nm]);
-      check(`${tag} ${nm}: red and amber gone, word minimal`, !out.items.some((i) => i.tier !== 'green') && /\.minimal\./.test(nm), out.items.map((i) => i.tier + ':' + i.id));
+      check(`${tag} ${nm}: red gone, amber kept, word public`, !out.items.some((i) => i.tier === 'red') && out.items.some((i) => i.tier === 'amber') && /\.public\./.test(nm), out.items.map((i) => i.tier + ':' + i.id));
     }
     await p.shotOf(`${tag}-7-multi`, '#results');
 
@@ -669,13 +710,13 @@ try {
     check(`${tag} the picture loads and the details are listed`, await p.ev("document.querySelectorAll('#meta-groups .ms-check').length > 0 && !document.getElementById('workspace').hidden"));
     await p.press();
     const link = await p.ev("(() => { const a = document.querySelector('.ms-download'); return a ? { name: a.download, text: a.textContent } : null; })()");
-    check(`${tag} the result offers Save image.minimal.jpg`, !!link && link.name === 'image.minimal.jpg' && link.text === 'Save image.minimal.jpg', link);
+    check(`${tag} the result offers Save image.public.jpg`, !!link && link.name === 'image.public.jpg' && link.text === 'Save image.public.jpg', link);
     const before = p.completed.length;
     await p.ev("document.querySelector('.ms-download').click()");
     await p.waitFor("window.__msPosted.some((m) => m.t === 'out-begin')", 10000);
     await sleep(500);
     const begin = (await p.ev("window.__msPosted.find((m) => m.t === 'out-begin')")) || {};
-    check(`${tag} Save is caught by the bridge and offered to the app, not downloaded by the browser`, begin.name === 'image.minimal.jpg' && begin.mime === 'image/jpeg' && begin.size > 0 && begin.chunks >= 1 && p.completed.length === before, { begin, downloads: p.completed.length - before });
+    check(`${tag} Save is caught by the bridge and offered to the app, not downloaded by the browser`, begin.name === 'image.public.jpg' && begin.mime === 'image/jpeg' && begin.size > 0 && begin.chunks >= 1 && p.completed.length === before, { begin, downloads: p.completed.length - before });
     // Pull the chunks the way the app does and check the file that arrives.
     const parts = [];
     for (let i = 0; i < begin.chunks; i++) {
@@ -686,7 +727,7 @@ try {
     await p.ev(`window.__msListen({ data: JSON.stringify({ t: 'out-done', id: ${begin.id} }) })`);
     const got = new Uint8Array(Buffer.concat(parts));
     const out = await inspect(got);
-    check(`${tag} the file handed to the app is whole and has no red or amber left`, got.length === begin.size && out.format === 'jpeg' && !out.items.some((i) => i.tier !== 'green'), { size: got.length, expected: begin.size, left: out.items.map((i) => i.tier + ':' + i.id) });
+    check(`${tag} the file handed to the app is whole and has no red left`, got.length === begin.size && out.format === 'jpeg' && !out.items.some((i) => i.tier === 'red'), { size: got.length, expected: begin.size, left: out.items.map((i) => i.tier + ':' + i.id) });
     const csp = await p.ev('window.__csp');
     check(`${tag} no policy violations`, csp.length === 0, csp);
     check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);

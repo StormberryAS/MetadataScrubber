@@ -34,8 +34,11 @@ REG="$OUT/canaries.tsv"
 for tool in exiftool magick python3; do
   command -v "$tool" >/dev/null || { echo "make-fixtures: $tool is required" >&2; exit 1; }
 done
+# The list is read whole first: grep -q stops reading early, and with pipefail the
+# magick that gets cut off would fail the check.
+FORMATS=$(magick -list format)
 for fmt in HEIC WEBP; do
-  magick -list format | grep -qE "^ *$fmt\*? " || { echo "make-fixtures: magick lacks $fmt support" >&2; exit 1; }
+  grep -qE "^ *$fmt\*? " <<<"$FORMATS" || { echo "make-fixtures: magick lacks $fmt support" >&2; exit 1; }
 done
 USE_FFMPEG=0
 if [ -z "${FIXTURES_NO_FFMPEG:-}" ] && command -v ffmpeg >/dev/null; then USE_FFMPEG=1; fi
@@ -135,7 +138,7 @@ magick "$W/e-orig.png" -resize 160x120 -strip -quality 80 "$W/e-thumb.jpg"
 et -Comment="$(canary JPEG-THUMB-COM "$F" 'EXIF IFD1 thumbnail (uncropped original), COM inside it' hidden red spec)" "$W/e-thumb.jpg"
 magick "$W/e-orig.png" -resize 128x96 -strip -quality 75 "$W/e-psthumb.jpg"
 et -Comment="$(canary JPEG-PSTHUMB-COM "$F" 'Photoshop IRB thumbnail (uncropped original), COM inside it' hidden red spec)" "$W/e-psthumb.jpg"
-kit icc "$ICC_SRC" "$W/e.icc" "$(canary JPEG-ICC-PRIVATE "$F" 'ICC profile (APP2), private CNRY text tag' technical green spec)"
+kit icc "$ICC_SRC" "$W/e.icc" "$(canary JPEG-ICC-PRIVATE "$F" 'ICC profile (APP2), private CNRY text tag' hidden red spec)"
 kit blob "$W/e-makernote.bin" 240 7 "$(canary JPEG-EXIF-MAKERNOTE "$F" 'EXIF MakerNote (binary)' hidden red inferred)" 'FJORDCAM II'
 cat > "$W/e.args" <<EOF
 -ExifByteOrder=II
@@ -144,7 +147,7 @@ cat > "$W/e.args" <<EOF
 -Software=FjordOS 14.2.1 $(canary JPEG-EXIF-SOFTWARE "$F" 'EXIF IFD0 Software' device amber spec)
 -Artist=Astrid Holmvik $(canary JPEG-EXIF-ARTIST "$F" 'EXIF IFD0 Artist' who red spec)
 -Copyright=Copyright 2024 Astrid Holmvik $(canary JPEG-EXIF-COPYRIGHT "$F" 'EXIF IFD0 Copyright' who red spec)
--ImageDescription=Picnic below the tower $(canary JPEG-EXIF-DESCRIPTION "$F" 'EXIF IFD0 ImageDescription' hidden amber inferred)
+-ImageDescription=Picnic below the tower $(canary JPEG-EXIF-DESCRIPTION "$F" 'EXIF IFD0 ImageDescription' hidden red inferred)
 -ModifyDate=$(marker '2024:06:15 18:02:11' "$F" 'EXIF IFD0 DateTime (ModifyDate)' when amber spec)
 -HostComputer=Astrid-Laptop $(canary JPEG-EXIF-HOSTCOMPUTER "$F" 'EXIF IFD0 HostComputer' who red spec)
 -FixturePrivateIFD0=$(canary JPEG-EXIF-PRIVATE-IFD0 "$F" 'EXIF IFD0 unknown tag 0xBEEF' hidden red inferred)
@@ -164,7 +167,7 @@ cat > "$W/e.args" <<EOF
 -LensModel=Fjordcam 6.9mm f/1.8 $(canary JPEG-EXIF-LENSMODEL "$F" 'EXIF LensModel' device amber spec)
 -OwnerName=Jonas Brekkestad $(canary JPEG-EXIF-OWNER "$F" 'EXIF CameraOwnerName (exiftool: OwnerName)' who red spec)
 -ImageUniqueID=$(canary JPEG-EXIF-UNIQUEID "$F" 'EXIF ImageUniqueID' hidden red spec)
--UserComment=Taken with the self timer $(canary JPEG-EXIF-USERCOMMENT "$F" 'EXIF UserComment' hidden amber inferred)
+-UserComment=Taken with the self timer $(canary JPEG-EXIF-USERCOMMENT "$F" 'EXIF UserComment' hidden red inferred)
 -FixturePrivateExif=$(canary JPEG-EXIF-PRIVATE-EXIF "$F" 'EXIF Exif IFD unknown tag 0xBEF0' hidden red inferred)
 -FixtureMakerNote<=$W/e-makernote.bin
 -ExposureTime=1/250
@@ -202,20 +205,20 @@ cat > "$W/e.args" <<EOF
 -XMP-xmpMM:DocumentID=xmp.did:$(canary JPEG-XMP-DOCUMENTID "$F" 'XMP xmpMM:DocumentID' hidden red spec)
 -XMP-xmpMM:InstanceID=xmp.iid:$(canary JPEG-XMP-INSTANCEID "$F" 'XMP xmpMM:InstanceID' hidden red spec)
 -XMP-xmpMM:History+={Action=created,When=2024:06:14 09:41:27+02:00,SoftwareAgent=FjordOS Camera 14.2}
--XMP-xmpMM:History+={Action=saved,When=2024:06:15 18:02:11+02:00,SoftwareAgent=Fjord Studio 3.1 $(canary JPEG-XMP-HISTORY "$F" 'XMP xmpMM:History stEvt:softwareAgent' hidden amber spec),Changed=/}
+-XMP-xmpMM:History+={Action=saved,When=2024:06:15 18:02:11+02:00,SoftwareAgent=Fjord Studio 3.1 $(canary JPEG-XMP-HISTORY "$F" 'XMP xmpMM:History stEvt:softwareAgent' hidden red spec),Changed=/}
 -XMP-aux:SerialNumber=$(canary JPEG-XMP-AUXSERIAL "$F" 'XMP aux:SerialNumber' who red spec)
 -XMP-exif:GPSLatitude=48.858370 N
 -XMP-exif:GPSLongitude=2.294481 E
 -IPTC:By-line=$(canary JPEG-IPTC-BYLINE "$F" 'IPTC By-line' who red spec)
 -IPTC:City=Paris $(canary JPEG-IPTC-CITY "$F" 'IPTC City' where red spec)
--IPTC:Caption-Abstract=Sunday picnic $(canary JPEG-IPTC-CAPTION "$F" 'IPTC Caption-Abstract' hidden amber inferred)
+-IPTC:Caption-Abstract=Sunday picnic $(canary JPEG-IPTC-CAPTION "$F" 'IPTC Caption-Abstract' hidden red inferred)
 -IPTC:Keywords+=picnic
--IPTC:Keywords+=$(canary JPEG-IPTC-KEYWORD "$F" 'IPTC Keywords' hidden amber inferred)
+-IPTC:Keywords+=$(canary JPEG-IPTC-KEYWORD "$F" 'IPTC Keywords' hidden red inferred)
 -IPTC:CopyrightNotice=(c) 2024 Astrid Holmvik $(canary JPEG-IPTC-COPYRIGHT "$F" 'IPTC CopyrightNotice' who red spec)
 -PhotoshopThumbnail<=$W/e-psthumb.jpg
--Comment=Shot on a tripod $(canary JPEG-COM "$F" 'JPEG COM segment' hidden amber inferred)
+-Comment=Shot on a tripod $(canary JPEG-COM "$F" 'JPEG COM segment' hidden red inferred)
 -Ducky:Quality=80
--Ducky:Comment=$(canary JPEG-DUCKY-COMMENT "$F" 'APP12 Ducky Comment (UTF-16)' hidden amber inferred utf16)
+-Ducky:Comment=$(canary JPEG-DUCKY-COMMENT "$F" 'APP12 Ducky Comment (UTF-16)' hidden red inferred utf16)
 -Ducky:Copyright=$(canary JPEG-DUCKY-COPYRIGHT "$F" 'APP12 Ducky Copyright (UTF-16)' who red spec utf16)
 -ICC_Profile<=$W/e.icc
 EOF
@@ -223,8 +226,8 @@ et -@ "$W/common.args" -@ "$W/e.args" "$W/e.jpg"
 marker '48,51.5022N' "$F" 'XMP exif:GPSLatitude (as exiftool writes it)' where red spec raw "XMP-exif|GPS Latitude|48 deg 51' 30.13\" N" >/dev/null
 marker '2024-06-14T09:41:27.456+02:00' "$F" 'XMP xmp:CreateDate' when amber spec raw 'XMP-xmp|Create Date|2024:06:14 09:41:27.456+02:00' >/dev/null
 kit c2pa "$W/e-c2pa1.bin" "$W/e-c2pa2.bin" \
-  "Astrid Holmvik $(canary JPEG-C2PA-AUTHOR "$F" 'APP11 C2PA, CreativeWork author (JUMBF segment 1)' hidden amber spec)" \
-  "FjordOS_Camera/14.2 $(canary JPEG-C2PA-GENERATOR "$F" 'APP11 C2PA, claim_generator in CBOR claim (JUMBF segment 2)' hidden amber spec)"
+  "Astrid Holmvik $(canary JPEG-C2PA-AUTHOR "$F" 'APP11 C2PA, CreativeWork author (JUMBF segment 1)' hidden red spec)" \
+  "FjordOS_Camera/14.2 $(canary JPEG-C2PA-GENERATOR "$F" 'APP11 C2PA, claim_generator in CBOR claim (JUMBF segment 2)' hidden red spec)"
 kit blob "$W/e-app5.bin" 96 5 "$(canary JPEG-APP5 "$F" 'Unidentified APP5 segment, placed after DQT' hidden red inferred)" 'FJRD'
 kit jpeg-insert "$W/e.jpg" "$W/e2.jpg" after:e2 "eb:$W/e-c2pa1.bin" "eb:$W/e-c2pa2.bin"
 kit jpeg-insert "$W/e2.jpg" "$OUT/$F" before:c0 "e5:$W/e-app5.bin"
@@ -278,7 +281,7 @@ cat > "$W/p.args" <<EOF
 -GPSLongitudeRef=E
 -GPSAreaInformation=Colosseo, Roma $(canary PROG-GPS-AREA "$F" 'EXIF GPS IFD GPSAreaInformation' where red spec)
 -XMP-dc:Creator=Astrid Holmvik $(canary PROG-XMP-CREATOR "$F" 'XMP dc:creator' who red spec)
--Comment=$(canary PROG-COM "$F" 'JPEG COM segment' hidden amber inferred)
+-Comment=$(canary PROG-COM "$F" 'JPEG COM segment' hidden red inferred)
 EOF
 et -@ "$W/common.args" -@ "$W/p.args" "$W/p.jpg"
 cp "$W/p.jpg" "$OUT/$F"
@@ -344,6 +347,60 @@ kit xmp-payload "$W/u-primary.xml" "$W/u-primary-xmp.bin"
 kit jpeg-insert "$W/u.jpg" "$W/u2.jpg" after:e1 "e1:$W/u-primary-xmp.bin"
 kit mpf "$W/u2.jpg" "$W/u-gain.jpg" "$OUT/$F" after:e1
 
+# 4b. Ultra HDR variants #####################################################
+# The gain map of these pictures starts unticked, so each keeps it and hides one
+# thing in or around it that the page must still list and remove (or, for
+# iso-full and zero-pad, nothing at all: they check that a clean gain map and
+# zero padding survive untouched). Built from plain JPEGs with no other
+# metadata, so each file carries only its own planted strings. The gain map has
+# the full hdrgm description; the photo has hdrgm:Version, a Container directory
+# and an MPF index (little-endian with image IDs and layout details in mpf-extras).
+jpg "$W/u.png" "$W/uv.jpg" 90
+uhdr() { local f=$1 kind=$2; shift 2; kit uhdr "$W/uv.jpg" "$W/u-gain-bare.jpg" "$OUT/$f" "$kind" "$@"; }
+F=jpeg-uhdr-hdrgm-extra.jpg
+uhdr "$F" hdrgm-extra "$(canary UHDRV-HDRGM-SERIAL "$F" 'Photo XMP, unknown hdrgm:CameraSerialNumber next to the gain map fields' who red spec)" \
+  "$(canary UHDRV-HDRGM-GPS "$F" 'Photo XMP, unknown hdrgm:GPSLatitude next to the gain map fields' where red spec)"
+F=jpeg-uhdr-item-label.jpg
+uhdr "$F" item-label "$(canary UHDRV-ITEM-LABEL "$F" 'Photo XMP, Item:Label on the GainMap entry of the Container directory' hidden red spec)"
+F=jpeg-uhdr-apple-owner.jpg
+uhdr "$F" apple-owner "$(canary UHDRV-APPLE-OWNER "$F" 'Photo XMP, HDRGainMap:OwnerName next to HDRGainMap:HDRGainMapVersion' who red spec)"
+F=jpeg-uhdr-after-eoi.jpg
+uhdr "$F" after-eoi "$(canary UHDRV-AFTER-EOI "$F" 'Bytes after the gain map end marker, inside its MPF size (the gain map also has an XMP toolkit name)' hidden red spec)"
+F=jpeg-uhdr-bare-after-eoi.jpg
+uhdr "$F" bare-after-eoi "$(canary UHDRV-BARE-AFTER-EOI "$F" 'Bytes after the end marker of a gain map with no other metadata, inside its MPF size' hidden red spec)"
+F=jpeg-uhdr-mpf-tail.jpg
+uhdr "$F" mpf-tail "$(canary UHDRV-MPF-TAIL "$F" 'MPF APP2, bytes after the MP entry table that no structure uses' hidden red spec)"
+F=jpeg-uhdr-inner-hdrgm.jpg
+uhdr "$F" inner-hdrgm "$(canary UHDRV-INNER-HDRGM "$F" 'Gain map XMP, unknown hdrgm:CameraSerialNumber' who red spec)"
+F=jpeg-uhdr-iso-tail.jpg
+uhdr "$F" iso-tail "$(canary UHDRV-ISO-TAIL "$F" 'Photo ISO 21496-1 APP2, bytes after its version field' hidden red spec)"
+F=jpeg-uhdr-inner-mpf.jpg
+uhdr "$F" inner-mpf "$(canary UHDRV-INNER-MPF "$F" 'Gain map, an MPF APP2 segment of its own with a tail' hidden red spec)"
+F=jpeg-uhdr-inner-iso.jpg
+uhdr "$F" inner-iso "$(canary UHDRV-INNER-ISO "$F" 'Gain map ISO 21496-1 APP2, bytes after its version field' hidden red spec)"
+F=jpeg-uhdr-version-text.jpg
+uhdr "$F" version-text "$(canary UHDRV-VERSION-TEXT "$F" 'Photo XMP, text inside the value of hdrgm:Version' hidden red spec)"
+F=jpeg-uhdr-mpf-extras.jpg
+uhdr "$F" mpf-extras "$(canary UHDRV-MPF-UID "$F" 'MPF APP2 (little-endian), B003 ImageUIDList of the photo' hidden red spec)" \
+  "$(canary UHDRV-MPF-ATTR-TAG "$F" 'MPF APP2, unknown ASCII tag B2EE in the MP Attribute IFD' hidden red spec)"
+F=jpeg-uhdr-dir-semantic.jpg
+uhdr "$F" dir-semantic "$(canary UHDRV-DIR-SEMANTIC "$F" 'Photo XMP, Item:Semantic of a third Container directory entry that stands for no part' hidden red spec)"
+F=jpeg-uhdr-dir-mime.jpg
+uhdr "$F" dir-mime "$(canary UHDRV-DIR-MIME "$F" 'Photo XMP, Item:Mime of the GainMap entry of the Container directory' hidden red spec)"
+F=jpeg-uhdr-inner-gpano.jpg
+uhdr "$F" inner-gpano "$(canary UHDRV-INNER-GPANO "$F" 'Gain map XMP, a name in GPano:Note (a technical namespace)' hidden red spec)"
+uhdr jpeg-uhdr-iso-full.jpg iso-full
+uhdr jpeg-uhdr-zero-pad.jpg zero-pad
+# iPhone-style HDR: the gain map, its apdi:AuxiliaryImageType and the two HDR numbers of
+# the MakerNote stay; the rest of the MakerNote and any other apdi field go.
+F=jpeg-uhdr-apple.jpg
+uhdr "$F" apple "$(canary UHDRV-APPLE-MAKERNOTE "$F" 'Photo EXIF, Apple MakerNote text tag 0x000B next to the HDR numbers (tags 33 and 48)' hidden red spec)" \
+  "$(canary UHDRV-APPLE-APDI "$F" 'Gain map XMP, text in apdi:StoredFormat (an apdi field a gain map does not need)' hidden red spec)"
+F=jpeg-uhdr-apple-wrong.jpg
+uhdr "$F" apple-wrong "$(canary UHDRV-APPLE-AUXTYPE "$F" 'Gain map XMP, text after the fixed value of apdi:AuxiliaryImageType' hidden red spec)"
+F=jpeg-uhdr-not-gainmap.jpg
+uhdr "$F" not-gainmap "$(canary UHDRV-NOT-GAINMAP "$F" 'COM in a full-size colour second picture listed by MPF as type 0, with hdrgm in the photo XMP' hidden red spec)"
+
 # 5. jpeg-motion-photo.jpg ####################################################
 F=jpeg-motion-photo.jpg
 scene "$W/m.png" 640 480 51 '#bcd7f0' '#4d6b3c'
@@ -361,8 +418,8 @@ EOF
 et -@ "$W/common.args" -@ "$W/m.args" "$W/m.jpg"
 M_XYZ=$(marker '+40.6892-074.0445+010.000/' "$F" 'Appended MP4: moov/udta/©xyz (QuickTime ISO 6709 location)' where red spec)
 M_PLACE="Liberty Island $(canary MOTION-MP4-LOCI-NAME "$F" 'Appended MP4: moov/udta/loci place name (3GPP location box)' where red spec)"
-M_TITLE=$(canary MOTION-MP4-TITLE "$F" 'Appended MP4: moov/udta/meta/ilst/©nam (title)' hidden amber inferred)
-M_COMMENT=$(canary MOTION-MP4-COMMENT "$F" 'Appended MP4: moov/udta/meta/ilst/©cmt (comment)' hidden amber inferred)
+M_TITLE=$(canary MOTION-MP4-TITLE "$F" 'Appended MP4: moov/udta/meta/ilst/©nam (title)' hidden red inferred)
+M_COMMENT=$(canary MOTION-MP4-COMMENT "$F" 'Appended MP4: moov/udta/meta/ilst/©cmt (comment)' hidden red inferred)
 if [ "$USE_FFMPEG" = 1 ]; then
   ffmpeg -nostdin -v error -y -f lavfi -i testsrc2=size=320x240:rate=15:duration=1 \
     -c:v mpeg4 -q:v 6 -pix_fmt yuv420p -fflags +bitexact -flags:v +bitexact -map_metadata -1 \
@@ -454,7 +511,7 @@ cp "$W/x.jpg" "$OUT/$F"
 F=png-everything.png
 scene "$W/g.png" 480 360 81 '#a3c4e3' '#466b3b'
 magick "$W/g.png" -strip "PNG24:$W/g-base.png"
-kit icc "$ICC_SRC" "$W/g.icc" "$(canary PNG-ICCP-PRIVATE "$F" 'iCCP profile (compressed), private CNRY text tag' technical green spec zlib)"
+kit icc "$ICC_SRC" "$W/g.icc" "$(canary PNG-ICCP-PRIVATE "$F" 'iCCP profile (compressed), private CNRY text tag' hidden red spec zlib)"
 magick -size 8x8 xc:gray -strip "$W/g-exif-carrier.jpg"
 cat > "$W/g-exif.args" <<EOF
 -ExifByteOrder=MM
@@ -505,7 +562,7 @@ cat > "$W/g.json" <<EOF
   "out": "$OUT/$F",
   "idat_split": 16384,
   "before": [
-    {"type": "iCCP", "name": "Fjord sRGB $(canary PNG-ICCP-NAME "$F" 'iCCP profile name field' technical green spec)", "file": "g.icc"},
+    {"type": "iCCP", "name": "Fjord sRGB $(canary PNG-ICCP-NAME "$F" 'iCCP profile name field' hidden red spec)", "file": "g.icc"},
     {"type": "pHYs", "value": [2835, 2835, 1]},
     {"type": "eXIf", "file": "g-exif.tif"},
     {"type": "tEXt", "keyword": "Author", "text": "Astrid Holmvik $(canary PNG-TEXT-AUTHOR "$F" 'tEXt Author' who red spec)"},
@@ -516,9 +573,9 @@ cat > "$W/g.json" <<EOF
     {"type": "raw", "chunk": "prVt", "text": "fjord-private-v1;$(canary PNG-PRVT "$F" 'Unknown ancillary chunk prVt' hidden red inferred)"}
   ],
   "after": [
-    {"type": "tEXt", "keyword": "Comment", "text": "Exported for the family album $(canary PNG-TEXT-COMMENT "$F" 'tEXt Comment, after IDAT' hidden amber inferred)"},
-    {"type": "zTXt", "keyword": "Description", "text": "Evening by the river $(canary PNG-ZTXT-DESCRIPTION "$F" 'zTXt Description (compressed), after IDAT' hidden amber inferred zlib)"},
-    {"type": "iTXt", "keyword": "Title", "lang": "nb-NO", "translated": "Tittel", "compressed": true, "text": "Kveld ved elva $(canary PNG-ITXT-TITLE "$F" 'iTXt Title, nb-NO, compressed, after IDAT' hidden amber inferred zlib)"},
+    {"type": "tEXt", "keyword": "Comment", "text": "Exported for the family album $(canary PNG-TEXT-COMMENT "$F" 'tEXt Comment, after IDAT' hidden red inferred)"},
+    {"type": "zTXt", "keyword": "Description", "text": "Evening by the river $(canary PNG-ZTXT-DESCRIPTION "$F" 'zTXt Description (compressed), after IDAT' hidden red inferred zlib)"},
+    {"type": "iTXt", "keyword": "Title", "lang": "nb-NO", "translated": "Tittel", "compressed": true, "text": "Kveld ved elva $(canary PNG-ITXT-TITLE "$F" 'iTXt Title, nb-NO, compressed, after IDAT' hidden red inferred zlib)"},
     {"type": "tIME", "value": [2024, 7, 21, 13, 3, 9]}
   ],
   "trailer": "FJORD-TRAILER-V1 $(canary PNG-AFTER-IEND "$F" 'Bytes after IEND' hidden red inferred)\n"
@@ -549,7 +606,7 @@ kit png-build "$W/t.json"
 F=webp-everything.webp
 scene "$W/w.png" 480 360 101 '#a9cbe8' '#4a6e40'
 magick "$W/w.png" -strip -quality 80 -define webp:lossless=false -define webp:method=4 "$W/w-base.webp"
-kit icc "$ICC_SRC" "$W/w.icc" "$(canary WEBP-ICCP-PRIVATE "$F" 'ICCP chunk, private CNRY text tag' technical green spec)"
+kit icc "$ICC_SRC" "$W/w.icc" "$(canary WEBP-ICCP-PRIVATE "$F" 'ICCP chunk, private CNRY text tag' hidden red spec)"
 magick -size 8x8 xc:gray -strip "$W/w-exif-carrier.jpg"
 cat > "$W/w-exif.args" <<EOF
 -ExifByteOrder=II
@@ -646,7 +703,7 @@ cp "$W/l.jpg" "$OUT/$F"
 F=not-an-image.pdf
 kit pdf "$OUT/$F" \
   "Astrid Holmvik $(canary PDF-INFO-AUTHOR "$F" 'PDF Info dictionary /Author' who red inferred)" \
-  "Board notes $(canary PDF-INFO-TITLE "$F" 'PDF Info dictionary /Title' hidden amber inferred)"
+  "Board notes $(canary PDF-INFO-TITLE "$F" 'PDF Info dictionary /Title' hidden red inferred)"
 F=truncated.jpg
 scene "$W/r.png" 320 240 131 '#a0c4e4' '#4f7040'
 jpg "$W/r.png" "$W/r.jpg" 90
@@ -690,6 +747,70 @@ for kind in cycle overflow; do
     "Astrid Holmvik $(canary "$KIND_UP-EXIF-ARTIST" "$F" "EXIF IFD0 Artist, the one well-formed tag in a hostile IFD ($kind)" who red spec)"
   kit jpeg-insert "$W/$kind.jpg" "$OUT/$F" after:e0 "e1:$W/$kind-exif.bin"
 done
+
+# 15. Free text in green details ##############################################
+# A colour profile and a technical XMP field are green and kept by default, so a
+# name hidden in them must be offered as its own red detail and go by default,
+# with the colours unchanged.
+F=jpeg-icc-text.jpg
+scene "$W/it.png" 320 240 161 '#a8c8e6' '#4c6f42'
+jpg "$W/it.png" "$W/it.jpg" 90
+kit icc-text "$ICC_SRC" "$W/it.icc" mluc \
+  "desc=Astrid Holmvik $(canary ICCTEXT-JPEG-DESC "$F" 'ICC profile (APP2), mluc description' hidden red spec utf16)" \
+  "cprt=Copyright Astrid Holmvik $(canary ICCTEXT-JPEG-CPRT "$F" 'ICC profile (APP2), mluc copyright' hidden red spec utf16)" \
+  "dmnd=Astrid Holmvik $(canary ICCTEXT-JPEG-DMND "$F" 'ICC profile (APP2), mluc device manufacturer description' hidden red spec utf16)"
+et "-ICC_Profile<=$W/it.icc" "$W/it.jpg"
+cp "$W/it.jpg" "$OUT/$F"
+
+F=png-icc-text.png
+magick "$W/it.png" -strip "PNG24:$W/ip-base.png"
+kit icc-text "$ICC_SRC" "$W/ip.icc" ascii \
+  "desc=Astrid Holmvik $(canary ICCTEXT-PNG-DESC "$F" 'iCCP profile (compressed), description' hidden red spec zlib)" \
+  "cprt=Copyright Astrid Holmvik $(canary ICCTEXT-PNG-CPRT "$F" 'iCCP profile (compressed), copyright' hidden red spec zlib)"
+cat > "$W/ip.json" <<EOF
+{
+  "base": "$W/ip-base.png",
+  "out": "$OUT/$F",
+  "before": [
+    {"type": "iCCP", "name": "Astrid $(canary ICCTEXT-PNG-NAME "$F" 'iCCP profile name field (a name, not a known profile name)' hidden red spec)", "file": "ip.icc"}
+  ]
+}
+EOF
+kit png-build "$W/ip.json"
+
+F=webp-icc-text.webp
+magick "$W/it.png" -strip -quality 80 -define webp:lossless=false -define webp:method=4 "$W/iw.webp"
+kit icc-text "$ICC_SRC" "$W/iw.icc" ascii \
+  "cprt=Copyright Astrid Holmvik $(canary ICCTEXT-WEBP-CPRT "$F" 'ICCP chunk, copyright' hidden red spec)" \
+  "dmdd=Astrid Holmvik $(canary ICCTEXT-WEBP-DMDD "$F" 'ICCP chunk, device model description' hidden red spec)"
+et "-ICC_Profile<=$W/iw.icc" "$W/iw.webp"
+cp "$W/iw.webp" "$OUT/$F"
+
+F=heic-icc-text.heic
+kit icc-text "$ICC_SRC" "$W/ih.icc" mluc \
+  "desc=Astrid Holmvik $(canary ICCTEXT-HEIC-DESC "$F" 'colr property (ICC profile), mluc description' hidden red spec utf16)" \
+  "cprt=Copyright Astrid Holmvik $(canary ICCTEXT-HEIC-CPRT "$F" 'colr property (ICC profile), mluc copyright' hidden red spec utf16)"
+magick "$W/it.png" -profile "$W/ih.icc" -depth 8 -quality 60 "$OUT/$F"
+
+F=jpeg-green-xmp.jpg
+jpg "$W/it.png" "$W/ix.jpg" 90
+cat > "$W/ix.xml" <<EOF
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+    xmlns:GPano="http://ns.google.com/photos/1.0/panorama/"
+    xmp:Rating="Astrid Holmvik $(canary GREENXMP-RATING "$F" 'XMP xmp:Rating holding text instead of a number' hidden red spec)"
+    photoshop:ICCProfile="Astrid Holmvik $(canary GREENXMP-ICCPROFILE "$F" 'XMP photoshop:ICCProfile holding a name, not a known profile name' hidden red spec)"
+    photoshop:ColorMode="3"
+    GPano:ProjectionType="$(canary GREENXMP-GPANO-PROJECTION "$F" 'XMP GPano:ProjectionType holding text, not one of the projection names' hidden red spec)"
+    GPano:PoseHeadingDegrees="12.5"/>
+ </rdf:RDF>
+</x:xmpmeta>
+EOF
+kit xmp-payload "$W/ix.xml" "$W/ix-xmp.bin"
+kit jpeg-insert "$W/ix.jpg" "$OUT/$F" after:e0 "e1:$W/ix-xmp.bin"
 
 # Checks and reports ##########################################################
 rm -rf "$W"

@@ -20,7 +20,7 @@
 // only want to crop or resize. When nothing would change, no identical copy is made;
 // the page says so instead.
 
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=1d047a44';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=975bd2e8';
 
 // ---------------------------------------------------------------------------------------
 // Constants
@@ -33,22 +33,27 @@ const TIER_RANK = { red: 0, amber: 1, green: 2 };
 const TIER_WORD = { red: 'Red', amber: 'Amber', green: 'Green' };
 const GROUP_RANK = Object.fromEntries(GROUPS.map((g, i) => [g.id, i]));
 const GROUP_LABEL = Object.fromEntries(GROUPS.map((g) => [g.id, g.label]));
-// The tiers ticked for removal to start with. Green holds rotation and the colour profile;
-// removing those re-saves many phone photos and can shift colours, so it starts unticked.
-const DEFAULT_TIERS = new Set(['red', 'amber']);
-// The HDR gain map is amber and starts ticked like the rest of amber. Keeping it by default
-// waits for an engine change: today a kept gain map also keeps any extra property in the
-// hdrgm, HDRGainMap and Container XMP namespaces and some raw bytes that travel with it, and
-// the page cannot see or list those. Once the engine keeps only the known gain map fields,
-// defaultIds() can leave the gain map and its amber XMP description unticked.
+// The tiers ticked for removal to start with: red only (0.0.3). Free text that can name
+// people (captions, titles, descriptions, keywords, comments) is red; amber holds only
+// structured details (dates, time zone, camera, lens, software, the HDR details), kept
+// unless the user ticks them. Green holds rotation and the colour profile; removing those
+// re-saves many phone photos and can shift colours, so it starts unticked too.
+const DEFAULT_TIERS = new Set(['red']);
+// The HDR gain map changes how the photo looks, not who took it, so it and its XMP
+// description stay unticked: the engine keeps only the fields a gain map needs to render
+// and lists everything else in or around it as its own detail, ticked by tier.
 const GAIN_MAP_ID = 'jpeg:trailing:gain-map';
-// The amber details that belong to the gain map itself, for the note on a result that kept it.
-const GAIN_MAP_OWN = new Set([GAIN_MAP_ID, 'xmp:gainmap']);
+const HEIC_GAIN_MAP_ID = 'heic:gain-map';
+const GAIN_MAP_IDS = new Set([GAIN_MAP_ID, HEIC_GAIN_MAP_ID]);
+// The amber details that belong to the gain map itself: unticked to start with, and named
+// in the note on a result that kept them. An iPhone gain map (JPEG or HEIC) also needs the
+// photo's Apple HDR brightness, two numbers the engine keeps in a maker note of their own.
+const GAIN_MAP_OWN = new Set([GAIN_MAP_ID, HEIC_GAIN_MAP_ID, 'xmp:gainmap', 'exif:apple-hdr']);
 
 // The tier words and their meanings, from the spec's file name table. The colour is the
 // tier of the most sensitive kind of item that can be left in a file with that word.
 const PRIVACY = {
-  public: { tier: 'amber', text: 'Safe to share publicly: location, serial numbers, names and the hidden preview are gone.' },
+  public: { tier: 'amber', text: 'Safe to share publicly: location, serial numbers, names, captions and the hidden preview are gone. Dates and device details may remain; check them under Amber.' },
   minimal: { tier: 'green', text: 'Only technical data left: rotation, colour, size and exposure.' },
   clean: { tier: 'green', text: 'No metadata left at all.' },
   custom: { tier: 'red', text: 'Your own selection. Check the list of what remains.' },
@@ -288,8 +293,12 @@ async function loadFiles(fileList) {
   const found = state.rows.length;
   const what = entries.length === 1 ? 'Picture loaded.' : `${entries.length} pictures loaded.`;
   const tickedText = ticked
-    ? `${fmtInt(ticked)} of them ${ticked === 1 ? 'is' : 'are'} red or amber and ticked for removal.`
-    : 'None of them is red or amber, so nothing is ticked.';
+    ? `${fmtInt(ticked)} of them ${ticked === 1 ? 'is' : 'are'} red and ticked for removal.`
+    : state.rows.some((row) => row.tier === 'red')
+      // In a batch, the only red rows can be merged rows of a kept HDR gain map, which
+      // defaultIds() leaves unticked.
+      ? 'Nothing is ticked: the red details belong to the HDR gain map, which is kept.'
+      : 'None of them is red, so nothing is ticked.';
   announce(found
     ? `${what} ${plural(found, 'metadata detail', 'metadata details')} found. ${tickedText}`
     : `${what} No metadata found.`);
@@ -407,9 +416,21 @@ function mergeRows(entries) {
   return [...rows.values()];
 }
 
-// The details ticked for removal to start with: every red and amber one.
+// The details ticked for removal to start with: every red one, except the HDR gain map and
+// its description when a file holds an amber gain map. That holds whatever tier the merged
+// rows have: in a batch, another file's second picture that is not plausibly
+// a gain map makes its description red, but that description still goes with its own red
+// picture, while ticking the row would leave the real gain map without one. Red details in
+// or around a gain map stay ticked.
 function defaultIds() {
-  return new Set(state.rows.filter((row) => DEFAULT_TIERS.has(row.tier)).map((row) => row.id));
+  const hdr = hdrKept();
+  return new Set(state.rows.filter((row) => DEFAULT_TIERS.has(row.tier)
+    && !(hdr && GAIN_MAP_OWN.has(row.id))).map((row) => row.id));
+}
+
+// Whether the files hold an amber HDR gain map (JPEG or HEIC), which starts unticked.
+function hdrKept() {
+  return state.rows.some((row) => GAIN_MAP_IDS.has(row.id) && row.tier === 'amber');
 }
 
 // ---------------------------------------------------------------------------------------
@@ -858,8 +879,10 @@ function planEntry(entry, opts, webpOk) {
 
 // Whether the new file would be the original again: nothing ticked that it holds, and
 // nothing that re-saves it. A size limit the file already meets changes nothing either.
+// XMP that is not yet in the engine's standard form is always written again (normalise),
+// so such a file changes even with nothing ticked.
 function changesNothing(entry, plan) {
-  if (plan.remove.size || plan.resave) return false;
+  if (plan.remove.size || plan.resave || (entry.info && entry.info.normalise)) return false;
   return !plan.sizeLimit || entry.bytes.length <= plan.sizeLimit;
 }
 
@@ -961,7 +984,16 @@ function refreshDerived() {
   const base = cleanName($('name-input').value);
   if (single()) {
     const p = plans[0];
-    const remaining = state.entries[0].info.items.filter((it) => !p.remove.has(it.id));
+    const items = state.entries[0].info.items;
+    // As the engine does: the HDR gain map and its XMP description go together (a gain map
+    // without its description cannot be found), and take along what lives in it and the
+    // index and ISO segment that point to it. Rebuilding the multi-picture index for its
+    // image IDs or layout details also leaves out its unexplained data.
+    const gainGone = items.some((it) => GAIN_MAP_IDS.has(it.id)) && [...GAIN_MAP_OWN].some((id) => p.remove.has(id));
+    const mpfRebuilt = p.remove.has('jpeg:mpf:ids') || p.remove.has('jpeg:mpf:layout');
+    const withGainMap = (id) => GAIN_MAP_OWN.has(id) || id.startsWith(`${GAIN_MAP_ID}:`) || id.startsWith(`${HEIC_GAIN_MAP_ID}:`) || id.startsWith('jpeg:mpf:') || id.startsWith('jpeg:isogain:');
+    const gone = (id) => p.remove.has(id) || (gainGone && withGainMap(id)) || (id === 'jpeg:mpf:extra' && mpfRebuilt);
+    const remaining = items.filter((it) => !gone(it.id));
     const ext = EXT[p.resave || p.sizeLimit ? p.enc : state.entries[0].format];
     $('name-preview').textContent = `Expected name: ${base}.${privacyWord(remaining)}.${ext}. The privacy word is confirmed by reading the new file back.`;
   } else {
@@ -1328,7 +1360,7 @@ function renderResult(r) {
   const notGreen = r.readback.items.filter((it) => it.tier !== 'green');
   const kept = (id) => notGreen.some((it) => it.id === id);
   const hadDescription = r.entry.info.items.some((it) => it.id === 'xmp:gainmap');
-  const keptOnlyGainMap = r.word === 'public' && kept(GAIN_MAP_ID) && (!hadDescription || kept('xmp:gainmap'))
+  const keptOnlyGainMap = r.word === 'public' && [...GAIN_MAP_IDS].some(kept) && (!hadDescription || kept('xmp:gainmap'))
     && notGreen.every((it) => it.tier === 'amber' && GAIN_MAP_OWN.has(it.id));
   const facts = [`${FORMAT_NAME[r.format]}, ${fmtDims(r.width, r.height)}, ${fmtBytes(r.bytes.length)}.`];
   facts.push(r.lossless

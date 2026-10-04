@@ -1,9 +1,15 @@
 // IPTC-IIM datasets and the Photoshop image resource block (IRB) that usually carries them.
 //
 // JPEG keeps both in APP13 ("Photoshop 3.0"); PNG keeps them in "Raw profile type iptc" or
-// "Raw profile type 8bim" text. Removal rebuilds the block from the kept parts only.
+// "Raw profile type 8bim" text. Since 0.0.3 a block that stays is always written again in
+// one canonical form (canonicalIrb, rebuildIptc), even when nothing in it goes: dates and
+// software (amber, kept by default) are the only free-form parts left, and those are
+// checked. Resource names, padding, the character set marker, record versions and the
+// digest of the old IPTC data cannot carry anything along.
 
-import { clip, concat, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=b373c219';
+import { clip, concat, encodeLatin1, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=4d7df4d3';
+import { md5 } from './icc.js?v=15403b52';
+import { deviceNameOk } from './tiff.js?v=f010e347';
 
 // ======================================================================================
 // IPTC-IIM
@@ -16,10 +22,11 @@ export const IPTC_ITEMS = {
   copyright: { group: 'who', tier: 'red', label: 'Copyright notice', note: "Usually contains the photographer's name." },
   dates: { group: 'when', tier: 'amber', label: 'Date and time created' },
   software: { group: 'device', tier: 'amber', label: 'Software used' },
-  caption: { group: 'hidden', tier: 'amber', label: 'Caption and headline' },
-  keywords: { group: 'hidden', tier: 'amber', label: 'Keywords' },
-  instructions: { group: 'hidden', tier: 'amber', label: 'Special instructions' },
-  other: { group: 'hidden', tier: 'amber', label: 'Other IPTC data' },
+  // Free text can name people, so it is red (0.0.3); dates and software stay amber.
+  caption: { group: 'hidden', tier: 'red', label: 'Caption and headline', note: 'Free text written by a person or an app. It can hold names, places or notes.' },
+  keywords: { group: 'hidden', tier: 'red', label: 'Keywords', note: 'Free text written by a person or an app. It can hold names, places or notes.' },
+  instructions: { group: 'hidden', tier: 'red', label: 'Special instructions', note: 'Free text written by a person or an app. It can hold names, places or notes.' },
+  other: { group: 'hidden', tier: 'red', label: 'Other IPTC data', note: 'Other IPTC fields, such as a title, categories or a reference. They are mostly free text, which can hold names, places or notes.' },
   unreadable: { group: 'hidden', tier: 'red', label: 'IPTC data that could not be read', note: 'Bytes between the IPTC fields that no reader uses. They may hold anything.' },
 };
 
@@ -79,12 +86,36 @@ const textOf = (b, s) => {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(raw).trim(); } catch { return latin1(raw).trim(); }
 };
 
-const datasetKey = (s) => (STRUCTURAL.has(s.id) ? null : DATASET_KEY[s.id] || 'other');
+// The form each date and software dataset must have to stay amber (IPTC-IIM 4.2): dates as
+// CCYYMMDD, times as HHMMSS with an optional zone, the program's name as one short line of
+// printable text and its version as a short one. A dataset that fails goes with the other
+// IPTC fields, which are red.
+const DATE_FORM = /^\d{8}$/;
+const TIME_FORM = /^\d{6}(?:[+-]\d{4})?$/;
+const AMBER_FORM = {
+  '2:55': DATE_FORM, '2:62': DATE_FORM, '2:30': DATE_FORM,
+  '2:60': TIME_FORM, '2:63': TIME_FORM, '2:35': TIME_FORM,
+};
+function amberOk(b, s) {
+  const raw = b.subarray(s.dataStart, s.dataEnd);
+  let v;
+  try { v = new TextDecoder('utf-8', { fatal: true }).decode(raw); } catch { return false; }
+  if (AMBER_FORM[s.id]) return AMBER_FORM[s.id].test(v);
+  if (s.id === '2:65') return raw.length <= 32 && deviceNameOk(v);
+  if (s.id === '2:70') return raw.length <= 10 && deviceNameOk(v);
+  return false;
+}
+
+const datasetKey = (s, b) => {
+  if (STRUCTURAL.has(s.id)) return null;
+  const k = DATASET_KEY[s.id] || 'other';
+  return (k === 'dates' || k === 'software') && b && !amberOk(b, s) ? 'other' : k;
+};
 
 export function iptcItems(parsed) {
   const buckets = new Map();
   for (const s of parsed.sets) {
-    const k = datasetKey(s);
+    const k = datasetKey(s, parsed.b);
     if (!k) continue;
     if (!buckets.has(k)) buckets.set(k, []);
     buckets.get(k).push(s);
@@ -110,12 +141,33 @@ export function iptcItems(parsed) {
   return items;
 }
 
-// Rebuilds the IPTC data from the kept datasets only (unreadable bytes never survive a
-// rebuild). Returns null when nothing meaningful is left.
-export function rebuildIptc(parsed, removeKeys) {
-  const kept = parsed.sets.filter((s) => { const k = datasetKey(s); return k ? !removeKeys.has(k) : true; });
-  if (!kept.some((s) => datasetKey(s))) return null;
-  return concat(kept.map((s) => parsed.b.subarray(s.start, s.end)));
+// Rebuilds the IPTC data from the kept datasets only, in the canonical form: datasets in
+// record and number order (repeats keep their order), each with the shortest length field,
+// the record versions (1:0, 2:0) written as version 4, and the character set (1:90) kept
+// only as the one marker for UTF-8. Unreadable bytes never survive. Returns null when
+// nothing meaningful is left.
+const UTF8_MARK = [0x1b, 0x25, 0x47];
+function dataset(rec, ds, data) {
+  const n = data.length;
+  const head = n < 0x8000 ? [0x1c, rec, ds, n >> 8, n & 255] : [0x1c, rec, ds, 0x80, 4, n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
+  return concat([new Uint8Array(head), data]);
+}
+export function rebuildIptc(parsed, removeKeys = new Set()) {
+  const b = parsed.b;
+  const kept = parsed.sets.filter((s) => { const k = datasetKey(s, b); return k && !removeKeys.has(k); });
+  if (!kept.length) return null;
+  const recs = new Set(kept.map((s) => s.rec));
+  const utf8 = parsed.sets.some((s) => s.id === '1:90' && s.dataEnd - s.dataStart === 3 && UTF8_MARK.every((x, i) => b[s.dataStart + i] === x));
+  const out = [];
+  if (recs.has(1) || utf8) out.push(dataset(1, 0, new Uint8Array([0, 4])));
+  if (utf8) out.push(dataset(1, 90, new Uint8Array(UTF8_MARK)));
+  const sorted = kept.map((s, i) => ({ s, i })).sort((x, y) => x.s.rec - y.s.rec || x.s.ds - y.s.ds || x.i - y.i).map((x) => x.s);
+  let rec2 = false;
+  for (const s of sorted) {
+    if (s.rec === 2 && !rec2) { out.push(dataset(2, 0, new Uint8Array([0, 4]))); rec2 = true; }
+    out.push(dataset(s.rec, s.ds, b.subarray(s.dataStart, s.dataEnd)));
+  }
+  return concat(out);
 }
 
 // ======================================================================================
@@ -146,23 +198,47 @@ export const IRB_THUMBS = new Set([0x0409, 0x040c]);
 export const IRB_XMP = 0x0424;
 export const IRB_EXIF = new Set([0x0422, 0x0423]);
 
+// Photoshop resources other than IPTC, previews and copies of EXIF or XMP. Several hold
+// free text (a caption, a web address, slice, layer and channel names), so they are red.
+export const IRB_OTHER_NOTE = 'Photoshop settings that can include a caption, a web address or names given to layers and channels. They can hold names or notes.';
+
 export function irbOtherValue(list) {
   const total = list.reduce((s, r) => s + (r.dataEnd - r.dataStart), 0);
   return `${list.length} block${list.length === 1 ? '' : 's'}, ${formatBytes(total)}`;
 }
 
-// Rebuilds the block from kept resources; `replace` maps resource objects to new data.
-export function rebuildIrb(parsed, keep, replace = new Map()) {
-  const parts = [];
-  for (const r of parsed.res) {
-    if (!keep(r)) continue;
-    const data = replace.get(r);
-    if (!data) { parts.push(parsed.b.subarray(r.start, r.end)); continue; }
-    const head = parsed.b.slice(r.start, r.dataStart);
-    w32be(head, head.length - 4, data.length);
-    parts.push(head, data);
-    if (data.length & 1) parts.push(new Uint8Array(1));
+// One resource in the canonical form: its signature, its number, an empty name, its
+// length and its data, padded with a zero to an even length.
+function resource(sig, id, data) {
+  const head = new Uint8Array(12);
+  head.set(encodeLatin1(sig));
+  head[4] = id >> 8; head[5] = id & 255;
+  w32be(head, 8, data.length);
+  return concat([head, data, new Uint8Array(data.length & 1)]);
+}
+
+// The block written again in the canonical form from the kept resources (see the top of
+// this file): parts are the kinds of resource that go ('thumbs', 'embedded', 'other'),
+// removeIptc the IPTC detail keys that go. The IPTC resource is written as the canonical
+// IPTC data and, when the block had one, followed by the digest Photoshop keeps of that
+// data, computed again. Any further IPTC or digest resource and anything after the last
+// resource never stay. Returns the new block (empty when nothing is left).
+export function canonicalIrb(irb, iptc, iptcRes, { parts = new Set(), removeIptc = new Set() } = {}) {
+  const b = irb.b;
+  const newIptc = iptc && iptcRes ? rebuildIptc(iptc, removeIptc) : null;
+  const hadDigest = irb.res.some((r) => r.id === IRB_IPTC_DIGEST);
+  const out = [];
+  for (const r of irb.res) {
+    if (r.id === IRB_IPTC) {
+      if (r !== iptcRes || !newIptc) continue;
+      out.push(resource('8BIM', IRB_IPTC, newIptc));
+      if (hadDigest) out.push(resource('8BIM', IRB_IPTC_DIGEST, md5(newIptc)));
+      continue;
+    }
+    if (r.id === IRB_IPTC_DIGEST) continue;
+    if (IRB_THUMBS.has(r.id) ? parts.has('thumbs') : r.id === IRB_XMP || IRB_EXIF.has(r.id) ? parts.has('embedded') : parts.has('other')) continue;
+    out.push(resource(latin1(b, r.start, r.start + 4), r.id, b.subarray(r.dataStart, r.dataEnd)));
   }
-  return concat(parts);
+  return concat(out);
 }
 

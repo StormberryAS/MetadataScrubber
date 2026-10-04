@@ -7,14 +7,15 @@ It declares no Android permissions at all. There is no internet permission, so i
 The only line you should see is the package name.
 
 - Shows before it removes. Every detail found in the file is listed with its value, grouped in a Red, an Amber and a Green section. Each section starts closed and says how many details it holds.
-- Colour tiers guide the choice. Red means remove before sharing publicly, amber means think about it, green means harmless and useful. Red and amber details are ticked for removal to start with; green, which holds rotation, the colour profile, size and exposure, is kept.
-- HDR photos. In a JPEG, an HDR gain map is amber, so it is removed too. Untick both HDR gain map and HDR gain map details to keep the photo bright on HDR screens.
+- Colour tiers guide the choice. Red means remove before sharing publicly, amber means think about it, green means harmless and useful. Only red details are ticked for removal to start with. Amber (dates, time zone, camera, lens and editing software) is kept unless you tick it, and so is green, which holds rotation, the colour profile, size and exposure. Captions, titles, descriptions, keywords, comments and Content Credentials are red, because they can name people. Amber keeps a date or device name only in the form it should have: text hidden after it, in a field the page does not show, or in the file's own structure is a red detail and is removed. Green keeps only numbers, fixed words and well-known profile names: a name hidden in a colour profile or a technical field is a red detail of its own, and removing it leaves the colours unchanged.
+- HDR photos keep their gain map by default, so Ultra HDR JPEGs and iPhone HDR JPEG and HEIC photos stay bright on HDR screens. The gain map keeps only what it needs to work, and an iPhone photo keeps just the two HDR numbers of its maker notes: anything else in it or around it is still listed and removed. Tick HDR gain map to remove it.
+- XMP, IPTC and PNG text that stay are always written again in a standard form, so their layout cannot carry hidden information.
 - Your choice, one colour or one detail at a time. Tick a whole colour at once, or open it to choose single details.
 - Lossless by default. Unless you crop, resize, convert or remove a sideways rotation, the picture itself is not saved again, so its pixels stay identical.
 - Crop, resize and convert when you need to, for JPEG, PNG and WebP.
 - Reads the result back, so the list shows what remains in the new file.
-- Neutral file names. The phone's file name, which carries the date and time, is never reused. Results are named like image.minimal.jpg.
-- Save or Share. Press Save image.minimal.jpg, then save the clean copy to a folder or share it straight on. Photos can also be shared into the app from your gallery.
+- Neutral file names. The phone's file name, which carries the date and time, is never reused. Results are named like image.public.jpg.
+- Save or Share. Press Save image.public.jpg, then save the clean copy to a folder or share it straight on. Photos can also be shared into the app from your gallery.
 
 Supported formats: JPEG, PNG, WebP and HEIC. HEIC metadata can be removed, but cropping and resizing HEIC are not available in the app, because Android's web engine cannot open HEIC pictures.
 

@@ -2,23 +2,33 @@
 //
 // Reads ftyp and meta (hdlr, pitm, iinf with infe v2 and v3, iloc versions 0 to 2 with all
 // field sizes and construction methods 0 and 1, idat, iref, iprp with ipco and ipma, grpl).
-// Every change is made IN PLACE: no box size and no offset ever changes, so the item
-// locations stay valid. EXIF is edited by the TIFF engine inside its item, XMP is rewritten
-// and padded with spaces to the same length (or blanked), previews and extra pictures are
-// zeroed, and whole boxes that must go (a colour profile, Content Credentials, vendor
-// boxes, descriptive properties) become 'free' boxes filled with zeros.
+// Every change but one is made IN PLACE: EXIF is edited by the TIFF engine inside its item,
+// previews and extra pictures are zeroed, and whole boxes that must go (a colour profile,
+// Content Credentials, vendor boxes, descriptive properties) become 'free' boxes filled
+// with zeros. XMP is the exception: it is only kept in the canonical form (see rewriteXmp
+// in xmp.js), with no padding, so a packet that changes changes length; spliceHeif moves
+// what follows and writes the box sizes and the item location table again, then checks
+// every item still reads exactly as before. Where it cannot, the packet is blanked instead.
+//
+// Apple's HDR gain map (an auxiliary image named exactly urn:com:apple:photo:2020:aux:
+// hdrgainmap) is an amber detail kept to start with, with the fields of its own XMP a gain
+// map defines and, when the MakerNote goes, a minimal MakerNote holding only Apple's two
+// HDR numbers (as in a JPEG); the gain map and those numbers go together. An auxiliary
+// image whose name is not on a fixed list is red.
 //
 // Everything outside the picture itself is accounted for: top-level boxes, meta children,
 // item properties, image items the picture does not use, and bytes inside the media data
 // that no item points at. What is not needed to show the picture is offered as an item.
 
-import { formatBytes, indexOfAscii, latin1, startsWith, subtractRanges, u16be, u32be, u64be, zeroRanges } from './bytes.js?v=b373c219';
-import { describeC2pa } from './c2pa.js?v=366e87df';
-import { iccDescription } from './icc.js?v=1ac906b0';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=5970adfd';
-import { blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, tiffItems } from './tiff.js?v=262e0fe8';
-import { addXmpItems, emptyXmp, padXmp, parseXmp, planXmp } from './xmp.js?v=f2cbf417';
+import { concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, subtractRanges, u16be, u32be, u64be, w16be, w32be, w64be, zeroRanges } from './bytes.js?v=4d7df4d3';
+import { describeC2pa } from './c2pa.js?v=fcdff418';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=15403b52';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=93d7f069';
+import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=f010e347';
+import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=79671502';
 
+// What a packet that goes becomes: the item stays, holding an empty packet.
+const EMPTY_XMP = '<x:xmpmeta xmlns:x="adobe:ns:meta/"/>';
 const HEIC_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs']);
 const C2PA_UUID = 'd8fec3d61b0e483c92975828877ec481';
 const XMP_UUID = 'be7acfcb97a942e89c71999491e3afac';
@@ -149,6 +159,7 @@ export function parseHeif(b) {
       let id;
       let type = '';
       let contentType = '';
+      let name;
       if (ver >= 2) {
         id = ver === 2 ? u16be(b, p) : u32be(b, p);
         p += ver === 2 ? 2 : 4;
@@ -156,16 +167,20 @@ export function parseHeif(b) {
         type = latin1(b, p, Math.min(e.end, p + 4));
         p += 4;
         const [, after] = cstr(b, p, e.end);
+        name = [p, Math.min(after - 1, e.end)];
         p = after;
         if (type === 'mime' || type === 'uri ') [contentType] = cstr(b, p, e.end);
       } else {
         id = u16be(b, p);
         p += 4;
         const [, after] = cstr(b, p, e.end);
+        name = [p, Math.min(after - 1, e.end)];
         [contentType] = cstr(b, after, e.end);
         type = 'mime';
       }
-      model.items.set(id, { id, type, contentType, extents: [], method: 0, hidden: !!(b[e.dataStart + 3] & 1) });
+      // infe: the box, so a removed image can be marked hidden; name: where the item's name
+      // lies, a free string no reader needs (see structureFixes).
+      model.items.set(id, { id, type, contentType, extents: [], method: 0, hidden: !!(b[e.dataStart + 3] & 1), infe: e, name });
     }
   }
 
@@ -185,30 +200,38 @@ export function parseHeif(b) {
       p += 2;
       const count = ver < 2 ? readN(b, p, 2) : readN(b, p, 4);
       p += ver < 2 ? 2 : 4;
+      // The table as written, so a rewrite (see spliceHeif) can write it again.
+      const table = { box: iloc, version: ver, offSize, lenSize, baseSize, idxSize, entries: [] };
       let totalExtents = 0;
       for (let i = 0; i < count && p < iloc.end; i++) {
         const id = ver < 2 ? readN(b, p, 2) : readN(b, p, 4);
         p += ver < 2 ? 2 : 4;
         let method = 0;
-        if (ver === 1 || ver === 2) { method = readN(b, p, 2) & 15; p += 2; }
+        let methodField = 0;
+        if (ver === 1 || ver === 2) { methodField = readN(b, p, 2); method = methodField & 15; p += 2; }
+        const dataRef = readN(b, p, 2);
         p += 2;
         const base = readN(b, p, baseSize);
         p += baseSize;
         const n = readN(b, p, 2);
         p += 2;
         const extents = [];
+        const raw = [];
         // A crafted table can claim up to 65,535 extents per item; far beyond any real file.
         if (n > 4096 || totalExtents + n > 65536) throw new Error('Too many extents');
         totalExtents += n;
         for (let k = 0; k < n; k++) {
+          const idx = idxSize ? readN(b, p, idxSize) : 0;
           if (idxSize) p += idxSize;
           const off = readN(b, p, offSize);
           p += offSize;
           const len = readN(b, p, lenSize);
           p += lenSize;
           extents.push({ off: base + off, len });
+          raw.push({ idx, off, len });
         }
         if (p > iloc.end) throw new Error('Location table past its box');
+        table.entries.push({ id, methodField, method, dataRef, base, extents: raw });
         const item = model.items.get(id) || { id, type: '', contentType: '', extents: [] };
         item.method = method;
         item.ranges = [];
@@ -233,6 +256,7 @@ export function parseHeif(b) {
         }
         model.items.set(id, item);
       }
+      if (table.entries.length === count && p === iloc.end) model.iloc = table;
     } catch {
       warnings.push('The item location table could not be read in full.');
       model.complete = false;
@@ -252,7 +276,7 @@ export function parseHeif(b) {
       p += 2;
       const to = [];
       for (let i = 0; i < n && p + w <= r.end; i++) { to.push(v === 0 ? u16be(b, p) : u32be(b, p)); p += w; }
-      model.refs.push({ type: r.type, from, to });
+      model.refs.push({ type: r.type, from, to, box: r });
     }
   }
 
@@ -373,7 +397,8 @@ function notPictureData(b, model, it) {
   return len === 0 || len > total - size;
 }
 
-function pictureItems(model) {
+// skip: auxiliary images to leave out (ones being removed).
+function pictureItems(model, skip = new Set()) {
   const seen = new Set();
   // Without a primary picture that is an image, nothing in the file is a picture to keep.
   const primary = model.items.get(model.primary);
@@ -388,7 +413,7 @@ function pictureItems(model) {
   for (let changed = true; changed;) {
     changed = false;
     for (const r of model.refs) {
-      if (r.type === 'auxl' && !seen.has(r.from) && r.to.some((t) => seen.has(t))) { const n = seen.size; visit(r.from); changed = changed || seen.size > n; }
+      if (r.type === 'auxl' && !skip.has(r.from) && !seen.has(r.from) && r.to.some((t) => seen.has(t))) { const n = seen.size; visit(r.from); changed = changed || seen.size > n; }
     }
   }
   return seen;
@@ -397,8 +422,8 @@ function pictureItems(model) {
 // The primary picture's own data. Never zeroed. Picture data lives in the media data or
 // idat boxes and never overlaps another item, so a damaged location that claims more than
 // that protects only the part that can really be picture data.
-function protectedRanges(model, length) {
-  const picture = pictureItems(model);
+function protectedRanges(model, length, skip = new Set()) {
+  const picture = pictureItems(model, skip);
   let out = [];
   for (const id of picture) {
     const it = model.items.get(id);
@@ -444,10 +469,362 @@ function udesText(b, box) {
   return parts.slice(1).filter(Boolean).join(', ');
 }
 
+// ======================================================================================
+// Writing item data of a new length.
+//
+// XMP is only kept in the canonical form (see rewriteXmp in xmp.js), which has no padding,
+// so a packet that changes changes length. spliceHeif replaces the data of whole items
+// (and of top-level boxes such as the XMP uuid box) with new bytes, moves everything after
+// them, and writes the box sizes and the item location table again so every item still
+// points at its own data. An item spread over several extents gets one extent, where its
+// first was. Returns the new file, or null when that cannot be done safely: a damaged or
+// incomplete structure, a picture sequence (whose own tables would point at moved data),
+// a field too small for the new value, or a result that does not read back exactly. The
+// caller then falls back to editing in place.
+
+function fits(v, size) {
+  if (!Number.isSafeInteger(v) || v < 0) return false;
+  if (size === 0) return v === 0;
+  if (size === 4) return v <= 0xffffffff;
+  return size === 8;
+}
+
+function putN(out, p, size, v) {
+  if (size === 4) w32be(out, p, v);
+  else if (size === 8) w64be(out, p, v);
+}
+
+// edits: [{ item, data }] for items in the location table, or [{ box, data }] for a
+// top-level box whose content (after its header) becomes data.
+export function spliceHeif(b, model, edits) {
+  if (!edits.length) return b;
+  // The structure as read: any warning about boxes or locations means it is not safe to move
+  // anything. (Warnings about what an item holds, such as a zeroed picture, do not count.)
+  const base0 = parseHeif(b);
+  if (base0.warnings.length || !model.complete || model.top.damaged || model.metaKids.damaged) return null;
+  if (model.top.some((x) => x.type === 'moov' || x.type === 'moof')) return null;
+  const table = model.iloc;
+  const itemEdits = new Map();
+  const splices = [];
+  for (const e of edits) {
+    if (e.box) {
+      if (!model.top.includes(e.box) && !model.metaKids.includes(e.box)) return null;
+      splices.push({ start: e.box.dataStart, end: e.box.end, bytes: e.data });
+      continue;
+    }
+    if (!table) return null;
+    const it = e.item;
+    const entry = table.entries.find((x) => x.id === it.id);
+    if (!entry || itemEdits.has(it.id) || it.misplaced || it.broken || it.truncated || it.unsupported) return null;
+    if (entry.method > 1 || !entry.extents.length || !table.lenSize || entry.extents.some((x) => !x.len)) return null;
+    if (!it.ranges || it.ranges.length !== entry.extents.length) return null;
+    itemEdits.set(it.id, e.data);
+    it.ranges.forEach(([s, end], k) => splices.push({ start: s, end, bytes: k === 0 ? e.data : new Uint8Array(0), item: it.id }));
+  }
+  // The location table itself is written again when any item moves.
+  if (table) splices.push({ start: table.box.start, end: table.box.end, bytes: null, iloc: true });
+  splices.sort((x, y) => x.start - y.start);
+  for (let i = 1; i < splices.length; i++) if (splices[i].start < splices[i - 1].end) return null;
+  // No other item may share bytes with what is replaced.
+  for (const it of model.items.values()) {
+    if (itemEdits.has(it.id) || !it.ranges) continue;
+    for (const [s, e] of it.ranges) if (splices.some((sp) => !sp.iloc && s < sp.end && e > sp.start)) return null;
+  }
+  // The size of the new location table: the same field sizes, one extent for each
+  // replaced item.
+  let ilocBytes = null;
+  if (table) {
+    const v = table.version;
+    const idw = v < 2 ? 2 : 4;
+    let size = 12 + 2 + idw;
+    for (const en of table.entries) {
+      const n = itemEdits.has(en.id) ? 1 : en.extents.length;
+      size += idw + (v >= 1 ? 2 : 0) + 2 + table.baseSize + 2 + n * (table.idxSize + table.offSize + table.lenSize);
+    }
+    ilocBytes = new Uint8Array(size);
+    splices.find((sp) => sp.iloc).bytes = ilocBytes;
+  }
+  const delta = (sp) => sp.bytes.length - (sp.end - sp.start);
+  // Where a position that is not inside a replaced range lands.
+  const map = (pos) => {
+    let d = 0;
+    for (const sp of splices) if (sp.end <= pos && sp.start < pos) d += delta(sp); else if (sp.start >= pos) break;
+    return pos + d;
+  };
+  const inside = (box) => splices.filter((sp) => sp.start >= box.dataStart && sp.end <= box.end && !(sp.start === box.start));
+  // Box sizes: every box that holds a replaced range grows or shrinks by its change.
+  const sizeFix = [];
+  for (const box of [...model.top, ...model.metaKids]) {
+    if (table && box === table.box) continue;
+    const within = inside(box);
+    if (!within.length) continue;
+    const size0 = box.end - box.start;
+    const size = size0 + within.reduce((n, sp) => n + delta(sp), 0);
+    const raw = u32be(b, box.start);
+    if (raw === 0) continue;
+    if (raw === 1) sizeFix.push({ at: box.start + 8, size, large: true });
+    else if (size > 0xffffffff) return null;
+    else sizeFix.push({ at: box.start, size, large: false });
+  }
+
+  // The new location table.
+  if (table) {
+    const v = table.version;
+    const o = ilocBytes;
+    let p = 0;
+    const size = o.length;
+    w32be(o, 0, size);
+    o.set([0x69, 0x6c, 0x6f, 0x63], 4);
+    o.set(b.subarray(table.box.dataStart, table.box.dataStart + 4), 8);
+    o[12] = (table.offSize << 4) | table.lenSize;
+    o[13] = (table.baseSize << 4) | (v >= 1 ? table.idxSize : 0);
+    p = 14;
+    if (v < 2) { w16be(o, p, table.entries.length); p += 2; } else { w32be(o, p, table.entries.length); p += 4; }
+    const idat = model.idat;
+    for (const en of table.entries) {
+      const it = model.items.get(en.id);
+      const data = itemEdits.get(en.id);
+      // New absolute starts (file offsets; for idat, offsets from the start of its data).
+      const rel = (abs) => (en.method === 1 ? map(abs) - map(idat.start) : map(abs));
+      let ext;
+      if (data) ext = [{ idx: en.extents[0].idx, at: rel(it.ranges[0][0]), len: data.length }];
+      else {
+        ext = en.extents.map((x) => {
+          const absOld = en.method === 1 ? (idat ? idat.start + en.base + x.off : -1) : en.base + x.off;
+          return { idx: x.idx, at: absOld < 0 ? -1 : rel(absOld), len: x.len };
+        });
+      }
+      if (ext.some((x) => x.at < 0)) return null;
+      let base = en.base;
+      if (ext.some((x) => !fits(x.at - base, table.offSize) || x.at < base)) {
+        if (!table.baseSize) return null;
+        base = Math.min(...ext.map((x) => x.at));
+      }
+      if (!fits(base, table.baseSize)) return null;
+      if (v < 2) { if (en.id > 0xffff) return null; w16be(o, p, en.id); p += 2; } else { w32be(o, p, en.id); p += 4; }
+      if (v >= 1) { w16be(o, p, en.method); p += 2; }
+      w16be(o, p, en.dataRef); p += 2;
+      putN(o, p, table.baseSize, base); p += table.baseSize;
+      w16be(o, p, ext.length); p += 2;
+      for (const x of ext) {
+        if (table.idxSize) { if (!fits(x.idx, table.idxSize)) return null; putN(o, p, table.idxSize, x.idx); p += table.idxSize; }
+        const off = x.at - base;
+        if (!fits(off, table.offSize) || !fits(x.len, table.lenSize)) return null;
+        putN(o, p, table.offSize, off); p += table.offSize;
+        putN(o, p, table.lenSize, x.len); p += table.lenSize;
+      }
+    }
+    if (p !== size) return null;
+  }
+
+  // Assemble, then write the box sizes where the boxes now start.
+  const parts = [];
+  let at = 0;
+  for (const sp of splices) {
+    parts.push(b.subarray(at, sp.start), sp.bytes);
+    at = sp.end;
+  }
+  parts.push(b.subarray(at));
+  const out = concat(parts);
+  for (const f of sizeFix) {
+    const pos = map(f.at);
+    if (f.large) w64be(out, pos, f.size); else w32be(out, pos, f.size);
+  }
+
+  // Read back: the same boxes, and every item holds exactly what it held, or its new data.
+  const m2 = parseHeif(out);
+  if (m2.warnings.length || !m2.complete) return null;
+  const types = (list) => list.map((x) => x.type).join(',');
+  if (types(m2.top) !== types(model.top) || types(m2.metaKids) !== types(model.metaKids)) return null;
+  for (const it of model.items.values()) {
+    const it2 = m2.items.get(it.id);
+    if (!it.ranges) continue;
+    if (!it2 || !it2.ranges) return null;
+    const want = itemEdits.get(it.id) || readItem(b, it);
+    const got = readItem(out, it2);
+    if (want.length !== got.length || want.some((x, i) => x !== got[i])) return null;
+  }
+  for (const e of edits) {
+    if (!e.box) continue;
+    const box2 = model.top.includes(e.box) ? m2.top[model.top.indexOf(e.box)] : m2.metaKids[model.metaKids.indexOf(e.box)];
+    const got = out.subarray(box2.dataStart, box2.end);
+    if (got.length !== e.data.length || e.data.some((x, i) => x !== got[i])) return null;
+  }
+  // Every item keeps its kind, content type and hidden flag (an item list written again
+  // changes names only).
+  for (const it of base0.items.values()) {
+    const it2 = m2.items.get(it.id);
+    if (!it2 || it2.type !== it.type || it2.contentType !== it.contentType || it2.hidden !== it.hidden) return null;
+  }
+  return out;
+}
+
+// ======================================================================================
+// Auxiliary images (alpha, depth, Apple's mattes and HDR gain map). Each names its kind in
+// an auxC property with a string: only the fixed names below are kept as they are, so no
+// free text rides along. Apple's names are followed by nothing; the MPEG ones may carry
+// the coding's own description of the layer (SEI messages) after the name.
+const AUX_NAMES = new Map([
+  [APPLE_GAIN_MAP_TYPE, 'apple'],
+  ['urn:com:apple:photo:2018:aux:portraiteffectsmatte', 'apple'],
+  ['urn:com:apple:photo:2019:aux:semanticskinmatte', 'apple'],
+  ['urn:com:apple:photo:2019:aux:semantichairmatte', 'apple'],
+  ['urn:com:apple:photo:2019:aux:semanticteethmatte', 'apple'],
+  ['urn:com:apple:photo:2020:aux:semanticskymatte', 'apple'],
+  ['urn:com:apple:photo:2023:aux:semanticglassesmatte', 'apple'],
+  ['urn:mpeg:hevc:2015:auxid:1', 'mpeg'],
+  ['urn:mpeg:hevc:2015:auxid:2', 'mpeg'],
+  ['urn:mpeg:mpegB:cicp:systems:auxiliary:alpha', 'mpeg'],
+  ['urn:mpeg:mpegB:cicp:systems:auxiliary:depth', 'mpeg'],
+]);
+
+// What an auxC property says: { name, ok }. ok is true only for a listed name in its exact
+// form: version and flags zero, and nothing after the name, except, for the MPEG names, the
+// HEVC description of the layer (seiTailOk).
+function auxName(b, p) {
+  const s = p.dataStart + 4;
+  if (s > p.end) return { name: '', ok: false };
+  let z = s;
+  while (z < p.end && b[z] !== 0) z++;
+  const name = latin1(b, s, z);
+  const kind = AUX_NAMES.get(name);
+  const zeroHead = b[p.dataStart] === 0 && b[p.dataStart + 1] === 0 && b[p.dataStart + 2] === 0 && b[p.dataStart + 3] === 0;
+  const ok = !!kind && zeroHead && z < p.end && (z + 1 === p.end || (kind === 'mpeg' && seiTailOk(b.subarray(z + 1, p.end))));
+  return { name, ok };
+}
+
+// The bytes after an MPEG layer name (aux_subtype, ISO/IEC 23008-12): as Apple and others
+// write it, a 32-bit length and then that many bytes of HEVC SEI NAL units, each after its
+// own 32-bit length. Kept only when every byte is accounted for and each unit holds only
+// alpha_channel_info (165) or depth_representation_info (177) messages, which are numbers.
+function seiTailOk(t) {
+  if (t.length < 4 || u32be(t, 0) !== t.length - 4) return false;
+  let p = 4;
+  let units = 0;
+  while (p < t.length) {
+    if (p + 4 > t.length) return false;
+    const n = u32be(t, p);
+    p += 4;
+    if (n < 3 || p + n > t.length) return false;
+    if (!seiNalOk(t.subarray(p, p + n))) return false;
+    p += n;
+    units++;
+  }
+  return units > 0 && units <= 4;
+}
+
+function seiNalOk(nal) {
+  const type = (nal[0] >> 1) & 0x3f;
+  if (nal[0] & 0x80 || (type !== 39 && type !== 40) || (nal[0] & 1) || (nal[1] >> 3) || !(nal[1] & 7)) return false;
+  // The message bytes without emulation prevention (00 00 03 becomes 00 00).
+  const r = [];
+  for (let i = 2; i < nal.length; i++) {
+    if (i >= 4 && nal[i] === 3 && nal[i - 1] === 0 && nal[i - 2] === 0) continue;
+    r.push(nal[i]);
+  }
+  let p = 0;
+  let msgs = 0;
+  while (p < r.length) {
+    if (r[p] === 0x80 && p === r.length - 1) break;
+    let type2 = 0;
+    while (r[p] === 0xff) { type2 += 255; p++; }
+    if (p >= r.length) return false;
+    type2 += r[p++];
+    let size = 0;
+    while (r[p] === 0xff) { size += 255; p++; }
+    if (p >= r.length) return false;
+    size += r[p++];
+    if ((type2 !== 165 && type2 !== 177) || p + size > r.length) return false;
+    p += size;
+    msgs++;
+  }
+  return msgs > 0;
+}
+
+// The data of an auxiliary image and of the images it is made of (a grid's layout and its
+// tiles), which is zeroed when the image goes.
+function codedRanges(model, id) {
+  const out = [];
+  for (const t of itemTree(model, id)) {
+    const it = model.items.get(t);
+    if (it && it.ranges && !it.misplaced && IMAGE_TYPES.has(it.type)) out.push(...it.ranges);
+  }
+  return out;
+}
+
+// ======================================================================================
+// The file's own structure, written in one fixed form. Some fields no reader needs can hold
+// free text or free numbers: the minor version and unknown brands in ftyp, the reserved
+// fields and handler name in hdlr, the flags of each item entry beyond "hidden", each item's
+// name, and the bytes between the start of the EXIF item and its TIFF header. They are set
+// to fixed values whenever the file is written (so a file holding anything there changes
+// even with nothing ticked), in place where the size stays and by writing the item list
+// again for the names.
+
+const KNOWN_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs', 'mif1', 'mif2', 'mif3', 'msf1',
+  'miaf', 'MiHE', 'MiHB', 'MiHA', 'MiHP', 'MiPr', 'MiAn', 'MiCm', 'MiCo', 'tmap', 'avif', 'avis', 'avio', 'jpeg', 'jpgs',
+  'iso8', 'isom', 'mp41', 'mp42', 'unif', 'vvic', 'vvi1', 'j2ki', 'j2is']);
+
+function structureFixes(b, model) {
+  const patches = [];
+  const put = (pos, bytes) => { if (bytes.some((x, i) => b[pos + i] !== x)) patches.push([pos, bytes]); };
+  const ftyp = model.top.find((x) => x.type === 'ftyp');
+  if (ftyp && ftyp.dataStart + 8 <= ftyp.end) {
+    if (!KNOWN_BRANDS.has(latin1(b, ftyp.dataStart, ftyp.dataStart + 4))) put(ftyp.dataStart, encodeLatin1('mif1'));
+    put(ftyp.dataStart + 4, new Uint8Array(4));
+    for (let p = ftyp.dataStart + 8; p + 4 <= ftyp.end; p += 4) if (!KNOWN_BRANDS.has(latin1(b, p, p + 4))) put(p, encodeLatin1('mif1'));
+  }
+  const hdlr = model.metaKids.find((x) => x.type === 'hdlr');
+  if (hdlr && hdlr.dataStart + 24 <= hdlr.end) {
+    put(hdlr.dataStart, new Uint8Array(4));
+    put(hdlr.dataStart + 4, new Uint8Array(4));
+    put(hdlr.dataStart + 12, new Uint8Array(hdlr.end - hdlr.dataStart - 12));
+  }
+  for (const it of model.items.values()) {
+    if (!it.infe || it.infe.large) continue;
+    const f = it.infe.dataStart;
+    put(f + 1, new Uint8Array([0, 0, b[f + 3] & 1]));
+  }
+  const names = [...model.items.values()].filter((it) => it.infe && !it.infe.large && it.name && it.name[1] > it.name[0] && it.name[1] < it.infe.end && b[it.name[1]] === 0);
+  return { patches, names };
+}
+
+// The EXIF item's bytes before its TIFF header as written by Apple and the specification:
+// their count, then "Exif\0\0" when there are six, otherwise zeros.
+function exifPrefix(off) {
+  if (off < 4) return null;
+  const out = new Uint8Array(off);
+  w32be(out, 0, off - 4);
+  if (off - 4 === 6) out.set(encodeLatin1('Exif\0\0'), 4);
+  return out;
+}
+
+// The item list with every item's name empty (the zero that ends it stays), or null.
+function iinfWithoutNames(b, model, names) {
+  const iinf = model.metaKids.find((x) => x.type === 'iinf');
+  if (!iinf || iinf.large) return null;
+  const first = iinf.dataStart + 4 + (b[iinf.dataStart] === 0 ? 2 : 4);
+  const kids = boxes(b, first, iinf.end);
+  if (kids.damaged || kids.rest !== iinf.end) return null;
+  const byStart = new Map(names.map((it) => [it.infe.start, it]));
+  const parts = [b.subarray(iinf.dataStart, first)];
+  for (const k of kids) {
+    const it = byStart.get(k.start);
+    if (!it) { parts.push(b.subarray(k.start, k.end)); continue; }
+    const body = concat([b.subarray(k.dataStart, it.name[0]), b.subarray(it.name[1], k.end)]);
+    const head = new Uint8Array(8);
+    w32be(head, 0, body.length + 8);
+    head.set(encodeLatin1('infe'), 4);
+    parts.push(head, body);
+  }
+  return { box: iinf, data: concat(parts) };
+}
+
 export function analyseHeic(b, set) {
   const model = parseHeif(b);
   for (const it of model.items.values()) {
-    if (!it.misplaced && notPictureData(b, model, it)) {
+    // An item this tool zeroed earlier (a removed layer) holds no data, not damaged data.
+    if (!it.misplaced && it.ranges && !allZero(b, it.ranges) && notPictureData(b, model, it)) {
       it.misplaced = true;
       model.warnings.push(`Item ${it.id} does not hold the picture data it claims.`);
     }
@@ -466,6 +843,24 @@ export function analyseHeic(b, set) {
     const id = cappedId(seenUnknown, `heic:box:${what.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'data'}`, 'heic:box:other');
     set.add({ id, ...UNREADABLE.unknown, value: `${id === 'heic:box:other' ? 'Several kinds' : what}, ${formatBytes(box.end - box.start)}`, source: 'HEIC' }, { kind: 'boxes', boxes: [box] });
   };
+
+  // Auxiliary images and the names their auxC properties give. Apple's HDR gain map is the
+  // one attached to the primary picture with exactly Apple's name; it is kept to start with
+  // (amber), with the fields of its own XMP a gain map defines. Any auxiliary image whose
+  // name is not one of the fixed names is a red detail of its own.
+  const auxes = [];
+  for (const r of model.refs) {
+    if (r.type !== 'auxl' || auxes.some((a) => a.id === r.from)) continue;
+    const props = propsOf(model, r.from, 'auxC');
+    const names = props.map((p) => auxName(b, p));
+    auxes.push({ id: r.from, props, names, refs: model.refs.filter((x) => x.type === 'auxl' && x.from === r.from), ok: names.length > 0 && names.every((n) => n.ok) });
+  }
+  const gain = auxes.find((a) => a.ok && a.names.length === 1 && a.names[0].name === APPLE_GAIN_MAP_TYPE
+    && a.refs.length === 1 && a.refs[0].to.length === 1 && a.refs[0].to[0] === model.primary) || null;
+  for (const a of auxes) if (a !== gain && a.names.some((n) => n.name === APPLE_GAIN_MAP_TYPE)) a.ok = false;
+  model.gain = gain;
+  model.gainXmp = [];
+  const describes = (from, to) => model.refs.some((r) => r.type === 'cdsc' && r.from === from && r.to.includes(to));
 
   const picture = pictureItems(model);
   const thumbs = thumbnailItems(model);
@@ -491,6 +886,8 @@ export function analyseHeic(b, set) {
       }
       for (const x of m.warnings) set.warn(x);
       const entry = { item, off };
+      const want = exifPrefix(off);
+      if (want && want.some((x, i) => data[i] !== x)) { entry.prefix = want; set.normalise = true; }
       model.exif.push(entry);
       for (const it of tiffItems(m)) {
         const pub = { id: `exif:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'EXIF' };
@@ -502,10 +899,30 @@ export function analyseHeic(b, set) {
     }
     if (item.type === 'mime' && /rdf\+xml|xmp/i.test(item.contentType)) {
       const data = readItem(b, item);
+      // A packet this tool emptied earlier holds nothing.
+      if (latin1(data) === EMPTY_XMP) continue;
       const parsed = parseXmp(new TextDecoder('utf-8').decode(data));
-      const entry = { item, parsed, length: data.length, items: [] };
+      // about: the items this packet describes, so it can go with an auxiliary image.
+      const entry = { item, parsed, length: data.length, items: [], about: model.refs.filter((r) => r.type === 'cdsc' && r.from === item.id).flatMap((r) => r.to) };
+      // The HDR gain map's own description: the fields a gain map defines stay with it;
+      // anything else in it is a red detail of its own.
+      if (gain && describes(item.id, gain.id)) {
+        entry.gain = true;
+        model.gainXmp.push(entry);
+        const canon = canonicalXmp(parsed, true);
+        const allowed = canon === null ? new Set() : gainAllowed(parsed, 'gainmap');
+        const extra = parsed.props.filter((p, i) => !allowed.has(i));
+        if (canon === null || canon !== parsed.text) set.normalise = true;
+        if (canon === null || extra.length) {
+          const names = canon === null ? ['XMP data that could not be read'] : [...new Set(extra.map((p) => p.key))];
+          entry.extra = set.add({ id: 'heic:gain-map:metadata', group: 'hidden', tier: 'red', label: 'Metadata inside the HDR gain map', value: names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', '), source: 'XMP', note: 'Fields in the HDR gain map\'s own description that the gain map does not need. They may hold anything. Removing them keeps the gain map.' }, { kind: 'gainxmp', entry });
+        }
+        continue;
+      }
       model.xmp.push(entry);
-      entry.items = addXmpItems(set, parsed, {}, { kind: 'xmp', entry }, data.length);
+      // Written without the packet wrapper, as Apple writes the XMP of a HEIC photo, so the
+      // wrapper is not a choice the file can make.
+      entry.items = addXmpItems(set, parsed, { compact: true }, { kind: 'xmp', entry }, data.length);
       continue;
     }
     if (!IMAGE_TYPES.has(item.type)) {
@@ -517,7 +934,7 @@ export function analyseHeic(b, set) {
     if (!picture.has(item.id) && !thumbTree.has(item.id)) {
       const ispe = propsOf(model, item.id, 'ispe')[0];
       const dims = ispe && ispe.dataStart + 12 <= ispe.end ? `${u32be(b, ispe.dataStart + 4)} × ${u32be(b, ispe.dataStart + 8)} pixels, ` : '';
-      set.add({ id: 'heic:extra-image', group: 'hidden', tier: 'red', label: 'Extra picture inside the file', value: `${dims}${formatBytes(rangesSize(item.ranges))}`, source: 'HEIC', note: 'A picture the main image does not use. It could be an earlier or uncropped version, with its own metadata.' }, { kind: 'zero', ranges: item.ranges });
+      set.add({ id: 'heic:extra-image', group: 'hidden', tier: 'red', label: 'Extra picture inside the file', value: `${dims}${formatBytes(rangesSize(item.ranges))}`, source: 'HEIC', note: 'A picture the main image does not use. It could be an earlier or uncropped version, with its own metadata.' }, { kind: 'zero', ranges: item.ranges, hide: [item.id] });
     }
   }
 
@@ -544,8 +961,18 @@ export function analyseHeic(b, set) {
   // decoder needs), descriptive text, and anything this tool does not know.
   const colr = model.props.filter((p) => p.type === 'colr' && (startsWith(b, p.dataStart, 'prof') || startsWith(b, p.dataStart, 'rICC')));
   if (colr.length) {
-    const desc = iccDescription(b.subarray(colr[0].dataStart + 4, colr[0].end));
-    set.add({ id: 'icc:profile', group: 'technical', tier: 'green', label: 'Colour profile', value: desc, source: 'ICC profile', note: 'Keeps colours accurate on different screens.' }, { kind: 'boxes', boxes: colr });
+    // Each profile is checked: an unreadable one is offered whole, as red; text that is not
+    // a known name is a red detail, rewritten in place (the box keeps its size).
+    const infos = colr.map((p) => ({ p, info: inspectIcc(b.subarray(p.dataStart + 4, p.end)) }));
+    const bad = infos.filter((x) => !x.info.ok).map((x) => x.p);
+    const good = infos.filter((x) => x.info.ok);
+    if (bad.length) set.add({ ...ICC_UNREADABLE_ITEM, value: formatBytes(rangesSize(bad.map((p) => [p.start, p.end]))) }, { kind: 'boxes', boxes: bad });
+    if (good.length) {
+      const desc = iccDescription(b.subarray(good[0].p.dataStart + 4, good[0].p.end));
+      set.add({ id: 'icc:profile', group: 'technical', tier: 'green', label: 'Colour profile', value: desc, source: 'ICC profile', note: 'Keeps colours accurate on different screens.' }, { kind: 'boxes', boxes: good.map((x) => x.p) });
+      const dirty = good.filter((x) => !x.info.clean);
+      if (dirty.length) set.add({ ...ICC_TEXT_ITEM, value: iccFreeText(dirty[0].info) }, { kind: 'icctext', boxes: dirty.map((x) => x.p) });
+    }
   }
   const essentialIdx = new Set();
   for (const ess of model.essential.values()) for (const i of ess) essentialIdx.add(i);
@@ -556,14 +983,19 @@ export function analyseHeic(b, set) {
     if (allZero(b, [[p.dataStart, p.end]])) return;
     if (p.type === 'udes') describe.udes.push(p);
     else if (p.type === 'altt') describe.altt.push(p);
-    else if (p.type === 'crtt' || p.type === 'mdft') describe.times.push(p);
+    // A creation or modification time is a version 0 property holding one 64-bit number
+    // (ISO/IEC 23008-12); any other size or header holds data a time does not have.
+    else if (p.type === 'crtt' || p.type === 'mdft') {
+      if (p.end - p.dataStart === 12 && b[p.dataStart] === 0 && !b[p.dataStart + 1] && !b[p.dataStart + 2] && !b[p.dataStart + 3]) describe.times.push(p);
+      else unknownBox(p, `${p.type} property`);
+    }
     else unknownBox(p, `${p.type.replace(/[^\x20-\x7e]/g, '?')} property`);
   });
   if (describe.udes.length) {
     set.add({ id: 'heic:description', group: 'who', tier: 'red', label: 'Name and description stored with the picture', value: udesText(b, describe.udes[0]) || formatBytes(rangesSize(describe.udes.map((p) => [p.start, p.end]))), source: 'HEIC', note: 'Free text written by a person or an app. It can hold names, places or notes.' }, { kind: 'boxes', boxes: describe.udes });
   }
   if (describe.altt.length) {
-    set.add({ id: 'heic:alt-text', group: 'hidden', tier: 'amber', label: 'Text description of the picture', value: udesText(b, describe.altt[0]) || formatBytes(describe.altt[0].end - describe.altt[0].start), source: 'HEIC' }, { kind: 'boxes', boxes: describe.altt });
+    set.add({ id: 'heic:alt-text', group: 'hidden', tier: 'red', label: 'Text description of the picture', value: udesText(b, describe.altt[0]) || formatBytes(describe.altt[0].end - describe.altt[0].start), source: 'HEIC', note: 'Free text written by a person or an app. It can hold names, places or notes.' }, { kind: 'boxes', boxes: describe.altt });
   }
   if (describe.times.length) {
     set.add({ id: 'heic:times', group: 'when', tier: 'amber', label: 'Creation and modification time', value: `${describe.times.length} time field${describe.times.length === 1 ? '' : 's'}`, source: 'HEIC' }, { kind: 'boxes', boxes: describe.times });
@@ -577,13 +1009,13 @@ export function analyseHeic(b, set) {
     if (box.type === 'free' || box.type === 'skip') { if (!allZero(b, [[box.dataStart, box.end]])) leftovers.push(box); continue; }
     if (box.type === 'uuid' && box.uuid === C2PA_UUID) { c2pa.push(box); continue; }
     if (box.type === 'uuid' && box.uuid === XMP_UUID) {
-      if (allZero(b, [[box.dataStart, box.end]])) continue;
+      if (allZero(b, [[box.dataStart, box.end]]) || latin1(b, box.dataStart, box.end) === EMPTY_XMP) continue;
       const item = { ranges: [[box.dataStart, box.end]] };
       const data = b.subarray(box.dataStart, box.end);
       const parsed = parseXmp(new TextDecoder('utf-8').decode(data));
-      const entry = { item, parsed, length: data.length, items: [] };
+      const entry = { item, parsed, length: data.length, items: [], box };
       model.xmp.push(entry);
-      entry.items = addXmpItems(set, parsed, {}, { kind: 'xmp', entry }, data.length);
+      entry.items = addXmpItems(set, parsed, { compact: true }, { kind: 'xmp', entry }, data.length);
       continue;
     }
     unknownBox(box, box.type === 'uuid' ? `uuid ${(box.uuid || '').slice(0, 8)} box` : `${box.type.replace(/[^\x20-\x7e]/g, '?')} box`);
@@ -635,68 +1067,146 @@ export function analyseHeic(b, set) {
     set.add({ id: 'heic:damaged', ...UNREADABLE.damaged, value: formatBytes(rangesSize(dirtyDamage)), source: 'HEIC' }, { kind: 'zero', ranges: dirtyDamage });
   }
 
-  const aux = model.refs.filter((r) => r.type === 'auxl' && r.to.includes(model.primary)).map((r) => model.items.get(r.from)).filter(Boolean);
-  const auxC = (id) => propsOf(model, id, 'auxC').map((p) => latin1(b, p.dataStart + 4, p.end).replace(/\0[\s\S]*$/, '')).join(' ');
-  if (aux.some((it) => !/auxid:1$|alpha/i.test(auxC(it.id)))) {
-    set.warn('This HEIC file also holds a depth map or HDR gain map. It stays in the file, because removing it without re-saving the picture would break it.');
+  const dimsOf = (id) => {
+    const ispe = propsOf(model, id, 'ispe')[0];
+    return ispe && ispe.dataStart + 12 <= ispe.end ? `${u32be(b, ispe.dataStart + 4)} × ${u32be(b, ispe.dataStart + 8)} pixels, ` : '';
+  };
+  if (gain) {
+    // Apple's gain map needs the HDR headroom from the photo's Apple MakerNote: those two
+    // numbers are a detail of their own (amber, kept with the gain map), so the rest of the
+    // MakerNote can go without them.
+    const ex = model.exif.find((e) => describes(e.item.id, model.primary)) || model.exif[0];
+    let v = null;
+    let any = null;
+    if (ex) {
+      const m = parseTiff(readItem(b, ex.item).subarray(ex.off));
+      v = m && !m.damaged ? appleHdr(m) : null;
+      any = m && !m.damaged ? appleHdrAny(m) : null;
+    }
+    // Without those numbers, or a headroom in the gain map's own description, no screen can
+    // show the gain map in HDR: it is then red, like any extra picture.
+    const ownHeadroom = model.gainXmp.some((e) => gainFields(e.parsed, 'gainmap')['HDRGainMap:HDRGainMapHeadroom']);
+    const usable = !!any || ownHeadroom;
+    set.add({ id: 'heic:gain-map', group: 'hidden', tier: usable ? 'amber' : 'red', label: 'HDR gain map', value: `Apple, ${dimsOf(gain.id)}${formatBytes(rangesSize(codedRanges(model, gain.id)))}`, source: 'HEIC', note: usable ? 'An extra image that makes the picture brighter on HDR screens. Kept to start with, holding only what it needs to work; anything else in it is listed on its own. Removing it leaves the normal picture unchanged.' : GAIN_MAP_UNUSABLE }, { kind: 'gainmap', aux: gain, couple: [] });
+    if (v && !set.has('exif:apple-hdr')) {
+      set.add({ id: 'exif:apple-hdr', group: 'hidden', tier: 'amber', label: 'Apple HDR brightness', value: appleHdrValue(v), source: 'EXIF', note: 'Two numbers from the Apple maker notes that tell HDR screens how much brighter the gain map may make the photo. They stay with the gain map in a maker note of their own when the rest of the maker notes go. Removing them removes the HDR gain map too.' }, { kind: 'applehdr', entry: ex, values: v });
+    }
+    if (set.has('exif:apple-hdr')) set.get('heic:gain-map').couple.push('exif:apple-hdr');
   }
+  const odd = auxes.filter((a) => !a.ok && model.items.get(a.id));
+  if (odd.length) {
+    const name = odd.flatMap((a) => a.names.filter((n) => !n.ok).map((n) => n.name)).find(Boolean) || 'no label';
+    const size = rangesSize(odd.flatMap((a) => codedRanges(model, a.id)));
+    set.add({ id: 'heic:aux-image', group: 'hidden', tier: 'red', label: 'Extra image layer with an unrecognised label', value: `${name.replace(/[^\x20-\x7e]/g, '?').slice(0, 60)}, ${dimsOf(odd[0].id)}${formatBytes(size)}`, source: 'HEIC', note: 'A layer attached to the picture whose label is not one of the known kinds (transparency, depth, portrait mattes, HDR gain map). The label and the layer may hold anything. Removing it leaves the picture itself unchanged.' }, { kind: 'aux', auxes: odd });
+  }
+  const kept = auxes.filter((a) => a.ok && a !== gain && !a.names.every((n) => /auxid:1$|alpha$/.test(n.name)));
+  if (kept.length) {
+    set.warn('This HEIC file also holds a depth map or another extra image layer. It stays in the file, because removing it without re-saving the picture would break it.');
+  }
+  model.fixes = structureFixes(b, model);
+  if (model.fixes.patches.length || model.fixes.names.length) set.normalise = true;
   return model;
 }
 
-export function scrubHeic(b, model, set, remove) {
+export const GAIN_MAP_UNUSABLE = 'An Apple HDR gain map without the HDR brightness it needs, so no screen can show it in HDR. It is a second picture that may hold anything, so it is removed by default. Removing it leaves the normal picture unchanged.';
+
+export function scrubHeic(b, model, set, removeIn) {
+  const remove = new Set(removeIn);
   const warnings = [];
   const out = b.slice();
   const zero = [];
   const exifKeys = new Map();
   const blank = [];
   let thumbs = false;
+  const iccBoxes = [];
+  // The HDR gain map and Apple's HDR brightness go together, in either direction.
+  const gainItem = set.has('heic:gain-map') ? set.get('heic:gain-map') : null;
+  if (gainItem && (remove.has('heic:gain-map') || gainItem.couple.some((c) => remove.has(c)))) {
+    remove.add('heic:gain-map');
+    for (const c of gainItem.couple) remove.add(c);
+  }
+  const unlink = [];
+  const hideIds = [];
   for (const id of remove) {
     const it = set.get(id);
     if (!it) continue;
     if (it.kind === 'exif') {
       if (!exifKeys.has(it.entry)) exifKeys.set(it.entry, new Set());
       exifKeys.get(it.entry).add(it.key);
-    } else if (it.kind === 'zero') zero.push(...it.ranges);
+    } else if (it.kind === 'zero') { zero.push(...it.ranges); hideIds.push(...(it.hide || [])); }
     else if (it.kind === 'thumbnail') { zero.push(...it.ranges); thumbs = true; }
     else if (it.kind === 'boxes') blank.push(...it.boxes);
+    else if (it.kind === 'icctext') iccBoxes.push(...it.boxes);
+    else if (it.kind === 'gainmap') unlink.push(it.aux);
+    else if (it.kind === 'aux') unlink.push(...it.auxes);
   }
 
-  // Edits inside items first, while every byte is still where the analysis found it.
+  // The structure in its fixed form (see structureFixes), in place.
+  for (const [pos, bytes] of model.fixes.patches) out.set(bytes, pos);
+
+  // Edits inside items first, while every byte is still where the analysis found it. An
+  // Apple gain map that stays keeps the photo's two HDR numbers: when the MakerNote goes, a
+  // MakerNote holding only those takes its place, as in a JPEG.
+  const apple = set.has('exif:apple-hdr') && set.get('exif:apple-hdr').kind === 'applehdr' && !remove.has('exif:apple-hdr') ? set.get('exif:apple-hdr') : null;
   for (const [entry, keys] of exifKeys) {
     const data = readItem(out, entry.item);
     const m = parseTiff(data.subarray(entry.off));
     if (!m) continue;
-    const res = removeTiffKeys(m, keys);
+    const shrink = !!apple && apple.entry === entry && keys.has('makernote');
+    const rest = shrink ? new Set([...keys].filter((k) => k !== 'makernote')) : keys;
+    const res = rest.size ? removeTiffKeys(m, rest) : { empty: false };
+    if (shrink) {
+      const m2 = parseTiff(data.subarray(entry.off));
+      if (!m2 || !shrinkAppleNote(m2, apple.values)) {
+        if (m2) removeTiffKeys(m2, new Set(['makernote']));
+        warnings.push('The Apple HDR brightness could not be kept on its own, so the maker notes were removed with it.');
+      }
+    }
     if (res.empty) blankTiff(parseTiff(data.subarray(entry.off)));
     writeItem(out, entry.item, data);
   }
-
-  for (const entry of model.xmp) {
-    const plan = planXmp(entry.parsed, entry.items, remove);
-    if (plan.warning) warnings.push(plan.warning);
-    if (plan.action === 'keep') continue;
-    let data = null;
-    if (plan.action === 'rewrite') {
-      data = padXmp(plan.text, entry.length);
-      if (!data) {
-        // A fresh packet without the wrapper and indentation is smaller; try that.
-        const compact = planXmp(entry.parsed, entry.items, remove, true);
-        data = compact.action === 'rewrite' ? padXmp(compact.text, entry.length) : null;
-      }
-      if (!data) warnings.push('The XMP data could not be edited safely, so all of it was removed instead.');
-    }
-    if (!data) data = emptyXmp(entry.length) || new Uint8Array(entry.length).fill(0x20);
+  // The bytes before each kept EXIF block's TIFF header, in their fixed form.
+  for (const entry of model.exif) {
+    if (!entry.prefix || allZero(out, entry.item.ranges)) continue;
+    const data = readItem(out, entry.item);
+    data.set(entry.prefix, 0);
     writeItem(out, entry.item, data);
   }
 
-  if (thumbs) warnings.push('The built-in preview was blanked. Some viewers may show an empty thumbnail until the picture is opened.');
-  if (model.c2pa && set.has('heic:c2pa') && !remove.has('heic:c2pa') && remove.size) {
-    warnings.push('Content Credentials were kept, but any change to the file makes their signature fail, so checkers will report the picture as altered.');
+  // Auxiliary images that go: the reference that attaches them to the picture becomes an
+  // unused one (its type is overwritten with 'free', which readers skip), their names are
+  // cleared and their coded picture data is zeroed. The picture itself is untouched.
+  // A removed image (an auxiliary image, an extra picture) is also marked hidden in its item
+  // entry, so a reader does not offer its zeroed data as a picture of its own.
+  const skip = new Set(unlink.map((a) => a.id));
+  for (const id of [...skip, ...hideIds]) {
+    const it = model.items.get(id);
+    if (it && it.infe && !it.infe.large) out[it.infe.dataStart + 3] |= 1;
   }
+  for (const a of unlink) {
+    for (const r of a.refs) out.set([0x66, 0x72, 0x65, 0x65], r.box.start + 4);
+    for (const p of a.props) {
+      const shared = [...model.assoc].some(([id, list]) => id !== a.id && list.some((i) => model.props[i - 1] === p));
+      if (!shared) out.fill(0, p.dataStart, p.end);
+    }
+    zero.push(...codedRanges(model, a.id));
+  }
+
+  // Text inside a colour profile: rewritten in place, same size, colour tags untouched.
+  for (const p of iccBoxes) {
+    if (blank.includes(p)) continue;
+    const cleaned = cleanIcc(out.slice(p.dataStart + 4, p.end));
+    if (cleaned) out.set(cleaned, p.dataStart + 4);
+    else {
+      blank.push(p);
+      warnings.push('The text inside the colour profile could not be removed safely, so the whole colour profile was removed. Colours may look slightly different.');
+    }
+  }
+  if (thumbs) warnings.push('The built-in preview was blanked. Some viewers may show an empty thumbnail until the picture is opened.');
   // Same size, harmless type: a box that goes becomes padding and its content is zeroed.
   // A box that also holds the picture's own data keeps its type and that data; everything
   // else in it is zeroed.
-  const keep = protectedRanges(model, b.length);
+  const keep = protectedRanges(model, b.length, skip);
   for (const box of blank) {
     if (keep.some(([ks, ke]) => ks < box.end && ke > box.start)) {
       zero.push([box.dataStart, box.end]);
@@ -707,7 +1217,80 @@ export function scrubHeic(b, model, set, remove) {
     out.fill(0, Math.min(box.end, box.start + 8 + (box.large ? 8 : 0)), box.end);
   }
   zeroRanges(out, zero, keep);
-  return { bytes: out, warnings };
+
+  // XMP last: every packet that stays is written in the canonical form, which changes its
+  // length, so the items after it move (spliceHeif). A packet that goes becomes an empty
+  // one. The gain map's own description keeps only what a gain map needs, unless that
+  // detail is kept, and is emptied with the gain map.
+  const edits = [];
+  const gainGone = remove.has('heic:gain-map');
+  const textOf = (bytes) => new TextDecoder('utf-8').decode(bytes);
+  for (const entry of [...model.xmp, ...model.gainXmp]) {
+    if (allZero(out, entry.item.ranges)) continue;
+    let text;
+    let warn;
+    if (entry.gain) {
+      const parsed = entry.parsed;
+      if (gainGone) text = EMPTY_XMP;
+      else if (entry.extra && !remove.has(entry.extra)) {
+        text = canonicalXmp(parsed, true);
+        if (text === null) warn = 'The description inside the HDR gain map could not be written again in a standard form, so it was removed.';
+      } else {
+        const allowed = gainAllowed(parsed, 'gainmap');
+        text = keepOnlyXmp(parsed, (p, i) => allowed.has(i), gainFixes(parsed, 'gainmap').map((x) => x.add));
+      }
+      if (text === null) text = EMPTY_XMP;
+    } else if (entry.about && entry.about.length && entry.about.every((id) => skip.has(id))) {
+      // The description of an auxiliary image that goes, goes with it.
+      text = EMPTY_XMP;
+    } else {
+      const plan = planXmp(entry.parsed, entry.items, remove, true);
+      warn = plan.warning;
+      text = plan.action === 'rewrite' ? plan.text : EMPTY_XMP;
+    }
+    if (warn) warnings.push(warn);
+    // A top-level XMP box that goes becomes a 'free' box of zeros, like any box that goes
+    // (readers do not take an empty packet in that box).
+    if (entry.box && text === EMPTY_XMP) {
+      out.set([0x66, 0x72, 0x65, 0x65], entry.box.start + 4);
+      out.fill(0, entry.box.start + 8 + (entry.box.large ? 8 : 0), entry.box.end);
+      continue;
+    }
+    const data = encodeUtf8(text);
+    const old = readItem(b, entry.item);
+    if (data.length === old.length && data.every((x, i) => x === old[i])) continue;
+    edits.push(entry.box ? { box: entry.box, data, entry } : { item: entry.item, data, entry });
+  }
+  // Item names go: the item list is written again with each name empty. Where it cannot
+  // be, each name is overwritten with spaces in place.
+  const blankNames = () => { for (const it of model.fixes.names) out.fill(0x20, it.name[0], it.name[1]); };
+  const names = model.fixes.names.length ? iinfWithoutNames(out, model, model.fixes.names) : null;
+  if (names) edits.push(names);
+  else blankNames();
+  let bytes = out;
+  if (edits.length) {
+    const res = spliceHeif(out, model, edits);
+    if (res) bytes = res;
+    else {
+      // The structure does not allow moving data: every edited packet is zeroed in place
+      // instead, the same length, so nothing in it survives, not even its layout, and each
+      // item name is overwritten with spaces.
+      let lostKept = false;
+      for (const e of edits) {
+        if (!e.entry) continue;
+        const blankData = new Uint8Array(e.entry.length);
+        const item = e.box ? { ranges: [[e.box.dataStart, e.box.end]] } : e.item;
+        if (textOf(e.data) !== EMPTY_XMP) lostKept = true;
+        writeItem(out, item, blankData);
+      }
+      if (names) blankNames();
+      if (lostKept) warnings.push('The XMP data could not be written again in a standard form here, so all of it was removed instead.');
+    }
+  }
+  if (model.c2pa && set.has('heic:c2pa') && !remove.has('heic:c2pa') && (remove.size || edits.length)) {
+    warnings.push('Content Credentials were kept, but any change to the file makes their signature fail, so checkers will report the picture as altered.');
+  }
+  return { bytes, warnings };
 }
 
 export function firstHeicTiff(b) {

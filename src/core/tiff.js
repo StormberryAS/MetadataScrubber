@@ -16,7 +16,8 @@
 //
 // Kept data never moves, so offsets inside a kept MakerNote stay valid.
 
-import { clip, formatBytes, latin1, subtractRanges, u16be, u16le, u32be, u32le, zeroRanges } from './bytes.js?v=b373c219';
+import { clip, formatBytes, latin1, subtractRanges, u16be, u16le, u32be, u32le, zeroRanges } from './bytes.js?v=4d7df4d3';
+import { inspectIcc } from './icc.js?v=15403b52';
 
 // Field sizes per TIFF type; 129 is the UTF-8 string type added in Exif 3.0.
 const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 129: 1 };
@@ -95,6 +96,9 @@ assign('computer', [0x013c]);
 assign('description', [0x010e, 0x9286, 0x9c9b, 0x9c9c, 0x9c9e, 0x9c9f, 0xa436, 0x010d, 0x011d, 0x4746, 0x4749]);
 assign('makernote', [0x927c]);
 assign('embedded', [0x02bc, 0x83bb, 0x8649]);
+// PrintIM is a block of bytes in a layout of the printer maker's, and SubIFDs a list of
+// any length whose every four bytes are free: neither can be checked, so both are red.
+assign('private', [0xc4a5, 0x014a]);
 assign('orientation', [0x0112]);
 assign('resolution', [0x011a, 0x011b, 0x0128]);
 assign('colour', [0xa001, 0xa500, 0x013e, 0x013f, 0x0211, 0x0214, 0x8773, 0x012d]);
@@ -108,6 +112,9 @@ assign('format', [0x9000, 0xa000, 0x9101, 0x9102, 0x0212, 0x0213, 0x0103, 0x0102
   0x011c, 0x00fe, 0xea1c, 0xea1d, 0x0107, 0x0108, 0x0109, 0x010a, 0x0111, 0x0116, 0x0117, 0x0118,
   0x0119, 0x0122, 0x0123, 0x0124, 0x0125, 0x0129, 0x013d, 0x0140, 0x0141, 0x0142, 0x0143, 0x0144,
   0x0145, 0x0152, 0x0153, 0x015b, 0xc612]);
+
+// What the Apple HDR brightness detail says (see appleHdr below).
+const APPLE_HDR_NOTE = 'Two numbers from the Apple maker notes that tell HDR screens how much brighter the gain map may make the photo. They stay with the gain map in a maker note of their own when the rest of the maker notes go. Removing them removes the HDR gain map too.';
 
 // Item definitions, in display order.
 export const TIFF_ITEMS = {
@@ -125,17 +132,20 @@ export const TIFF_ITEMS = {
   other: { group: 'device', tier: 'amber', label: 'Other camera data' },
   thumbnail: { group: 'hidden', tier: 'red', label: 'Built-in preview image', note: 'Can still show the original, uncropped photo after cropping.' },
   makernote: { group: 'hidden', tier: 'red', label: 'Manufacturer notes (may include serial numbers)', note: 'Private data the camera maker stores, often including serial numbers.' },
+  'apple-hdr': { group: 'hidden', tier: 'amber', label: 'Apple HDR brightness', note: APPLE_HDR_NOTE },
   'unique-id': { group: 'hidden', tier: 'red', label: 'Unique image ID', note: 'Can link copies of the picture back to the original file.' },
   embedded: { group: 'hidden', tier: 'red', label: 'Copy of XMP, IPTC or Photoshop data inside EXIF', note: 'May repeat names, places or serial numbers.' },
   private: { group: 'hidden', tier: 'red', label: 'Unrecognised camera data', note: 'Data this tool does not recognise. It may hold anything, so it is removed by default.' },
   leftover: { group: 'hidden', tier: 'red', label: 'Leftover data inside EXIF', note: 'Bytes that no field uses, often left behind by an earlier edit. They can still hold old values.' },
-  description: { group: 'hidden', tier: 'amber', label: 'Description and comments' },
+  description: { group: 'hidden', tier: 'red', label: 'Description and comments', note: 'Free text written by a person or an app. It can hold names, places or notes.' },
   orientation: { group: 'technical', tier: 'green', label: 'Rotation' },
   dimensions: { group: 'technical', tier: 'green', label: 'Picture size' },
   resolution: { group: 'technical', tier: 'green', label: 'Print resolution' },
   colour: { group: 'technical', tier: 'green', label: 'Colour space' },
   exposure: { group: 'technical', tier: 'green', label: 'Exposure settings' },
   format: { group: 'technical', tier: 'green', label: 'File format details' },
+  'technical-text': { group: 'hidden', tier: 'red', label: 'Unexpected data in technical details', note: 'A technical field holds text or data of a kind its specification does not give it. It can hold names or notes. Removing it keeps the picture unchanged.' },
+  'device-text': { group: 'hidden', tier: 'red', label: 'Unexpected text in date or device details', note: 'A date, time zone, camera, lens or software field holds text or data of a kind its specification does not give it, or text hidden after its end. It can hold names or notes. Removing it keeps the picture unchanged.' },
 };
 
 // Known tags without a better home are 'other' (amber); tags this tool does not know at
@@ -145,6 +155,16 @@ export function keyForTag(tag) {
 }
 
 // Key for an ImageMagick-style property name such as "GPSLatitude" or "DateTimeOriginal".
+// Whether the text ImageMagick writes for a technical EXIF field reads as numbers.
+// Each value is a number or a fraction of at most ten digits a part, separated by a comma
+// or one space, with no more values than the field has and no other characters.
+export function technicalTextOk(value, name = '') {
+  const v = String(value);
+  if (/^(?:R98|THM|R03)$/.test(v)) return true;
+  const parts = v.split(/, ?| /);
+  return parts.length <= technicalCount(name) && parts.every((x) => /^[+-]?\d{1,10}(?:[./]\d{1,10})?$/.test(x));
+}
+
 export function keyForTagName(name) {
   if (/^gps/i.test(name)) return 'gps';
   if (/^thumbnail:/i.test(name)) return 'thumbnail';
@@ -255,15 +275,193 @@ function childOf(m, ifd, e) {
   return null;
 }
 
+// ======================================================================================
+// What a technical (green) field may hold. Green is kept by default, so a technical field
+// stays only with a value of the kind its specification gives: numbers, or for the few
+// text and byte fields the one form the specification defines. Text in a numeric field,
+// free text fields (SpectralSensitivity, RelatedImageFileFormat), the blocks that carry
+// names (OECF, SpatialFrequencyResponse, DeviceSettingDescription) and anything else go to
+// their own red detail.
+
+const GREEN_KEYS = new Set(['orientation', 'resolution', 'colour', 'dimensions', 'exposure', 'format']);
+// Exif 3.0 and TIFF 6.0: the type and number of values of every technical field a photo
+// keeps. Integers may be SHORT or LONG (writers differ), fractions RATIONAL or SRATIONAL.
+// max bounds a code's value, so an enumeration holds a small number, not a word.
+const INT = [3, 4];
+const FRAC = [5, 10];
+const spec = (types, count, max = Infinity) => ({ types, count: Array.isArray(count) ? count : [count, count], max });
+const one = (max) => spec(INT, 1, max);
+const ratio = spec(FRAC, 1);
+const GREEN_SPEC = {
+  0x0112: spec(INT, 1, 8), // Orientation
+  0x011a: ratio, 0x011b: ratio, 0x0128: one(3), // resolution and its unit
+  0xa001: spec(INT, 1, 0xffff), 0xa500: ratio, 0x013e: spec(FRAC, 2), 0x013f: spec(FRAC, 6), 0x0211: spec(FRAC, 3), 0x0214: spec(FRAC, 6),
+  0xa002: spec(INT, 1), 0xa003: spec(INT, 1), 0x0100: spec(INT, 1), 0x0101: spec(INT, 1),
+  0x829a: ratio, 0x829d: ratio, 0x8822: one(9), 0x8827: spec(INT, [1, 3], 0xffff), 0x8830: one(7),
+  0x8831: spec(INT, 1), 0x8832: spec(INT, 1), 0x8833: spec(INT, 1), 0x8834: spec(INT, 1), 0x8835: spec(INT, 1),
+  0x9201: ratio, 0x9202: ratio, 0x9203: ratio, 0x9204: ratio, 0x9205: ratio, 0x9206: ratio,
+  0x9207: one(255), 0x9208: one(255), 0x9209: one(0x7f), 0x920a: ratio, 0x9214: spec(INT, [2, 4], 0xffff),
+  0x9400: ratio, 0x9401: ratio, 0x9402: ratio, 0x9403: ratio, 0x9404: ratio, 0x9405: ratio,
+  0xa20b: ratio, 0xa20e: ratio, 0xa20f: ratio, 0xa210: one(5), 0xa214: spec(INT, 2, 0xffff), 0xa215: ratio, 0xa217: one(8),
+  0xa401: one(255), 0xa402: one(2), 0xa403: one(255), 0xa404: ratio, 0xa405: spec(INT, 1, 0xffff), 0xa406: one(255),
+  0xa407: one(4), 0xa408: one(2), 0xa409: one(2), 0xa40a: one(2), 0xa40c: one(3),
+  0xa460: one(3), 0xa461: spec(INT, 2, 0xffff),
+  0x9102: ratio, 0x0212: spec(INT, 2, 4), 0x0213: one(2), 0x0103: one(0xffff), 0x0102: spec(INT, [1, 4], 64),
+  0x0106: one(0xffff), 0x0115: one(16), 0x011c: one(2), 0x00fe: spec(INT, 1, 0xffff), 0xea1d: spec([4, 9], 1),
+  0x0107: one(3), 0x0108: one(0xffff), 0x0109: one(0xffff), 0x010a: one(2), 0x0116: spec(INT, 1),
+  0x0118: spec(INT, [1, 4], 0xffff), 0x0119: spec(INT, [1, 4], 0xffff), 0x0122: one(5), 0x013d: one(3),
+  0x0141: spec(INT, 2, 0xffff), 0x0142: spec(INT, 1), 0x0143: spec(INT, 1), 0x0152: spec(INT, [1, 4], 2),
+  0x0153: spec(INT, [1, 4], 6), 0xc612: spec([1], 4, 255),
+};
+const INTEROP_SPEC = { 0x1001: spec(INT, 1), 0x1002: spec(INT, 1) };
+const fourDigits = (b) => (b.length === 4 || (b.length === 5 && !b[4])) && /^\d{4}$/.test(latin1(b.subarray(0, 4)));
+// Byte and text fields with the form their specification gives (Exif 3.0, TIFF 6.0).
+const BYTES_OK = {
+  0x9000: fourDigits, // ExifVersion
+  0xa000: fourDigits, // FlashpixVersion
+  0x9101: (b) => b.length >= 1 && b.length <= 4 && b.every((x) => x <= 6), // ComponentsConfiguration
+  0xa300: (b) => b.length === 1 && b[0] >= 1 && b[0] <= 3, // FileSource
+  0xa301: (b) => b.length === 1, // SceneType (1 by the specification; some cameras write other codes)
+  // Padding (Windows): zeros, after Microsoft's six-byte header or the two bytes of the tag.
+  0xea1c: (b) => {
+    const ms = [0x1c, 0xea, 0, 0, 0, 0x08];
+    const n = ms.every((x, i) => b[i] === x) ? 6 : (b[0] === 0x1c && b[1] === 0xea ? 2 : 0);
+    return b.subarray(n).every((x) => !x);
+  },
+  // CompositeImageExposureTimes: eight numbers of eight bytes and an optional count.
+  0xa462: (b) => b.length >= 8 && (b.length % 8 === 0 || b.length % 8 === 2),
+  0x8773: (b) => { const i = inspectIcc(b); return i.ok && i.clean; }, // ICCProfile
+};
+const INTEROP_OK = {
+  0x0001: (b) => /^(?:R98|THM|R03)\0*$/.test(latin1(b)), // InteroperabilityIndex
+  0x0002: fourDigits, // InteroperabilityVersion
+};
+
+function greenValueOk(m, ifd, e) {
+  // A damaged entry cannot be checked, so it is not kept as technical.
+  if (!e.valid) return false;
+  // The unused bytes of a value stored inside the entry must be zero.
+  if (e.inline && e.size < 4 && !m.t.subarray(e.entryPos + 8 + e.size, e.entryPos + 12).every((x) => !x)) return false;
+  const s = ifd.name === 'interop' ? INTEROP_SPEC[e.tag] : GREEN_SPEC[e.tag];
+  if (s) {
+    // Some cameras (Kodak) write a picture size as two values, the second zero: no free bits.
+    const zeroTail = e.count === s.count[1] + 1 && readNumbers(m, e)[e.count - 1] === 0;
+    if (!s.types.includes(e.type) || e.count < s.count[0] || (e.count > s.count[1] && !zeroTail)) return false;
+    if (s.max !== Infinity && !readNumbers(m, e).every((x) => x >= 0 && x <= s.max)) return false;
+    return true;
+  }
+  if (e.type !== 2 && e.type !== 7 && e.type !== 129) return false;
+  const b = m.t.subarray(e.valueOffset, e.valueOffset + e.size);
+  if (ifd.name === 'interop') return !!INTEROP_OK[e.tag] && INTEROP_OK[e.tag](b);
+  if (e.tag === 0xa302) {
+    // CFAPattern: columns and rows (in either byte order), then one colour code per cell.
+    if (b.length < 4) return false;
+    for (const rd of [u16be, u16le]) {
+      const c = rd(b, 0);
+      const r = rd(b, 2);
+      if (c >= 1 && r >= 1 && c <= 16 && r <= 16 && b.length === 4 + c * r && b.subarray(4).every((x) => x <= 6)) return true;
+    }
+    return false;
+  }
+  return !!BYTES_OK[e.tag] && BYTES_OK[e.tag](b);
+}
+
+// What a date or device (amber) field may hold. Since 0.0.3 amber is kept by default, so
+// such a field stays only with a value of the form its specification gives: a date as
+// "YYYY:MM:DD HH:MM:SS", a time zone as "+HH:MM", fractions of a second as digits, and a
+// make, model, lens or software name as one short line of printable text. Nothing may
+// follow the end of the text, and the unused bytes of a value stored inside its entry must
+// be zero. Anything else (text after the end marker, a name in a date, control or invisible
+// characters, an unexpected type or length) goes to the red 'device-text' detail. A short,
+// well-formed name cannot be told apart from a model name: that is shown, as amber.
+
+const AMBER_TEXT_KEYS = new Set(['datetime', 'timezone', 'camera', 'lens', 'software', 'other']);
+const EXIF_DATE = /^(?:\d{4}:\d\d:\d\d \d\d:\d\d:\d\d|    : {2}: {2} {3}: {2}: {2}| {19})$/;
+const EXIF_ZONE = /^(?:[+-]\d\d:\d\d|   : {2})$/;
+// A device name: letters, digits, punctuation and symbols with single spaces between
+// words; no control, format or invisible characters, and no address of any kind.
+export const deviceNameOk = (s) => s.length >= 1 && s.length <= 64 && /^[\p{L}\p{M}\p{N}\p{P}\p{S}](?:[\p{L}\p{M}\p{N}\p{P}\p{S}]| (?! ))*$/u.test(s)
+  && !/[\uFE00-\uFE0F\u034F\u180B-\u180F\u{E0100}-\u{E01EF}]/u.test(s) && !/@|:\/\/|www\./i.test(s);
+
+// The text of an ASCII or UTF-8 value up to its end marker, or null when anything but
+// zeros follows that marker or the type is not a text type.
+function strictText(m, e) {
+  if (e.type !== 2 && e.type !== 129) return null;
+  const b = valueBytes(m, e);
+  const z = b.indexOf(0);
+  const end = z < 0 ? b.length : z;
+  for (let i = end; i < b.length; i++) if (b[i]) return null;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(b.subarray(0, end)); } catch { return null; }
+}
+
+// The same rules for an EXIF field copied as text (PNG "exif:Name" chunks, as ImageMagick
+// writes them): key is the field's detail key, name its EXIF name.
+export function amberTextOk(key, name, value) {
+  const v = String(value);
+  const tag = NAME_TO_TAG.get(String(name).toLowerCase());
+  if (key === 'datetime') return EXIF_DATE.test(v) || /^\d{1,9}$/.test(v);
+  if (key === 'timezone') return EXIF_ZONE.test(v) || (tag === 0x882a && /^-?\d{1,2}(?:, ?-?\d{1,2})?$/.test(v));
+  if (key === 'camera' || key === 'software') return deviceNameOk(v);
+  if (key === 'lens') return deviceNameOk(v) && (tag !== 0xa432 || /^[\d/., ]+$/.test(v));
+  if (key === 'other') return tag === 0xa004 && /^[A-Za-z0-9_]{1,8}\.[A-Za-z0-9]{3}$/.test(v);
+  return false;
+}
+export const isAmberTextKey = (key) => AMBER_TEXT_KEYS.has(key);
+// The usual spelling of an EXIF field name, or null for a name this tool does not know.
+export function tagNameOf(name) {
+  const tag = NAME_TO_TAG.get(String(name).toLowerCase());
+  return tag === undefined ? null : TAG_NAMES[tag];
+}
+
+function amberValueOk(m, ifd, e) {
+  if (!e.valid) return false;
+  if (e.inline && e.size < 4 && !m.t.subarray(e.entryPos + 8 + e.size, e.entryPos + 12).every((x) => !x)) return false;
+  const t = e.tag;
+  if (t === 0x882a) return (e.type === 8 || e.type === 3) && e.count >= 1 && e.count <= 2 && readNumbers(m, e).every((x) => Number.isInteger(x) && x >= -12 && x <= 14);
+  if (t === 0xa432) return e.type === 5 && e.count === 4;
+  const s = strictText(m, e);
+  if (s === null) return false;
+  if (t === 0x0132 || t === 0x9003 || t === 0x9004) return e.count >= 19 && e.count <= 20 && EXIF_DATE.test(s);
+  if (t === 0x9290 || t === 0x9291 || t === 0x9292) return e.count <= 10 && /^\d{1,9} *$/.test(s);
+  if (t === 0x9010 || t === 0x9011 || t === 0x9012) return e.count <= 8 && EXIF_ZONE.test(s);
+  // RelatedSoundFile: an 8.3 file name, or blank (Exif 3.0).
+  if (t === 0xa004) return e.count <= 13 && /^(?:[A-Za-z0-9_]{1,8}\.[A-Za-z0-9]{3}| *)$/.test(s);
+  if ([0x010f, 0x0110, 0xc614, 0xa433, 0xa434, 0x0131, 0xa439, 0xa43a, 0xa43b, 0xa43c].includes(t)) {
+    // Some cameras pad a name with spaces or zeros to a fixed length.
+    return e.count <= 128 && deviceNameOk(s.replace(/ +$/, ''));
+  }
+  return false;
+}
+
+// The most values the text ImageMagick writes for a technical EXIF field (PNG "exif:Name"
+// text) may hold, from the same specification; one value when the field is not listed.
+const BYTES_COUNT = { 0x9000: 5, 0xa000: 5, 0x9101: 4, 0xa300: 1, 0xa301: 1, 0xa302: 36, 0xa462: 18 };
+export function technicalCount(name) {
+  const tag = NAME_TO_TAG.get(String(name).toLowerCase());
+  const s = tag === undefined ? null : GREEN_SPEC[tag];
+  return s ? s.count[1] : BYTES_COUNT[tag] || 1;
+}
+
 // The removal key of every entry: a pointer to a sub-IFD we read is structural (null).
 function entryKey(m, ifd, e) {
+  const key = baseKey(m, ifd, e);
+  if (key && GREEN_KEYS.has(key) && !greenValueOk(m, ifd, e)) return 'technical-text';
+  if (key && AMBER_TEXT_KEYS.has(key) && !amberValueOk(m, ifd, e)) return 'device-text';
+  return key;
+}
+
+function baseKey(m, ifd, e) {
   if (ifd.name.startsWith('gps')) return 'gps';
   if (isChain(ifd)) return 'thumbnail';
   if (ifd.name === 'interop') return 'format';
+  if (e.tag === 0x927c && ifd.name === 'exif' && isAppleHdrNote(m, e)) return 'apple-hdr';
   if (e.tag === PTR_EXIF || e.tag === PTR_GPS || e.tag === PTR_INTEROP) {
     if (childOf(m, ifd, e)) return null;
     return e.tag === PTR_GPS ? 'gps' : 'private';
   }
+  // The position and length of a preview outside the preview chain point at nothing a
+  // reader uses, so their eight bytes are free.
+  if (e.tag === 0x0201 || e.tag === 0x0202) return 'private';
   return keyForTag(e.tag);
 }
 
@@ -519,6 +717,18 @@ function describeItem(m, key, entries) {
     case 'software': return join([0x0131, 0xa43b, 0xa43a, 0xa43c, 0xa439].map(text));
     case 'computer': return clip(text(0x013c));
     case 'description': return join([0x010e, 0x9286, 0x9c9b, 0x9c9c, 0x9c9f, 0x9c9e, 0xa436, 0x010d, 0x011d].map(text)) || (byTag.has(0x4746) ? `Rating ${num(0x4746)}` : 'Empty text fields');
+    case 'apple-hdr': {
+      const v = appleHdrOf(m, byTag.get(0x927c));
+      return v ? appleHdrValue(v) : 'Apple HDR brightness';
+    }
+    case 'device-text': {
+      // Fields whose values lie outside the block cannot be read at all: the page says so.
+      if (entries.every((x) => !x.e.valid)) return '';
+      const names = [...new Set(entries.map((x) => TAG_NAMES[x.e.tag] || `tag 0x${x.e.tag.toString(16).padStart(4, '0')}`))];
+      const first = entries.map((x) => readText(m, x.e)).find((v) => v && !/^[\d .:+-]*$/.test(v)) || '';
+      const list = names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ');
+      return clip(`${list}${first ? `: ${first}` : ''}`);
+    }
     case 'makernote': {
       const e = byTag.get(0x927c);
       const b = e && e.valid ? valueBytes(m, e) : new Uint8Array(0);
@@ -697,6 +907,130 @@ export function removeTiffKeys(m, keys) {
   return { changed: true, empty: ifd0Left === 0 && !chainLeft };
 }
 
+// ======================================================================================
+// Apple HDR brightness
+//
+// An iPhone HDR JPEG keeps its HDR headroom in two numbers of Apple's MakerNote, tags 33
+// and 48 (Apple, "Applying Apple HDR effect to your photos"). Readers need them: Chrome's
+// Skia finds an Apple gain map only when the photo's MakerNote yields that headroom
+// (SkJpegMetadataDecoderImpl, SkExif::get_maker_note_hdr_headroom), and Apple's own
+// software reads them too. The MakerNote as a whole is red, so when it goes while an Apple
+// gain map stays, it is replaced by a MakerNote of its own holding only those two numbers,
+// each checked and written again as a fraction over one million: Apple's header "Apple
+// iOS\0\0\x01MM", one big-endian directory with offsets from the MakerNote's start, and
+// nothing else.
+
+const APPLE_SIG = [0x41, 0x70, 0x70, 0x6c, 0x65, 0x20, 0x69, 0x4f, 0x53, 0, 0, 1, 0x4d, 0x4d];
+const APPLE_DEN = 1000000;
+// The ranges real iPhones write (tag 33 about 0.5 to 1.1, tag 48 about 0 to 0.02), with a
+// wide margin. A value outside them is not a headroom a screen can use, so it is not kept.
+const APPLE_RANGE = { 33: [0, 8], 48: [0, 1] };
+// The digits kept of each number: 0.001 and 0.0001. Chrome reads only the headroom they
+// give, so more digits would be free to carry anything. Rounding never moves a value across
+// the thresholds of Chrome's formula (1 for tag 33, 0.01 for tag 48).
+const APPLE_STEP = { 33: 1000, 48: 10000 };
+function appleRound(tag, v) {
+  const k = APPLE_STEP[tag];
+  let r = Math.round(v * k) / k;
+  if (tag === 33 && (v < 1) !== (r < 1)) r = v < 1 ? 0.999 : 1;
+  if (tag === 48 && (v <= 0.01) !== (r <= 0.01)) r = v <= 0.01 ? 0.01 : 0.0101;
+  return r;
+}
+// What the Apple HDR brightness detail shows: the headroom it gives and both numbers.
+export const appleHdrValue = (v) => `Headroom ${v.headroom.toFixed(2)} (maker note values ${v.maker33}${v.maker48 === null ? '' : ` and ${v.maker48}`})`;
+
+function appleBytesOk(b) {
+  return b.length >= 16 && APPLE_SIG.every((x, i) => b[i] === x);
+}
+
+// The two HDR numbers of an Apple MakerNote entry: { maker33, maker48, headroom } or null.
+function appleHdrOf(m, e) {
+  if (!e || !e.valid || e.inline || e.type !== 7) return null;
+  const b = valueBytes(m, e);
+  if (!appleBytesOk(b)) return null;
+  const n = u16be(b, 14);
+  if (n > 512 || 16 + n * 12 > b.length) return null;
+  const vals = {};
+  for (let i = 0; i < n; i++) {
+    const q = 16 + i * 12;
+    const tag = u16be(b, q);
+    if (tag !== 33 && tag !== 48) continue;
+    const type = u16be(b, q + 2);
+    if ((type !== 10 && type !== 5) || u32be(b, q + 4) !== 1 || vals[tag] !== undefined) return null;
+    const off = u32be(b, q + 8);
+    if (off < 16 || off + 8 > b.length) return null;
+    const num = type === 10 ? u32be(b, off) | 0 : u32be(b, off);
+    const den = type === 10 ? u32be(b, off + 4) | 0 : u32be(b, off + 4);
+    const v = num / den;
+    if (!den || !Number.isFinite(v) || v < APPLE_RANGE[tag][0] || v > APPLE_RANGE[tag][1]) return null;
+    vals[tag] = appleRound(tag, v);
+  }
+  if (vals[33] === undefined) return null;
+  const m33 = vals[33];
+  const m48 = vals[48] ?? 0;
+  const stops = m33 < 1 ? (m48 <= 0.01 ? -20 * m48 + 1.8 : -0.101 * m48 + 1.601) : (m48 <= 0.01 ? -70 * m48 + 3 : -0.303 * m48 + 2.303);
+  return { maker33: m33, maker48: vals[48] ?? null, headroom: 2 ** Math.max(stops, 0) };
+}
+
+// The MakerNote that holds only the two numbers.
+export function appleHdrNote(v) {
+  const tags = [[33, v.maker33], ...(v.maker48 === null ? [] : [[48, v.maker48]])];
+  const head = 16 + tags.length * 12 + 4;
+  const out = new Uint8Array(head + tags.length * 8);
+  out.set(APPLE_SIG);
+  const w16 = (p, x) => { out[p] = x >>> 8; out[p + 1] = x & 255; };
+  const w32 = (p, x) => { out[p] = x >>> 24; out[p + 1] = (x >>> 16) & 255; out[p + 2] = (x >>> 8) & 255; out[p + 3] = x & 255; };
+  w16(14, tags.length);
+  tags.forEach(([tag, x], i) => {
+    const q = 16 + i * 12;
+    const at = head + i * 8;
+    w16(q, tag); w16(q + 2, 10); w32(q + 4, 1); w32(q + 8, at);
+    w32(at, Math.round(x * APPLE_DEN) | 0); w32(at + 4, APPLE_DEN);
+  });
+  return out;
+}
+
+// Whether a MakerNote entry is exactly such a minimal note (what the scrub writes).
+function isAppleHdrNote(m, e) {
+  const v = appleHdrOf(m, e);
+  if (!v) return false;
+  const want = appleHdrNote(v);
+  const b = valueBytes(m, e);
+  return b.length === want.length && want.every((x, i) => x === b[i]);
+}
+
+// The HDR numbers of the photo's own Apple MakerNote (in the Exif IFD), or null.
+export function appleHdr(m) {
+  const exif = m && m.ifds.exif;
+  const e = exif && exif.entries.find((x) => x.tag === 0x927c && x.valid);
+  if (!e || isAppleHdrNote(m, e)) return null;
+  return appleHdrOf(m, e);
+}
+
+// The HDR numbers the photo carries, in its own Apple MakerNote or in a minimal note this
+// tool wrote, or null: whether an Apple gain map can still be shown in HDR.
+export function appleHdrAny(m) {
+  const exif = m && m.ifds.exif;
+  const e = exif && exif.entries.find((x) => x.tag === 0x927c && x.valid);
+  return e ? appleHdrOf(m, e) : null;
+}
+
+// Replaces the photo's MakerNote, in place, with the minimal note holding v: the note is
+// written at the start of the old one, its length is set, and every other byte the old note
+// used (inside it, or claimed outside it) is zeroed. Returns false when that cannot be done.
+export function shrinkAppleNote(m, v) {
+  const exif = m && m.ifds.exif;
+  const e = exif && exif.entries.find((x) => x.tag === 0x927c && x.valid);
+  if (!e || e.inline || e.type !== 7) return false;
+  const note = appleHdrNote(v);
+  if (note.length > e.size) return false;
+  const outside = ownership(m).makernote;
+  zeroRanges(m.t, [valueRange(e), ...outside]);
+  m.t.set(note, e.valueOffset);
+  m.w32(e.entryPos + 4, note.length);
+  return true;
+}
+
 // Makes an EXIF block empty in place: header kept, IFD0 with no entries, everything else zero.
 export function blankTiff(m) {
   const t = m.t;
@@ -731,7 +1065,7 @@ const BUILD_SKIP = new Set([PTR_EXIF, PTR_GPS, PTR_INTEROP, 0x927c, 0x0201, 0x02
   0x0103, 0x0102, 0x0106, 0x0115, 0x011c, 0x00fe, 0x0212, 0xa005, 0x0144, 0x0145, 0x015b, 0x0140]);
 // Keys never written into a fresh block, whatever the user kept: their data only makes
 // sense in the original file, or cannot be checked.
-const BUILD_NEVER = new Set(['makernote', 'thumbnail', 'embedded', 'private', 'leftover']);
+const BUILD_NEVER = new Set(['makernote', 'apple-hdr', 'technical-text', 'thumbnail', 'embedded', 'private', 'leftover']);
 
 // Builds a new TIFF block holding only the simple tags whose keys are kept. Orientation is
 // written as 1 because the caller has baked rotation into the pixels. No MakerNote, no
@@ -739,7 +1073,7 @@ const BUILD_NEVER = new Set(['makernote', 'thumbnail', 'embedded', 'private', 'l
 export function buildTiff(m, keepKeys) {
   if (!m || !m.ifds.ifd0) return null;
   const keepKey = (k) => keepKeys.has(k) && !BUILD_NEVER.has(k);
-  const pick = (ifd, all) => (ifd ? ifd.entries.filter((e) => e.valid && !BUILD_SKIP.has(e.tag) && (all || keepKey(keyForTag(e.tag)))) : []);
+  const pick = (ifd, all) => (ifd ? ifd.entries.filter((e) => e.valid && !BUILD_SKIP.has(e.tag) && (all || keepKey(entryKey(m, ifd, e)))) : []);
   const raw = (e) => ({ tag: e.tag, type: e.type, count: e.count, bytes: m.t.slice(e.valueOffset, e.valueOffset + e.size) });
   const short = (v) => (m.le ? new Uint8Array([v & 255, v >> 8]) : new Uint8Array([v >> 8, v & 255]));
   const ifd0 = pick(m.ifds.ifd0, false).map((e) => (e.tag === 0x0112 ? { tag: 0x0112, type: 3, count: 1, bytes: short(1) } : raw(e)));
