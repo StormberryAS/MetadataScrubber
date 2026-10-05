@@ -9,7 +9,7 @@
 
 import { clip, concat, encodeLatin1, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=4d7df4d3';
 import { md5 } from './icc.js?v=15403b52';
-import { deviceNameOk } from './tiff.js?v=f010e347';
+import { deviceNameOk } from './tiff.js?v=1288a27c';
 
 // ======================================================================================
 // IPTC-IIM

@@ -6,6 +6,10 @@
     <string name="result_share">Share</string>
     <string name="result_cancel">Cancel</string>
     <string name="share_chooser">Share the new file</string>
+    <!-- Shown before the first Share after the app starts, as the website does before its first Share. -->
+    <string name="share_warning_title">Share the new image.</string>
+    <string name="share_warning_text">Once it is online, you cannot take it back. Your device will open the app you choose.</string>
+    <string name="share_continue">Continue</string>
     <string name="preparing">Preparing %1$s</string>
     <string name="saved">Saved %1$s</string>
     <string name="save_failed">The file could not be saved.</string>

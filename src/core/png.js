@@ -13,12 +13,12 @@ import { describeC2pa } from './c2pa.js?v=fcdff418';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=15403b52';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc,
-} from './iptc.js?v=932cdff8';
+} from './iptc.js?v=a3bcfb3f';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=93d7f069';
 import {
   TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation,
-} from './tiff.js?v=f010e347';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=79671502';
+} from './tiff.js?v=1288a27c';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=d8284a86';
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const STRUCTURAL = new Set(['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS', 'acTL', 'fcTL', 'fdAT']);

@@ -251,8 +251,10 @@ def cmd_uhdr(args):
     map: hdrgm-extra, item-label, apple-owner, after-eoi, bare-after-eoi, mpf-tail,
     apple (an iPhone-style picture: no XMP in the photo, an Apple MakerNote holding the HDR
     headroom and a planted text tag, a gain map named by apdi:AuxiliaryImageType with
-    HDRGainMapVersion and a planted extra apdi field), apple-wrong (the same with planted
-    text in the apdi:AuxiliaryImageType value),
+    HDRGainMapVersion and a planted extra apdi field), apple-16e (the same with the HDR
+    numbers an iPhone 16e on iOS 26 wrote: tag 33 = 1058986/1048501, tag 48 = 34373/21025,
+    above 1), apple-wrong (the same as apple with planted text in the
+    apdi:AuxiliaryImageType value),
     inner-hdrgm, iso-tail, inner-mpf, inner-iso, version-text, mpf-extras, dir-semantic
     (a third directory entry whose role is free text), dir-mime (free text as the gain
     map entry's file type), inner-gpano (a name in a technical XMP field of the gain map)
@@ -260,7 +262,7 @@ def cmd_uhdr(args):
     second picture, a full-size colour copy, so it is no gain map at all)."""
     primary, gain, out, kind = read(args[0]), read(args[1]), args[2], args[3]
     can = [c.encode('ascii') for c in args[4:]]
-    need = {'hdrgm-extra': 2, 'mpf-extras': 2, 'apple': 2, 'iso-full': 0, 'zero-pad': 0}.get(kind, 1)
+    need = {'hdrgm-extra': 2, 'mpf-extras': 2, 'apple': 2, 'apple-16e': 2, 'iso-full': 0, 'zero-pad': 0}.get(kind, 1)
     if len(can) != need:
         die('uhdr %s takes %d planted strings' % (kind, need))
     if not primary.endswith(b'\xff\xd9') or not gain.startswith(b'\xff\xd8'):
@@ -286,7 +288,7 @@ def cmd_uhdr(args):
     if kind.startswith('apple'):
         aux = b'urn:com:apple:photo:2020:aux:hdrgainmap'
         stored = b'1278226488'
-        if kind == 'apple':
+        if kind in ('apple', 'apple-16e'):
             stored = b'Astrid Holmvik ' + can[1]
         else:
             aux += b' Astrid Holmvik ' + can[0]
@@ -353,10 +355,12 @@ def cmd_uhdr(args):
     head = segment(0xE1, xmp_segment_payload(p_xml))
     if kind.startswith('apple'):
         # Apple's MakerNote: "Apple iOS", version 1, big-endian, offsets from its own start;
-        # tag 33 = 1.02 and tag 48 = 0.0064 (the HDR headroom), tag 11 a text tag.
-        note_text = (b'Astrid Holmvik ' + can[0] if kind == 'apple' else b'FJORD-BURST-0001') + b'\0'
+        # tag 33 = 1.02 and tag 48 = 0.0064 (the HDR headroom), tag 11 a text tag. apple-16e
+        # has the numbers of a real iPhone 16e photo instead (headroom 3.5, tag 48 above 1).
+        note_text = (b'Astrid Holmvik ' + can[0] if kind in ('apple', 'apple-16e') else b'FJORD-BURST-0001') + b'\0'
+        m33, m48 = ((1058986, 1048501), (34373, 21025)) if kind == 'apple-16e' else ((10200, 10000), (64, 10000))
         mn_tags = [(0x0001, 9, 1, struct.pack('>i', 14)), (0x000B, 2, len(note_text), note_text),
-                   (0x0021, 10, 1, struct.pack('>ii', 10200, 10000)), (0x0030, 10, 1, struct.pack('>ii', 64, 10000))]
+                   (0x0021, 10, 1, struct.pack('>ii', *m33)), (0x0030, 10, 1, struct.pack('>ii', *m48))]
         makernote = b'Apple iOS\0\0\x01MM' + tiff_ifd('>', mn_tags, 14, 0)
         ifd0 = [(0x010F, 2, 6, b'Apple\0'), (0x0112, 3, 1, struct.pack('>H', 1)), (0x8769, 4, 1, b'')]
         ifd0_len = len(tiff_ifd('>', [(t, ty, c, d if t != 0x8769 else b'\0\0\0\0') for t, ty, c, d in ifd0], 8, 0))

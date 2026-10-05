@@ -75,6 +75,10 @@ class MainActivity : ComponentActivity() {
     private var pendingOut: OutFile? = null
     private var outTransfer: OutTransfer? = null
 
+    // The warning before sharing is shown once per page load, as on the website: the page
+    // lives as long as this activity (configChanges keeps it through rotation).
+    private var shareWarned = false
+
     // Pictures shared into the app, waiting for the page to pull them.
     private var nextBatchId = 1
     private var incoming: IncomingBatch? = null
@@ -436,7 +440,25 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.result_title, out.file.name))
             .setItems(arrayOf(getString(R.string.result_save), getString(R.string.result_share))) { _, which ->
-                if (which == 0) startSave(out) else share(out)
+                if (which == 0) startSave(out) else confirmShare(out)
+            }
+            .setNegativeButton(R.string.result_cancel, null)
+            .show()
+    }
+
+    /** The first Share shows the same warning as the website's Share button; later ones go straight on. */
+    private fun confirmShare(out: OutFile) {
+        if (shareWarned) {
+            share(out)
+            return
+        }
+        if (isFinishing || isDestroyed) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.share_warning_title)
+            .setMessage(R.string.share_warning_text)
+            .setPositiveButton(R.string.share_continue) { _, _ ->
+                shareWarned = true
+                share(out)
             }
             .setNegativeButton(R.string.result_cancel, null)
             .show()

@@ -21,6 +21,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspect, privacyWord } from '../src/scrub-core.js';
+import { SHARE_STATE, SHARE_TEXT, shareStub } from './share-stub.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -65,6 +66,7 @@ function androidIndex(text) {
   return text.slice(0, lineStart) + indent + BRIDGE_TAG + '\n' + text.slice(lineStart);
 }
 const ZAPSTORE = 'https://zapstore.dev/apps/no.stormberry.metadatascrubber';
+const COLOUR_NOTE = 'Colours may look a little duller and bright areas less vivid on HDR screens.';
 
 // ---- Static server ---------------------------------------------------------------------
 const requests = [];
@@ -154,7 +156,8 @@ function pil(script, ...files) {
 // ---- One page --------------------------------------------------------------------------
 // android: load the page the way the APK does (see androidIndex), with a stand-in for the
 // app's message channel, window.MSBridge, that records what the bridge posts.
-async function openPage(width, height, { android = false } = {}) {
+// init: extra script run before the page's own, such as the share stand-ins (share-stub.mjs).
+async function openPage(width, height, { android = false, init = null } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext');
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
@@ -180,6 +183,7 @@ async function openPage(width, height, { android = false } = {}) {
   if (android) {
     await s('Page.addScriptToEvaluateOnNewDocument', { source: "window.__msPosted=[];window.MSBridge={postMessage:function(m){window.__msPosted.push(JSON.parse(m));},addEventListener:function(t,fn){window.__msListen=fn;}};" });
   }
+  if (init) await s('Page.addScriptToEvaluateOnNewDocument', { source: init });
   await s('Page.navigate', { url: android ? `${BASE}?android` : BASE });
   await sleep(1200);
   const ev = async (expression) => {
@@ -345,6 +349,30 @@ try {
     check(`${tag} the separate colour legend is gone`, !meta.legend);
     check(`${tag} red details are ticked to start with, amber and green details are not`, meta.rows.every((r) => r.checked === (r.tier === 'red')), meta.rows.filter((r) => r.checked !== (r.tier === 'red')).map((r) => r.id));
     check(`${tag} every tier is shown in words`, meta.rows.every((r) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier]));
+
+    // The colour note above the button: hidden with the default red-only choice, shown with
+    // its exact text while Green (and so the colour profile) is ticked, hidden again after.
+    const colourNote = () => p.ev(`(() => {
+      const n = document.getElementById('colour-note');
+      const r = n.getBoundingClientRect();
+      return { hidden: n.hidden, shown: r.height > 0, text: n.textContent, live: n.parentElement.getAttribute('aria-live'), amber: n.dataset.tier === 'amber',
+        aboveButton: n.parentElement.nextElementSibling === document.getElementById('go-btn'), mode: !document.getElementById('mode-box').hidden };
+    })()`);
+    let cn = await colourNote();
+    check(`${tag} colour note: hidden with the default red-only choice`, cn.hidden && !cn.shown && cn.text === '' && cn.live === 'polite' && cn.aboveButton, cn);
+    check(`${tag} colour note: the photo has a colour profile (green)`, meta.rows.some((r) => r.id === 'icc:profile' && r.tier === 'green'), meta.rows.map((r) => r.id));
+    await p.tick({ red: true, green: true });
+    cn = await colourNote();
+    check(`${tag} colour note: shown with its exact text when Green is ticked, next to the mode box`, !cn.hidden && cn.shown && cn.amber && cn.mode && cn.text === COLOUR_NOTE, cn);
+    await p.tick({ red: true });
+    cn = await colourNote();
+    check(`${tag} colour note: hidden again when Green is unticked`, cn.hidden && !cn.shown && cn.text === '', cn);
+    await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"icc:profile\"]').click()");
+    cn = await colourNote();
+    check(`${tag} colour note: shown for the colour profile box alone`, !cn.hidden && cn.text === COLOUR_NOTE, cn);
+    await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"icc:profile\"]').click()");
+    cn = await colourNote();
+    check(`${tag} colour note: hidden once that box is unticked`, cn.hidden, cn);
     check(`${tag} the quick choice buttons are gone`, !meta.quick);
     check(`${tag} the intro says red is ticked to start with and amber and green are kept`, meta.intro === 'Ticked details will be removed. Red details are ticked to start with; amber and green are kept unless you tick them.', meta.intro);
     check(`${tag} the expected name uses the public word, as amber stays`, /Expected name: image\.public\.jpg\./.test(meta.preview), meta.preview);
@@ -644,6 +672,16 @@ try {
     await p.ev("document.getElementById('m-tier-amber-all').click()");
     t = await tiers();
     check(`${tag} HDR photo: pressing the amber box ticks every amber detail, the gain map included`, t.amber.checked && !t.amber.mixed && t.amber.ticked === t.amber.n && JSON.stringify(await gm()) === '[true,true]', t);
+    let hn = await p.ev("({ hidden: document.getElementById('colour-note').hidden, text: document.getElementById('colour-note').textContent })");
+    check(`${tag} HDR photo: the colour note shows with its exact text once the gain map is ticked`, !hn.hidden && hn.text === COLOUR_NOTE, hn);
+    await p.ev("document.getElementById('m-tier-amber-all').click()");
+    hn = await p.ev("({ hidden: document.getElementById('colour-note').hidden, gm: document.querySelector('#meta-groups .ms-check[data-id=\"jpeg:trailing:gain-map\"]').checked })");
+    check(`${tag} HDR photo: the colour note hides again when the gain map is unticked`, hn.hidden && !hn.gm, hn);
+    await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"jpeg:trailing:gain-map\"]').click()");
+    hn = await p.ev("({ hidden: document.getElementById('colour-note').hidden, text: document.getElementById('colour-note').textContent })");
+    check(`${tag} HDR photo: the gain map box alone shows the colour note`, !hn.hidden && hn.text === COLOUR_NOTE, hn);
+    await p.ev("document.querySelector('#meta-groups .ms-check[data-id=\"jpeg:trailing:gain-map\"]').click()");
+    check(`${tag} HDR photo: and hides it again`, await p.ev("document.getElementById('colour-note').hidden"));
 
     // Several files at once, plus one that is not a picture.
     await p.load(['jpeg-everything.jpg', 'webp-everything.webp', 'not-an-image.pdf']);
@@ -692,9 +730,138 @@ try {
     await p.close();
   }
 
+  // Share and Copy under Save. Linux Chromium has no share sheet and a headless browser no
+  // clipboard to read, so share-stub.mjs stands in for both and records what it is given.
+  {
+    const tag = 'share';
+    const p = await openPage(360, 780, { init: shareStub({ share: true, clipboard: true }) });
+    await p.load(['jpeg-everything.jpg']);
+    await p.press();
+    let st = await p.ev(SHARE_STATE);
+    check(`${tag} with canShare: "${SHARE_TEXT.button}" and Copy image under Save, in a data-web-only block`, st.block && st.webOnly && st.blockShown && st.shareShown && st.shareText === SHARE_TEXT.button && st.copyShown && st.copyText === 'Copy image', st);
+    check(`${tag} Share is a primary button, the same colour as Save`, st.primary, { shareBg: st.shareBg, saveBg: st.saveBg });
+    check(`${tag} the warning is shown under the buttons, amber, with the exact text, and Share points to it`, st.note && st.noteShown && st.noteText === SHARE_TEXT.note && st.noteAmber && st.noteOwnsDescription, st);
+    check(`${tag} the order is Save, Copy, Share, the warning, then the status line`, st.order.join() === 'save,copy,share,note,status', st.order);
+    check(`${tag} no confirm step: no Continue, no Cancel, no aria-expanded on Share`, !st.confirm && st.expanded === null, st);
+    check(`${tag} nothing is shared before a press`, st.shares === 0 && st.copies === 0, st);
+    check(`${tag} the status line is a polite live region and starts empty`, st.live === 'polite' && st.status === '', st);
+    await p.shotOf(`${tag}-1-buttons`, '#results .ms-result-main');
+
+    // A press shares straight away: exactly one file, the one Save downloads.
+    await p.ev("document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor('window.__share.calls.length === 1 && window.__share.calls[0].b64 !== null', 10000);
+    const call = await p.ev('window.__share.calls[0]');
+    const files = await p.download();
+    const saved = files['image.public.jpg'];
+    const shared = call && call.b64 !== null ? new Uint8Array(Buffer.from(call.b64, 'base64')) : null;
+    check(`${tag} a press shares one file, image.public.jpg, as image/jpeg, titled with its name`, !!call && call.n === 1 && call.name === 'image.public.jpg' && call.type === 'image/jpeg' && call.title === 'image.public.jpg', call && { ...call, b64: undefined });
+    check(`${tag} the shared bytes are exactly the bytes Save downloads`, !!saved && !!shared && saved.length === shared.length && Buffer.compare(Buffer.from(saved), Buffer.from(shared)) === 0, { saved: saved && saved.length, shared: shared && shared.length });
+    if (shared) {
+      const out = await inspect(shared);
+      check(`${tag} the shared file has no red detail left`, !out.items.some((i) => i.tier === 'red'), out.items.map((i) => i.tier + ':' + i.id));
+    }
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} after sharing nothing is said, and the warning is still there`, st.status === '' && st.noteShown && st.noteText === SHARE_TEXT.note, st);
+
+    // Every press shares at once.
+    await p.ev("document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor('window.__share.calls.length === 2', 10000);
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} the second press shares at once too`, st.shares === 2 && !st.confirm, st);
+
+    // The person closes the share sheet: AbortError, and nothing to say.
+    await p.ev("window.__share.mode = 'abort'; document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor('window.__share.calls.length === 3', 10000);
+    await sleep(200);
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} a closed share sheet (AbortError) says nothing and logs no error`, st.status === '' && p.log.errors.length === 0, { st, errors: p.log.errors });
+    // Any other failure: a short message in the live region.
+    await p.ev("window.__share.mode = 'fail'; document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent !== ''`, 10000);
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} another share failure says "${SHARE_TEXT.failed}"`, st.status === SHARE_TEXT.failed, st.status);
+    await p.ev("window.__share.mode = 'ok'");
+
+    // A new name: the button keeps its words, and the shared file carries the new name.
+    await p.ev("(() => { const i = document.getElementById('name-input'); i.value = 'holiday.jpg'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} a typed name leaves the Share button as "${SHARE_TEXT.button}"`, st.shareText === SHARE_TEXT.button, st.shareText);
+    await p.ev("document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor('window.__share.calls.length === 5', 10000);
+    check(`${tag} and the shared file carries the new name`, (await p.ev('window.__share.calls[4].name')) === 'holiday.public.jpg');
+    await p.ev("(() => { const i = document.getElementById('name-input'); i.value = 'image'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
+
+    // Copy: a fresh PNG of the picture, without the file's details.
+    await p.ev("document.querySelector('#results-list .ms-copy-btn').click()");
+    await p.waitFor('window.__clip.calls.length === 1 && window.__clip.calls[0].b64 !== null', 20000);
+    await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(SHARE_TEXT.copied)}`, 5000);
+    const clip = await p.ev('window.__clip.calls[0]');
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} Copy writes one PNG to the clipboard and says "${SHARE_TEXT.copied}"`, clip.types.join() === 'image/png' && clip.type === 'image/png' && st.status === SHARE_TEXT.copied, { types: clip.types, type: clip.type, status: st.status });
+    check(`${tag} Copy shares nothing`, st.shares === 5, st.shares);
+    if (clip.b64) {
+      const png = new Uint8Array(Buffer.from(clip.b64, 'base64'));
+      const out = await inspect(png);
+      const src = await inspect(saved);
+      check(`${tag} the copied PNG has the picture's size and no metadata at all`, out.format === 'png' && out.items.length === 0 && out.width === src.width && out.height === src.height, { format: out.format, items: out.items.map((i) => i.id), size: [out.width, out.height], src: [src.width, src.height] });
+    }
+    await p.ev("window.__clip.mode = 'fail'; document.querySelector('#results-list .ms-copy-btn').click()");
+    await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(SHARE_TEXT.copyFailed)}`, 10000);
+    check(`${tag} a refused copy says "${SHARE_TEXT.copyFailed}"`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copyFailed);
+
+    // HEIC in Chromium: no share (not on the share list) and no copy (cannot be opened).
+    await p.load(['heic-everything.heic']);
+    await p.press();
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} HEIC that the browser cannot open or share: neither Share nor Copy, and no warning`, !st.block && !st.share && !st.copy && !st.note, st);
+    // A PNG: both, with the warning.
+    await p.load(['png-everything.png']);
+    await p.press();
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} a PNG result offers Share and Copy, with the warning`, st.shareShown && st.copyShown && st.shareText === SHARE_TEXT.button && st.noteShown && st.noteText === SHARE_TEXT.note && st.order.join() === 'save,copy,share,note,status', st);
+    // Several files: each result has its own buttons and its own warning.
+    await p.load(['jpeg-everything.jpg', 'webp-everything.webp']);
+    await p.press();
+    const multi = await p.ev(`[...document.querySelectorAll('#results-list .ms-result')].map((a) => {
+      const b = a.querySelector('.ms-share-btn');
+      const n = a.querySelector('.ms-share-note');
+      return { text: b && b.textContent, copy: !!a.querySelector('.ms-copy-btn'), note: n && n.textContent, own: !!b && !!n && b.getAttribute('aria-describedby') === n.id && document.getElementById(n.id) === n };
+    })`);
+    check(`${tag} several files: a Share, a Copy and a warning for each, each Share pointing to its own warning`, multi.length === 2 && multi.every((m) => m.text === SHARE_TEXT.button && m.copy && m.note === SHARE_TEXT.note && m.own), multi);
+    const before = await p.ev('window.__share.calls.length');
+    await p.ev("document.querySelectorAll('#results-list .ms-share-btn')[1].click()");
+    await p.waitFor(`window.__share.calls.length === ${before + 1}`, 10000);
+    const second = await p.ev(`window.__share.calls[${before}].name`);
+    check(`${tag} several files: the second result's Share sends its own file`, /^image-2\.\w+\.webp$/.test(second || ''), second);
+
+    const csp = await p.ev('window.__csp');
+    check(`${tag} no policy violations`, csp.length === 0, csp);
+    check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
+    await p.close();
+  }
+
+  // Without the Web Share API: no Share button. Without ClipboardItem as well: no block.
+  for (const [label, opts, want] of [
+    ['no canShare', { share: false, clipboard: true }, { share: false, copy: true }],
+    ['no canShare, no ClipboardItem', { share: false, clipboard: false }, { share: false, copy: false }],
+    ['canShare, no ClipboardItem', { share: true, clipboard: false }, { share: true, copy: false }],
+  ]) {
+    const p = await openPage(360, 780, { init: shareStub(opts) });
+    await p.load(['jpeg-everything.jpg']);
+    await p.press();
+    const st = await p.ev(SHARE_STATE);
+    check(`share, ${label}: Share ${want.share ? 'shown' : 'absent'}, Copy ${want.copy ? 'shown' : 'absent'}`, st.share === want.share && st.shareShown === want.share && st.copy === want.copy && st.copyShown === want.copy && st.block === (want.share || want.copy), st);
+    check(`share, ${label}: the warning ${want.share ? `shown with the exact text, after Share` : 'absent'}`, want.share ? st.note && st.noteShown && st.noteText === SHARE_TEXT.note && st.noteOwnsDescription && st.order.join() === (want.copy ? 'save,copy,share,note,status' : 'save,share,note,status') : !st.note && !st.noteShown, st);
+    check(`share, ${label}: Save is still there`, await p.ev("document.querySelector('#results-list .ms-download')?.textContent") === 'Save image.public.jpg');
+    check(`share, ${label}: no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    await p.close();
+  }
+
   // The page as the Android app loads it: android-bridge.js first, then the page as usual.
   {
-    const p = await openPage(360, 780, { android: true });
+    // The share and clipboard stand-ins say yes, so only the bridge can hide Share and Copy.
+    const p = await openPage(360, 780, { android: true, init: shareStub({ share: true, clipboard: true }) });
     const tag = 'android';
     const st = await p.ev(`(() => {
       const sec = document.querySelector('[data-web-only]');
@@ -711,6 +878,8 @@ try {
     await p.press();
     const link = await p.ev("(() => { const a = document.querySelector('.ms-download'); return a ? { name: a.download, text: a.textContent } : null; })()");
     check(`${tag} the result offers Save image.public.jpg`, !!link && link.name === 'image.public.jpg' && link.text === 'Save image.public.jpg', link);
+    const shareSt = await p.ev(SHARE_STATE);
+    check(`${tag} the Share and Copy block is made but the bridge hides it, warning and all (the app has its own Share)`, shareSt.block && shareSt.webOnly && !shareSt.blockShown && !shareSt.shareShown && !shareSt.copyShown && shareSt.note && !shareSt.noteShown, shareSt);
     const before = p.completed.length;
     await p.ev("document.querySelector('.ms-download').click()");
     await p.waitFor("window.__msPosted.some((m) => m.t === 'out-begin')", 10000);
@@ -733,6 +902,68 @@ try {
     check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
     check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
     await p.shot(`${tag}-1-result`);
+    await p.close();
+  }
+
+  // The privacy page, reached the way a person reaches it: the footer's Privacy link. It
+  // must load with the app's own policy, no errors, nothing from elsewhere, and lead back.
+  {
+    const tag = 'privacy';
+    const metaCsp = (file) => (/<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(readFileSync(join(ROOT, file), 'utf8')) || [])[1];
+    check(`${tag} privacy.html carries exactly the policy of index.html`, !!metaCsp('privacy.html') && metaCsp('privacy.html') === metaCsp('index.html'), { privacy: metaCsp('privacy.html'), index: metaCsp('index.html') });
+    const html = readFileSync(join(ROOT, 'privacy.html'), 'utf8');
+    const local = [...html.matchAll(/(?:src|href)="([^"]*)"/g)].map((m) => m[1]).filter((r) => !/^([a-z][a-z0-9+.-]*:|#|\/\/)/i.test(r));
+    const missing = local.filter((r) => { const f = join(ROOT, r.split(/[?#]/)[0] || 'index.html'); return !existsSync(f.endsWith('/') ? join(f, 'index.html') : f); });
+    check(`${tag} every local file privacy.html refers to exists`, local.length > 0 && missing.length === 0, missing);
+    check(`${tag} disclaimer.html links to the app's own privacy page`, /<a href="privacy\.html">Privacy<\/a><\/footer>/.test(readFileSync(join(ROOT, 'disclaimer.html'), 'utf8')));
+
+    const p = await openPage(360, 780);
+    const link = await p.ev(`(() => {
+      const all = [...document.querySelectorAll('a')].filter((a) => a.textContent.trim() === 'Privacy');
+      return all.map((a) => ({ href: a.getAttribute('href'), target: a.getAttribute('target'), footer: !!a.closest('.site-footer') }));
+    })()`);
+    check(`${tag} the app's footer has one Privacy link, to privacy.html, opening in place`, link.length === 1 && link[0].href === 'privacy.html' && link[0].target === null && link[0].footer, link);
+    // A click starts a navigation, during which evaluation can fail; ask again until the new page answers.
+    const until = async (expression, ms = 10000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        try { if (await p.ev(expression)) return true; } catch { /* the page is changing */ }
+        await sleep(100);
+      }
+      return false;
+    };
+    await p.ev("document.querySelector('.site-footer a[href=\"privacy.html\"]').click()");
+    const arrived = await until("location.pathname === '/privacy.html' && document.readyState === 'complete'");
+    await sleep(300);
+    check(`${tag} the footer link opens privacy.html`, arrived, await p.ev('location.href').catch(() => null));
+    const st = await p.ev(`(() => {
+      const first = document.head.firstElementChild;
+      const body = getComputedStyle(document.body);
+      const cur = document.querySelector('.site-footer a[aria-current="page"]');
+      return { title: document.title, h1: document.querySelector('h1')?.textContent, scripts: document.scripts.length,
+        firstMeta: first && first.getAttribute('http-equiv'), sheets: document.styleSheets.length, bg: body.backgroundColor, font: body.fontFamily,
+        card: !!document.querySelector('main .card.pp-doc'), sections: [...document.querySelectorAll('.pp-doc h2')].map((h) => h.textContent),
+        updated: document.querySelector('.pp-updated')?.textContent, current: cur && cur.getAttribute('href'), disclaimer: !!document.querySelector('.site-footer a[href="disclaimer.html"]'),
+        overflow: document.documentElement.scrollWidth - innerWidth, back: document.querySelector('.pp-back')?.getAttribute('href'), gate: !!document.querySelector('.sb-gate-overlay') };
+    })()`);
+    check(`${tag} title, heading and date`, st.title === 'Privacy · MetadataScrubber · Stormberry AS' && st.h1 === 'Privacy' && st.updated === 'Last updated: 5 October 2026', st);
+    check(`${tag} the policy is the first element in head, and the page runs no scripts`, st.firstMeta === 'Content-Security-Policy' && st.scripts === 0, st);
+    check(`${tag} the app's own stylesheets apply: dark page, Inter, the card`, st.sheets === 2 && st.bg === 'rgb(12, 10, 18)' && /Inter/.test(st.font) && st.card, st);
+    check(`${tag} the sections a reader looks for are there`, ['Who is responsible', 'Your photos stay on your device', 'What we receive', 'Sharing and copying', 'Where you got the app', 'Your rights', 'Changes to this page'].join() === st.sections.join(), st.sections);
+    check(`${tag} the same footer, with Privacy marked as the current page and the Disclaimer link`, st.current === 'privacy.html' && st.disclaimer, st);
+    check(`${tag} no sideways scrolling at 360 pixels`, st.overflow <= 0, st.overflow);
+    check(`${tag} no first-run notice on the privacy page`, !st.gate);
+    const csp = await p.ev('window.__csp');
+    check(`${tag} no policy violations`, csp.length === 0, csp);
+    check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
+    await p.shot(`${tag}-360`);
+    // Back to the app: the notice, already dismissed, stays away.
+    await p.ev("document.querySelector('.pp-back').click()");
+    const back = await until("location.pathname === '/' && document.readyState === 'complete' && !!document.getElementById('choose-btn')");
+    await sleep(300);
+    check(`${tag} "Back to MetadataScrubber" returns to the app, without the first-run notice`, st.back === './' && back && !(await p.ev("!!document.querySelector('.sb-gate-overlay')")));
+    check(`${tag} no errors in the console after going back`, p.log.errors.length === 0, p.log.errors);
     await p.close();
   }
 } catch (err) {

@@ -20,7 +20,7 @@
 // only want to crop or resize. When nothing would change, no identical copy is made;
 // the page says so instead.
 
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=975bd2e8';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=f83b35f4';
 
 // ---------------------------------------------------------------------------------------
 // Constants
@@ -49,6 +49,11 @@ const GAIN_MAP_IDS = new Set([GAIN_MAP_ID, HEIC_GAIN_MAP_ID]);
 // in the note on a result that kept them. An iPhone gain map (JPEG or HEIC) also needs the
 // photo's Apple HDR brightness, two numbers the engine keeps in a maker note of their own.
 const GAIN_MAP_OWN = new Set([GAIN_MAP_ID, HEIC_GAIN_MAP_ID, 'xmp:gainmap', 'exif:apple-hdr']);
+// Details whose removal changes how the picture looks on a screen: the colour profile (of
+// the picture or of its gain map) and the HDR gain map with what it needs. Ticking any of
+// them (red copies, ticked by default, do not count) shows COLOUR_NOTE_TEXT above the button.
+const COLOUR_LOSS_IDS = new Set(['icc:profile', 'png:colour', `${GAIN_MAP_ID}:colour`, ...GAIN_MAP_OWN]);
+const COLOUR_NOTE_TEXT = 'Colours may look a little duller and bright areas less vivid on HDR screens.';
 
 // The tier words and their meanings, from the spec's file name table. The colour is the
 // tier of the most sensitive kind of item that can be left in a file with that word.
@@ -60,6 +65,13 @@ const PRIVACY = {
 };
 const CUSTOM_WARNING = 'Not recommended for public sharing.';
 const GAIN_MAP_KEPT_NOTE = 'The HDR gain map stays, so the photo keeps its brightness on HDR screens. Tick HDR gain map under Amber for a minimal file.';
+
+// Share and Copy, under Save. The page never sends anything itself: Share hands the new
+// file to the device's own share sheet, and Copy puts the picture on the clipboard.
+const SHARE_WARNING_TEXT = 'Once it is online, you cannot take it back. Your device will open the app you choose.';
+const SHARE_FAILED = 'The file could not be shared. Save it and share it from your device instead.';
+const COPY_DONE = 'Copied. The image is on your clipboard without its file details. Once you paste it online, you cannot take it back.';
+const COPY_FAILED = 'The image could not be copied. Save it instead.';
 
 const RATIOS = { free: null, '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9, '1.91:1': 1.91 };
 
@@ -980,6 +992,11 @@ function refreshDerived() {
   reasons.hidden = !items.length;
   reasons.replaceChildren(...items.map((t) => h('li', { class: 'ms-note', text: t })));
 
+  // Colour note: shown while the choices remove a colour profile or the HDR gain map from
+  // any picture. Its text is only changed when it appears or goes, so it is announced once.
+  const colourLoss = plans.some((p, i) => state.entries[i].info.items.some((it) => it.tier !== 'red' && COLOUR_LOSS_IDS.has(it.id) && p.remove.has(it.id)));
+  setColourNote(colourLoss);
+
   // Expected name
   const base = cleanName($('name-input').value);
   if (single()) {
@@ -1009,6 +1026,13 @@ function refreshDerived() {
   // The button stays usable with a typing mistake in a size field, and when nothing would
   // change: pressing it then explains why, which a disabled button cannot do.
   $('go-btn').disabled = state.busy;
+}
+
+function setColourNote(show) {
+  const note = $('colour-note');
+  const text = show ? COLOUR_NOTE_TEXT : '';
+  if (note.textContent !== text) note.textContent = text;
+  note.hidden = !show;
 }
 
 // The name typed by the user, made safe for a file name. The tier and extension are
@@ -1400,7 +1424,8 @@ function renderResult(r) {
           h('span', { class: 'ms-word-text', text: info.text })),
         r.word === 'custom' && hasRed ? h('p', { class: 'ms-word-warning', text: CUSTOM_WARNING }) : null,
         keptOnlyGainMap ? h('p', { class: 'ms-word-note', text: GAIN_MAP_KEPT_NOTE }) : null,
-        link)),
+        link,
+        renderShare(r, blob))),
     notes.length ? h('ul', { class: 'ms-notes' }, notes.map((n) => h('li', { class: 'ms-note', dataset: n.tier ? { tier: n.tier } : null, text: n.t }))) : null,
     readback);
 
@@ -1424,6 +1449,127 @@ async function drawResultPreview(canvas, blob) {
   }
 }
 
+// ---------------------------------------------------------------------------------------
+// Share and Copy
+//
+// Both sit under Save, inside one block marked data-web-only: the Android app has its own
+// Save and Share, and its bridge hides that block. Neither sends anything from the page.
+//  * Share hands exactly the bytes Save would download to the device's share sheet
+//    (Web Share API). It is offered only where the browser says it can share this file.
+//    A press shares straight away; the warning stays visible under the button whenever
+//    the button is shown, and the button points to it with aria-describedby.
+//  * Copy draws the picture on a canvas and puts a fresh PNG on the clipboard, for any
+//    format the browser can open. A canvas PNG carries pixels only, so nothing of the
+//    file's details travels, whatever was kept in the file itself. The web clipboard takes
+//    pictures as PNG only, and Chromium re-encodes them on the way in, so the exact file
+//    could not be copied in any case.
+
+function resultFile(r) {
+  return new File([r.bytes], resultName(r), { type: MIME[r.format] });
+}
+
+function canShareFile(file) {
+  try {
+    return typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] }) === true;
+  } catch {
+    return false;
+  }
+}
+
+function canCopy(r) {
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function' || typeof window.ClipboardItem !== 'function') return false;
+    if (typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports('image/png')) return false;
+  } catch {
+    return false;
+  }
+  // A HEIC result stays HEIC only when nothing re-saved it; Copy needs the browser to open it.
+  return r.format !== 'heic' || r.entry.decodable;
+}
+
+async function pngWithoutDetails(blob) {
+  const bmp = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bmp.width;
+  canvas.height = bmp.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    bmp.close();
+    throw new Error('no canvas');
+  }
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close();
+  const png = await canvasBlob(canvas, 'image/png');
+  canvas.width = 0;
+  canvas.height = 0;
+  if (!png) throw new Error('no PNG');
+  return png;
+}
+
+function renderShare(r, blob) {
+  const share = canShareFile(resultFile(r));
+  const copy = canCopy(r);
+  if (!share && !copy) return null;
+  const id = `r${r.index}-share`;
+  const status = h('p', { class: 'ms-share-status', id: `${id}-status`, role: 'status', 'aria-live': 'polite' });
+  const say = (text) => { status.textContent = text; };
+
+  let sharing = false;
+  const doShare = async () => {
+    if (sharing) return;
+    sharing = true;
+    try {
+      const file = resultFile(r);
+      await navigator.share({ files: [file], title: file.name });
+    } catch (err) {
+      // AbortError: the person closed the share sheet. Nothing to say.
+      if (!err || err.name !== 'AbortError') say(SHARE_FAILED);
+    } finally {
+      sharing = false;
+    }
+  };
+
+  let shareBtn = null;
+  let note = null;
+  if (share) {
+    shareBtn = h('button', {
+      type: 'button', class: 'btn btn-primary ms-share-btn', dataset: { result: String(r.index) },
+      'aria-describedby': `${id}-note`,
+      onclick: () => { say(''); doShare(); },
+    }, 'Share the new image');
+    note = h('p', {
+      class: 'ms-notice ms-share-note', id: `${id}-note`, dataset: { tier: 'amber' }, text: SHARE_WARNING_TEXT,
+    });
+  }
+
+  let copying = false;
+  const copyBtn = copy ? h('button', {
+    type: 'button', class: 'btn btn-secondary ms-copy-btn',
+    onclick: async () => {
+      if (copying) return;
+      copying = true;
+      say('');
+      // The PNG is made after the press, so the clipboard gets a promise: the write itself
+      // starts inside the press, as browsers require.
+      const png = pngWithoutDetails(blob);
+      png.catch(() => {});
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+        say(COPY_DONE);
+      } catch {
+        say(COPY_FAILED);
+      } finally {
+        copying = false;
+      }
+    },
+  }, 'Copy image') : null;
+
+  return h('div', { class: 'ms-share', dataset: { webOnly: '' } },
+    h('div', { class: 'ms-share-row' }, copyBtn, shareBtn),
+    note,
+    status);
+}
+
 function renameResults() {
   for (const link of document.querySelectorAll('#results-list .ms-download')) {
     const r = state.results.find((x) => String(x.index) === link.dataset.result);
@@ -1431,7 +1577,8 @@ function renameResults() {
     const name = resultName(r);
     link.download = name;
     link.querySelector('.ms-download-name').textContent = name;
-    const title = link.closest('.ms-result').querySelector('.ms-result-name');
+    const article = link.closest('.ms-result');
+    const title = article.querySelector('.ms-result-name');
     if (title) title.textContent = name;
   }
 }
@@ -1630,6 +1777,7 @@ function resetAll() {
   $('pick-card').classList.remove('is-loaded');
   $('go-stale').hidden = true;
   $('go-nothing').hidden = true;
+  setColourNote(false);
   if (!state.busy) $('go-btn').textContent = goLabel();
   $('choose-btn').textContent = 'Choose pictures';
   for (const btn of document.querySelectorAll('#crop-ratios [data-ratio]')) btn.setAttribute('aria-pressed', String(btn.dataset.ratio === 'free'));

@@ -24,8 +24,8 @@ import { concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, st
 import { describeC2pa } from './c2pa.js?v=fcdff418';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=15403b52';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=93d7f069';
-import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=f010e347';
-import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=79671502';
+import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=1288a27c';
+import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=d8284a86';
 
 // What a packet that goes becomes: the item stays, holding an empty packet.
 const EMPTY_XMP = '<x:xmpmeta xmlns:x="adobe:ns:meta/"/>';

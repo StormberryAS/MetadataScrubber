@@ -8,7 +8,9 @@
  * (connect-src 'none'): no fetch, no XHR, nothing leaves the device.
  *
  *  0. WEBSITE-ONLY PARTS. Every element marked data-web-only (the "Get the Android app on
- *     Zapstore" section, for one) is hidden once the page has been parsed.
+ *     Zapstore" section, and the Share and Copy buttons under each new file) is hidden: the
+ *     ones in the page once it has been parsed, and the ones the page adds later as soon as
+ *     they are added. The app offers its own Save and Share instead.
  *
  *  1. SAVING AND SHARING. A WebView cannot follow a download link to a blob: address, so a
  *     click on the page's "Save" link is caught here. The Blob behind it is read in the
@@ -35,19 +37,35 @@
      head, before the body exists, so it waits for the end of parsing: readyState leaves
      'loading' before the deferred gate.js and the app.js module run, whereas
      DOMContentLoaded fires only after them. A page without any data-web-only element is
-     left as it is. */
-  function hideWebOnly() {
-    var els = document.querySelectorAll('[data-web-only]');
+     left as it is.
+     The page also builds parts after loading (the result of each new file, with its Share
+     and Copy buttons). A MutationObserver hides any data-web-only element among them; its
+     callback runs before the browser paints, so such a part is never shown, not even
+     briefly. */
+  function hideWebOnly(root) {
+    if (root.nodeType !== 1 && root.nodeType !== 9) return;
+    if (root.nodeType === 1 && root.hasAttribute('data-web-only')) root.hidden = true;
+    var els = root.querySelectorAll('[data-web-only]');
     for (var i = 0; i < els.length; i++) els[i].hidden = true;
+  }
+  function watchWebOnly() {
+    hideWebOnly(document);
+    if (typeof MutationObserver !== 'function') return;
+    new MutationObserver(function (records) {
+      for (var r = 0; r < records.length; r++) {
+        var added = records[r].addedNodes;
+        for (var n = 0; n < added.length; n++) hideWebOnly(added[n]);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
   }
   if (document.readyState === 'loading') {
     document.addEventListener('readystatechange', function onState() {
       if (document.readyState === 'loading') return;
       document.removeEventListener('readystatechange', onState);
-      hideWebOnly();
+      watchWebOnly();
     });
   } else {
-    hideWebOnly();
+    watchWebOnly();
   }
 
   var bridge = window.MSBridge;

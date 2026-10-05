@@ -1208,6 +1208,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   overflow-wrap: anywhere;
 }
 
+/* The live region around the colour note stays in place so the note is announced when it
+   appears; while the note is hidden, the region takes back the gap it adds to the card. */
+.ms-live:not(:has(> :not([hidden]))) { margin-bottom: calc(-1 * var(--sp-md)); }
+
 .ms-go {
   width: 100%;
   min-height: 52px;
@@ -1323,6 +1327,36 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .ms-download-name { font-family: var(--font-mono); }
 
+/* Share and Copy under Save (website only). Full width on phones, like Save. */
+.ms-share {
+  justify-self: stretch;
+  min-width: 0;
+}
+
+.ms-share-row {
+  display: grid;
+  gap: var(--sp-sm);
+}
+
+.ms-share-btn,
+.ms-copy-btn {
+  display: block;
+  width: 100%;
+  text-align: center;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+/* The Share warning: always shown under the buttons whenever Share is. */
+.ms-share-note { margin-top: var(--sp-sm); }
+
+/* Stays rendered when empty, so screen readers hear what is written into it later. */
+.ms-share-status {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+.ms-share-status:not(:empty) { margin-top: var(--sp-sm); }
+
 .ms-readback {
   display: grid;
   gap: var(--sp-md);
@@ -1351,6 +1385,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
     width: auto;
     max-width: 100%;
   }
+
+  .ms-share-row {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .ms-share-btn,
+  .ms-copy-btn {
+    display: inline-block;
+    width: auto;
+    max-width: 100%;
+  }
 }
 
 /* ---- Reduced motion ----------------------------------------------- */
@@ -1359,4 +1405,53 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .ms-item,
   .ms-tier-toggle,
   .ms-chevron { transition: none; }
+}
+
+/* ================================================================
+   PRIVACY PAGE (privacy.html)
+   The same chrome as the app: hero, one card, the site footer. The
+   page has the app's own policy (style-src 'self'), so its few rules
+   live here. Prefix: pp-.
+================================================================ */
+.pp-back {
+  align-self: flex-start;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.pp-back:hover { color: var(--accent-primary); }
+
+.pp-doc {
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.pp-doc h2 {
+  font-size: 1.15rem;
+  font-weight: 650;
+  margin: var(--sp-xl) 0 var(--sp-sm);
+}
+
+.pp-doc h2:first-child { margin-top: 0; }
+
+.pp-doc p {
+  color: var(--text-secondary);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.pp-doc p + p { margin-top: var(--sp-md); }
+
+.pp-doc strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.pp-doc .pp-updated {
+  margin-top: var(--sp-xl);
+  padding-top: var(--sp-md);
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.88rem;
 }

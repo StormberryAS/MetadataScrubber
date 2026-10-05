@@ -43,6 +43,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GROUPS, detectFormat, inspect, privacyWord, scrub } from '../src/scrub-core.js';
+import { SHARE_STATE, SHARE_TEXT, shareStub } from './share-stub.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -63,8 +64,14 @@ const KEEP = args.includes('--keep');
 
 const DESKTOP = { width: 1280, height: 900, mobile: false, label: 'desktop' };
 const PHONE = { width: 390, height: 844, mobile: true, label: 'phone' };
-// The page as the Android app loads it, on a phone-sized screen (see openPage).
-const ANDROID = { ...PHONE, label: 'android', android: true };
+// The page as the Android app loads it, on a phone-sized screen (see openPage). The share
+// and clipboard stand-ins say yes here, so only the bridge can hide Share and Copy.
+const ANDROID = { ...PHONE, label: 'android', android: true, init: shareStub({ share: true, clipboard: true }) };
+// A phone with a share sheet (Linux Chromium has none, so share-stub.mjs stands in for it
+// and for the clipboard, and records what the page hands over).
+const SHARE_PHONE = { ...PHONE, label: 'phone-share', init: shareStub({ share: true, clipboard: true }) };
+// A browser with neither the Web Share API nor image copy.
+const NO_SHARE = { ...DESKTOP, label: 'desktop-no-share', init: shareStub({ share: false, clipboard: false }) };
 
 // The APK serves the same index.html with one line added on its own line before the first
 // <script> tag, which loads android/web-overlay/android-bridge.js (WebAssets.inject in
@@ -295,6 +302,7 @@ async function openPage(view) {
   await send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: page.dl, eventsEnabled: true, browserContextId });
   // Policy violations as the page sees them. DevTools-injected scripts are not subject to
   // the page policy, so this listener itself causes none.
+  if (view.init) await s('Page.addScriptToEvaluateOnNewDocument', { source: view.init });
   await s('Page.addScriptToEvaluateOnNewDocument', {
     source: "window.__e2eCsp=[];document.addEventListener('securitypolicyviolation',e=>window.__e2eCsp.push({d:e.violatedDirective,u:e.blockedURI,s:e.sourceFile,l:e.lineNumber,o:e.originalPolicy.slice(0,60)}),true);",
   });
@@ -457,7 +465,7 @@ async function openPage(view) {
     await send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
   };
 
-  Object.assign(page, { s, ev, waitFor, click, typeInto, setSelect, setFiles, load, press, settle, download, shot, shotAtButton, layout, close, networkIdle, point });
+  Object.assign(page, { browserContextId, s, ev, waitFor, click, typeInto, setSelect, setFiles, load, press, settle, download, shot, shotAtButton, layout, close, networkIdle, point });
 
   if (view.android) {
     await s('Fetch.enable', { patterns: [{ urlPattern: PAGE_URL, requestStage: 'Response' }, { urlPattern: `${ORIGIN}/${BRIDGE_FILE}`, requestStage: 'Request' }] });
@@ -1610,6 +1618,62 @@ flow('ultrahdr', DESKTOP, async (p) => {
 });
 
 // An HDR photo in a batch with another photo: the gain map stays for the HDR photo only.
+// The colour note above the button (Marcos, 2026-10-05): shown only while the choices
+// remove a colour profile or the HDR gain map, with the exact text, and gone when those
+// boxes are unticked. Never shown with the default red-only choice.
+const COLOUR_NOTE = 'Colours may look a little duller and bright areas less vivid on HDR screens.';
+const colourNote = (p) => p.ev(`(() => {
+  const n = document.getElementById('colour-note');
+  const r = n.getBoundingClientRect();
+  const b = document.getElementById('go-btn').getBoundingClientRect();
+  return { hidden: n.hidden, shown: r.height > 0 && getComputedStyle(n).display !== 'none', text: n.textContent, live: n.parentElement.getAttribute('aria-live'), above: r.height > 0 ? r.bottom <= b.top : null, resave: document.getElementById('mode-line').textContent };
+})()`);
+// Opens the amber section (closed to start with) so its tick boxes can be pressed.
+const openAmber = async (p) => {
+  if (await p.ev("document.getElementById('m-tier-amber-toggle').getAttribute('aria-expanded') !== 'true'")) await p.click('#m-tier-amber-toggle');
+};
+flow('colour-note', DESKTOP, async (p) => {
+  await p.load(['jpeg-everything.jpg']);
+  let n = await colourNote(p);
+  check('colour note: hidden with the default red-only choice, inside a polite live region', n.hidden && !n.shown && n.text === '' && n.live === 'polite', n);
+  await setTiers(p, { red: true, green: true });
+  n = await colourNote(p);
+  check('colour note: Green ticked on a photo with a colour profile shows the exact text above the button', !n.hidden && n.shown && n.text === COLOUR_NOTE && n.above === true, n);
+  await setTiers(p, { red: true });
+  n = await colourNote(p);
+  check('colour note: hidden again when Green is unticked', n.hidden && !n.shown, n);
+  // With a re-save (a resize), the note sits beside the re-save line, not instead of it.
+  await setTiers(p, { red: true, green: true });
+  await p.typeInto('#resize-percent', '50');
+  n = await colourNote(p);
+  check('colour note: shown beside the re-save line, not instead of it', !n.hidden && n.text === COLOUR_NOTE && /re-save/i.test(n.resave), n);
+  await p.click('input[name="resize"][value="none"]');
+  await setTiers(p, { red: true });
+
+  // An HDR photo: the gain map alone, then the Apple HDR brightness alone.
+  await p.load(['jpeg-ultrahdr-like.jpg']);
+  await openAmber(p);
+  n = await colourNote(p);
+  check('colour note: hidden on an HDR photo with the default choice', n.hidden, n);
+  await p.click('#meta-groups .ms-check[data-id="jpeg:trailing:gain-map"]');
+  n = await colourNote(p);
+  check('colour note: shown when the HDR gain map is ticked', !n.hidden && n.shown && n.text === COLOUR_NOTE, n);
+  await p.click('#meta-groups .ms-check[data-id="jpeg:trailing:gain-map"]');
+  n = await colourNote(p);
+  check('colour note: hidden again when the HDR gain map is unticked', n.hidden && !n.shown, n);
+  await p.load(['jpeg-uhdr-apple-16e.jpg']);
+  await openAmber(p);
+  n = await colourNote(p);
+  check('colour note: hidden on an iPhone HDR photo with the default choice', n.hidden, n);
+  await p.click('#meta-groups .ms-check[data-id="exif:apple-hdr"]');
+  n = await colourNote(p);
+  check('colour note: shown when Apple HDR brightness is ticked', !n.hidden && n.text === COLOUR_NOTE, n);
+  await p.click('#meta-groups .ms-check[data-id="exif:apple-hdr"]');
+  n = await colourNote(p);
+  check('colour note: hidden again when Apple HDR brightness is unticked', n.hidden, n);
+  await textCheck(p, 'colour note');
+});
+
 flow('hdr-batch', DESKTOP, async (p) => {
   await p.load(['jpeg-ultrahdr-like.jpg', 'jpeg-everything.jpg']);
   const rows = await rowsOf(p);
@@ -2006,6 +2070,106 @@ flow('phone', PHONE, async (p) => {
   check('"Start again" clears the page and puts focus on the picker', reset.ws && reset.res && reset.focus === 'choose-btn', reset);
 });
 
+// Share and Copy under Save, tapped by finger on a phone with a share sheet.
+flow('share', SHARE_PHONE, async (p) => {
+  await p.load(['jpeg-everything.jpg']);
+  await p.press();
+  let st = await p.ev(SHARE_STATE);
+  check(`share: "${SHARE_TEXT.button}" and Copy image under Save, in a data-web-only block`, st.webOnly && st.shareShown && st.shareText === SHARE_TEXT.button && st.copyShown && st.copyText === 'Copy image', st);
+  check('share: Share is a primary button, the same colour as Save', st.primary, { shareBg: st.shareBg, saveBg: st.saveBg });
+  check(`share: the warning "${SHARE_TEXT.note}" is shown, amber, and Share points to it`, st.note && st.noteShown && st.noteText === SHARE_TEXT.note && st.noteAmber && st.noteOwnsDescription, st);
+  check('share: the order is Save, Copy, Share, the warning, then the status line', st.order.join() === 'save,copy,share,note,status', st.order);
+  check('share: no confirm step (no Continue, no Cancel) and nothing shared before a tap', !st.confirm && st.expanded === null && st.shares === 0 && st.copies === 0, st);
+  const sizes = await p.ev("[...document.querySelectorAll('#results-list .ms-share button')].filter((b) => b.getClientRects().length).map((b) => Math.round(b.getBoundingClientRect().height))");
+  check('share: Share and Copy are at least 44 px tall', sizes.length === 2 && sizes.every((h) => h >= 44), sizes);
+  await textCheck(p, 'result with Share and Copy');
+  await p.layout('result with Share and Copy');
+  await p.shot('5-share-buttons', { selector: '#results .ms-result-main' });
+
+  // A tap shares straight away: the share sheet gets exactly the file Save downloads.
+  await p.click('#results-list .ms-share-btn');
+  await p.waitFor('window.__share.calls.length === 1 && window.__share.calls[0].b64 !== null', 10000, 'the share call');
+  const call = await p.ev('window.__share.calls[0]');
+  check('share: a tap shares one file, image.public.jpg, image/jpeg, titled with its name', call.n === 1 && call.name === 'image.public.jpg' && call.type === 'image/jpeg' && call.title === 'image.public.jpg', { ...call, b64: undefined });
+  const files = await p.download();
+  const saved = files.find((f) => f.name === 'image.public.jpg');
+  const shared = new Uint8Array(Buffer.from(call.b64, 'base64'));
+  check('share: the shared bytes are exactly the bytes Save downloads', !!saved && Buffer.compare(Buffer.from(saved.bytes), Buffer.from(shared)) === 0, { saved: saved && saved.bytes.length, shared: shared.length });
+  if (saved) await verifyDownload(p, { ...saved, name: 'image.public.jpg' }, { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: true, word: 'public' });
+  st = await p.ev(SHARE_STATE);
+  check('share: after sharing nothing is said, and the warning is still there', st.status === '' && st.noteShown && st.noteText === SHARE_TEXT.note, st);
+
+  // Every tap shares at once; a closed share sheet says nothing; a failure says so.
+  await p.click('#results-list .ms-share-btn');
+  await p.waitFor('window.__share.calls.length === 2', 10000, 'the second share call');
+  st = await p.ev(SHARE_STATE);
+  check('share: the second tap shares at once too', !st.confirm && st.shares === 2, st);
+  await p.ev("window.__share.mode = 'abort'");
+  await p.click('#results-list .ms-share-btn');
+  await p.waitFor('window.__share.calls.length === 3', 10000, 'the third share call');
+  await sleep(200);
+  check('share: a closed share sheet (AbortError) says nothing', (await p.ev(SHARE_STATE)).status === '');
+  await p.ev("window.__share.mode = 'fail'");
+  await p.click('#results-list .ms-share-btn');
+  await p.waitFor("document.querySelector('#results-list .ms-share-status').textContent !== ''", 10000, 'the failure message');
+  check(`share: another failure says "${SHARE_TEXT.failed}"`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.failed);
+  await p.ev("window.__share.mode = 'ok'");
+  await textCheck(p, 'share failure');
+  await p.layout('share failure');
+
+  // Copy: a fresh PNG with the picture only.
+  await p.click('#results-list .ms-copy-btn');
+  await p.waitFor('window.__clip.calls.length === 1 && window.__clip.calls[0].b64 !== null', 20000, 'the copy');
+  await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${J(SHARE_TEXT.copied)}`, 5000, 'the copy message');
+  const clip = await p.ev('window.__clip.calls[0]');
+  const png = await inspect(new Uint8Array(Buffer.from(clip.b64, 'base64')));
+  const src = saved ? await inspect(saved.bytes) : null;
+  check('share: Copy puts a PNG with no metadata at all on the clipboard, at the picture\'s size', clip.type === 'image/png' && png.format === 'png' && png.items.length === 0 && !!src && png.width === src.width && png.height === src.height, { type: clip.type, format: png.format, items: png.items.map((i) => i.id), size: [png.width, png.height] });
+  await textCheck(p, 'after copy');
+  await p.layout('after copy');
+  await p.shot('5-copied', { selector: '#results .ms-result-main' });
+});
+
+// Real Chromium, no stand-ins: Share follows navigator.canShare, Copy follows ClipboardItem,
+// and with clipboard permission granted, Copy really puts a clean PNG on the clipboard.
+flow('share-native', DESKTOP, async (p) => {
+  await p.load(['jpeg-everything.jpg']);
+  await p.press();
+  const can = await p.ev("({ share: typeof navigator.canShare === 'function' && navigator.canShare({ files: [new File([new Uint8Array([255, 216, 255])], 'x.jpg', { type: 'image/jpeg' })] }), copy: !!navigator.clipboard && typeof ClipboardItem === 'function' })");
+  const st = await p.ev(SHARE_STATE);
+  check(`share-native: Share is shown exactly when navigator.canShare accepts the file (here ${can.share ? 'yes' : 'no'})`, st.shareShown === can.share && st.share === can.share, { can, st });
+  check(`share-native: the warning is shown exactly when Share is (here ${can.share ? 'yes' : 'no'})`, st.noteShown === can.share && st.note === can.share && (!can.share || st.noteText === SHARE_TEXT.note), { can, st });
+  check(`share-native: Copy is shown exactly when ClipboardItem exists (here ${can.copy ? 'yes' : 'no'})`, st.copyShown === can.copy, { can, st });
+  if (!can.copy) return;
+  const granted = await send('Browser.grantPermissions', { origin: ORIGIN, browserContextId: p.browserContextId, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] }).then(() => true, () => false);
+  if (!granted) { note('share-native: clipboard permission could not be granted; real copy not checked'); return; }
+  await p.ev('window.focus()');
+  await p.click('#results-list .ms-copy-btn');
+  await p.waitFor("document.querySelector('#results-list .ms-share-status').textContent !== ''", 20000, 'the copy message');
+  const status = (await p.ev(SHARE_STATE)).status;
+  if (status !== SHARE_TEXT.copied) { note('share-native: headless Chromium refused the real clipboard write', status); return; }
+  const back = await p.ev(`(async () => {
+    const items = await navigator.clipboard.read();
+    const blob = await items[0].getType('image/png');
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  })()`).catch((err) => ({ err: String(err.message || err) }));
+  if (back && back.err) { note('share-native: the clipboard could not be read back', back.err); return; }
+  const out = await inspect(new Uint8Array(Buffer.from(back, 'base64')));
+  check('share-native: the real clipboard holds a PNG with no metadata', out.format === 'png' && out.items.length === 0, { format: out.format, items: out.items.map((i) => i.id) });
+});
+
+// Neither API: no Share, no Copy, and Save as before.
+flow('share-absent', NO_SHARE, async (p) => {
+  await p.load(['jpeg-everything.jpg']);
+  await p.press();
+  const st = await p.ev(SHARE_STATE);
+  check('share-absent: without canShare and ClipboardItem there is no Share, no Copy, no warning and no empty block', !st.block && !st.share && !st.copy && !st.note, st);
+  check('share-absent: Save image.public.jpg is still there', await p.ev("document.querySelector('#results-list .ms-download')?.textContent") === 'Save image.public.jpg');
+});
+
 // The page as the Android app loads it: index.html with the bridge line, android-bridge.js
 // served beside it. A plain browser has no window.MSBridge, so the bridge's message channel
 // stays off and Save downloads as on the website; hiding the website-only parts must still
@@ -2026,11 +2190,21 @@ flow(ANDROID_FLOW, ANDROID, async (p) => {
   await p.load(['jpeg-everything.jpg']);
   const n = await p.ev("document.querySelectorAll('#meta-groups .ms-check').length");
   check('android: the picture loads and its details are listed', n > 0, n);
+  let cn = await colourNote(p);
+  check('android: the colour note is hidden with the default choice', cn.hidden, cn);
+  await setTiers(p, { red: true, green: true });
+  cn = await colourNote(p);
+  check('android: the colour note shows in the app too when Green is ticked', !cn.hidden && cn.shown && cn.text === COLOUR_NOTE, cn);
+  await setTiers(p, { red: true });
+  cn = await colourNote(p);
+  check('android: and hides again when Green is unticked', cn.hidden, cn);
   await p.press();
   const files = await p.download();
   check('android: Save gives image.public.jpg', files.length === 1 && files[0].name === 'image.public.jpg', files.map((f) => f.name));
   if (files[0]) await verifyDownload(p, files[0], { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: true, word: 'public' });
   await p.layout('result');
+  const share = await p.ev(SHARE_STATE);
+  check('android: Share, Copy and the warning are made but the bridge hides them, though the browser could share and copy', share.block && share.webOnly && !share.blockShown && !share.shareShown && !share.copyShown && share.note && !share.noteShown, share);
   check('android: the section stays hidden after a result', await p.ev("document.getElementById('android-app').hidden && document.getElementById('android-app').getBoundingClientRect().height === 0"));
 });
 

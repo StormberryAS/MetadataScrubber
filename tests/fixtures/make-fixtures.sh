@@ -396,6 +396,10 @@ uhdr jpeg-uhdr-zero-pad.jpg zero-pad
 F=jpeg-uhdr-apple.jpg
 uhdr "$F" apple "$(canary UHDRV-APPLE-MAKERNOTE "$F" 'Photo EXIF, Apple MakerNote text tag 0x000B next to the HDR numbers (tags 33 and 48)' hidden red spec)" \
   "$(canary UHDRV-APPLE-APDI "$F" 'Gain map XMP, text in apdi:StoredFormat (an apdi field a gain map does not need)' hidden red spec)"
+# The same with the HDR numbers a real iPhone 16e wrote (tag 48 above 1, headroom 3.5).
+F=jpeg-uhdr-apple-16e.jpg
+uhdr "$F" apple-16e "$(canary UHDRV-APPLE16E-MAKERNOTE "$F" 'Photo EXIF, Apple MakerNote text tag 0x000B next to iPhone 16e HDR numbers (tag 48 above 1)' hidden red spec)" \
+  "$(canary UHDRV-APPLE16E-APDI "$F" 'Gain map XMP, text in apdi:StoredFormat (an apdi field a gain map does not need)' hidden red spec)"
 F=jpeg-uhdr-apple-wrong.jpg
 uhdr "$F" apple-wrong "$(canary UHDRV-APPLE-AUXTYPE "$F" 'Gain map XMP, text after the fixed value of apdi:AuxiliaryImageType' hidden red spec)"
 F=jpeg-uhdr-not-gainmap.jpg

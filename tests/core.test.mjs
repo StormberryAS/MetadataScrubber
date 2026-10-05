@@ -1889,6 +1889,75 @@ describe('Green keeps only what the specifications define', () => {
     assert.ok(!ids(i2).includes('exif:apple-hdr'), 'a zero denominator is not a number');
   });
 
+  // 0.0.3 dropped these two numbers from a real iPhone 16e photo (iOS 26.6.1): its tag 48
+  // was above the old limit of 1. The numbers below are that photo's, in a synthetic file;
+  // with Skia's formula they give a headroom of 3.5, the gain map's own HDRGainMapHeadroom.
+  const IPHONE_16E = { maker33: [1058986, 1048501], maker48: [34373, 21025] };
+
+  test('iPhone 16e HDR JPEG: tag 48 above 1 stays with the default (red only) selection', async () => {
+    const name = F.appleHdrJpeg('apple-16e.jpg', { note: IPHONE_16E });
+    const b = F.read(name);
+    const info = await core.inspect(b);
+    assert.equal(tierOf(info, 'jpeg:trailing:gain-map'), 'amber', ids(info).join(' '));
+    const hdr = info.items.find((i) => i.id === 'exif:apple-hdr');
+    assert.ok(hdr, ids(info).join(' '));
+    assert.deepEqual([hdr.tier, hdr.value], ['amber', 'Headroom 3.50 (maker note values 1.01 and 1.6349)']);
+    assert.ok(!reds(info).includes('exif:apple-hdr') && reds(info).includes('exif:makernote'));
+    const res = await scrubTo('apple-16e.out-red.jpg', b, reds(info));
+    assert.deepEqual(res.warnings, []);
+    const out = F.read('apple-16e.out-red.jpg');
+    assert.ok(!contains(out, PLANT.appleNote), 'the rest of the MakerNote is gone');
+    // The minimal MakerNote holds the two numbers only, as Skia and exiftool read them.
+    assert.deepEqual(appleNumbers(out), { count: 2, 33: 1.01, 48: 1.6349 });
+    const apple = F.exifRead(F.path('apple-16e.out-red.jpg')).filter((r) => r.group === 'Apple').map((r) => `${r.tag}=${r.value}`).sort();
+    assert.deepEqual(apple, ['HDRGain=1.6349', 'HDRHeadroom=1.01']);
+    // The gain map stays: same pixels, and its XMP keeps the version and the apdi label.
+    const gIn = mpfImages(b)[1];
+    const gOut = mpfImages(out)[1];
+    F.write('apple-16e.out-gm-in.jpg', b.subarray(gIn.offset, gIn.offset + gIn.size));
+    F.write('apple-16e.out-gm.jpg', out.subarray(gOut.offset, gOut.offset + gOut.size));
+    const [h1, h2] = F.decodeHashes([F.path('apple-16e.out-gm-in.jpg'), F.path('apple-16e.out-gm.jpg')]);
+    assert.ok(h1 && h1 === h2, 'the gain map pixels are unchanged');
+    const x = F.exifRead(F.path('apple-16e.out-gm.jpg')).filter((r) => /^XMP-/.test(r.group)).map((r) => `${r.tag}=${r.value}`).sort();
+    assert.deepEqual(x, ['AuxiliaryImageType=urn:com:apple:photo:2020:aux:hdrgainmap', 'HDRGainMapVersion=65536']);
+    const back = await core.inspect(out);
+    // Nothing red is left; the HDR pair stays amber (with the amber camera make, unticked).
+    assert.deepEqual(reds(back), []);
+    assert.deepEqual(['exif:apple-hdr', 'jpeg:trailing:gain-map'].map((id) => tierOf(back, id)), ['amber', 'amber']);
+    assert.equal(back.items.find((i) => i.id === 'exif:apple-hdr').value, hdr.value);
+    samePixels(name, 'apple-16e.out-red.jpg');
+  });
+
+  test('Apple HDR numbers outside the range a reader can use are not kept', async () => {
+    // Tag 48 above 16, below 0, or past the point where its stops reach zero (about 7.6 when
+    // tag 33 is 1 or more) gives no headroom a screen can use: the numbers are not offered,
+    // and the default selection removes the whole MakerNote.
+    const cases = [
+      ['apple-48-over.jpg', { maker33: [9000, 10000], maker48: [165000, 10000] }],
+      ['apple-48-negative.jpg', { maker33: [9000, 10000], maker48: [-100, 10000] }],
+      ['apple-48-no-stops.jpg', { maker33: [10100, 10000], maker48: [80000, 10000] }],
+      ['apple-33-over.jpg', { maker33: [90000, 10000], maker48: [64, 10000] }],
+    ];
+    for (const [file, note] of cases) {
+      const name = F.appleHdrJpeg(file, { note });
+      const b = F.read(name);
+      const info = await core.inspect(b);
+      assert.ok(!ids(info).includes('exif:apple-hdr'), `${file}: ${ids(info).join(' ')}`);
+      const out = file.replace(/\.jpg$/, '.out-red.jpg');
+      await scrubTo(out, b, reds(info));
+      const o = F.read(out);
+      assert.equal(appleNumbers(o), null, `${file}: no MakerNote is written`);
+      assert.ok(!contains(o, PLANT.appleNote), `${file}: the MakerNote text is gone`);
+      assert.ok(!F.exifRead(F.path(out)).some((r) => r.group === 'Apple'), `${file}: exiftool finds no Apple tags`);
+    }
+    // The same tag 48 under the other branch (tag 33 below 1) still gives stops above zero.
+    const ok = F.appleHdrJpeg('apple-48-high-ok.jpg', { note: { maker33: [9000, 10000], maker48: [80000, 10000] } });
+    const i2 = await core.inspect(F.read(ok));
+    assert.equal(tierOf(i2, 'exif:apple-hdr'), 'amber', ids(i2).join(' '));
+    await scrubTo('apple-48-high-ok.out-red.jpg', F.read(ok), reds(i2));
+    assert.deepEqual(appleNumbers(F.read('apple-48-high-ok.out-red.jpg')), { count: 2, 33: 0.9, 48: 8 });
+  });
+
   test('item text has no em dashes or double hyphens (green free text and Apple)', async () => {
     for (const name of ['icc-text.jpg', 'icc-text.png', 'icc-text.webp', 'icc-text.heic', 'icc-bad.jpg', 'green-xmp.jpg', 'green-exif.jpg', 'green-png.png', 'apple-hdr.jpg', 'apple-wrong.jpg']) {
       const info = await core.inspect(F.read(name));

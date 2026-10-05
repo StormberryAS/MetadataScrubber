@@ -14,7 +14,7 @@
 
 import { clip, encodeUtf8, utf8 } from './bytes.js?v=4d7df4d3';
 import { iccNameAllowed } from './icc.js?v=15403b52';
-import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=f010e347';
+import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=1288a27c';
 
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const META = 'adobe:ns:meta/';

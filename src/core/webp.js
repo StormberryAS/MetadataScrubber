@@ -8,8 +8,8 @@ import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le
 import { describeC2pa } from './c2pa.js?v=fcdff418';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=15403b52';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=93d7f069';
-import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=f010e347';
-import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=79671502';
+import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=1288a27c';
+import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=d8284a86';
 
 const STRUCTURAL = new Set(['VP8 ', 'VP8L', 'VP8X', 'ALPH', 'ANIM', 'ANMF']);
 const FLAG_ICC = 0x20;

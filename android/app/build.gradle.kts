@@ -32,6 +32,57 @@ val releaseKeyPassword = signingValue("keyPassword", "RELEASE_KEY_PASSWORD")
 val canSignRelease = releaseStoreFile != null && file(releaseStoreFile).exists() &&
     releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null
 
+// Google Play is a SEPARATE package, deliberately (Marcos, 2026-10-05: "different signing key
+// and version so there's no mix between Google and zapstore"). `no.stormberry.metadatascrubber`
+// stays the sovereign build: our key, our certificate, shipped through GitHub Releases and
+// Zapstore, with the NIP-C1 certificate link vouching for it. `-PplayBuild=true` builds
+// `no.stormberry.metadatascrubber.play` instead, which Google re-signs with an app signing key
+// it holds. Two package names are two apps to Android: they install side by side and neither
+// can ever update the other, so nothing that happens on Play can reach a Zapstore install.
+// Same pattern as UsernameGenerator's Play build (2026-09-03).
+val playBuild = when (providers.gradleProperty("playBuild").orNull?.lowercase()) {
+    null -> false
+    // A bare `-PplayBuild` arrives as an empty string. Treating that as false would hand back
+    // a sovereign artefact from a command that plainly meant Play.
+    "", "true", "1", "yes" -> true
+    "false", "0", "no" -> false
+    else -> error(
+        "-PplayBuild=${providers.gradleProperty("playBuild").get()} is not a recognised " +
+            "value. Use -PplayBuild=true, or omit the property for the sovereign build.",
+    )
+}
+
+// The Play upload key is a separate key with a separate job: it proves who uploaded the
+// bundle and never reaches a device, so it must never be the release key. If it is ever
+// compromised it can be reset from the Play Console without touching a single install.
+// Like the release key, keystore.properties names the file, type and alias and holds no
+// password: PLAY_UPLOAD_STORE_PASSWORD and PLAY_UPLOAD_KEY_PASSWORD come from the keyring.
+val uploadStoreFile = signingValue("playUploadStoreFile", "PLAY_UPLOAD_STORE_FILE")
+val uploadStoreType = signingValue("playUploadStoreType", "PLAY_UPLOAD_STORE_TYPE")
+val uploadStorePassword = signingValue("playUploadStorePassword", "PLAY_UPLOAD_STORE_PASSWORD")
+val uploadKeyAlias = signingValue("playUploadKeyAlias", "PLAY_UPLOAD_KEY_ALIAS")
+val uploadKeyPassword = signingValue("playUploadKeyPassword", "PLAY_UPLOAD_KEY_PASSWORD")
+val canSignPlayUpload = uploadStoreFile != null && file(uploadStoreFile).exists() &&
+    uploadStorePassword != null && uploadKeyAlias != null && uploadKeyPassword != null
+
+// The two keys must be two different files. A Play upload config pointing at the release
+// keystore (or a byte-for-byte copy of it) would enrol the sovereign certificate in Play App
+// Signing, and a release config pointing at the upload key would ship Zapstore APKs that no
+// existing install accepts. Both mistakes are refused before anything is built.
+if (releaseStoreFile != null && uploadStoreFile != null) {
+    val rel = file(releaseStoreFile)
+    val upl = file(uploadStoreFile)
+    if (rel.exists() && upl.exists() &&
+        (rel.canonicalFile == upl.canonicalFile || rel.readBytes().contentEquals(upl.readBytes()))
+    ) {
+        error(
+            "The Play upload keystore and the release keystore are the same key " +
+                "($uploadStoreFile). The release key signs the Zapstore APK only and must never " +
+                "reach Play; the upload key signs the Play bundle only.",
+        )
+    }
+}
+
 // The passwords are read while Gradle configures the build, and gradle.properties turns the
 // configuration cache on. A cached configuration stores those values (encrypted) under
 // android/.gradle/configuration-cache, which breaks the rule that the password is never
@@ -41,20 +92,56 @@ abstract class BuildFeaturesHolder @Inject constructor(val features: org.gradle.
 
 val configurationCacheRequested =
     objects.newInstance<BuildFeaturesHolder>().features.configurationCache.requested.getOrElse(false)
-if (configurationCacheRequested && (releaseStorePassword != null || releaseKeyPassword != null)) {
+if (configurationCacheRequested && (releaseStorePassword != null || releaseKeyPassword != null ||
+        uploadStorePassword != null || uploadKeyPassword != null)
+) {
     error(
-        "Release signing passwords are set, so this build must run with " +
+        "Signing passwords are set, so this build must run with " +
             "--no-configuration-cache; otherwise Gradle would store them in its configuration cache.",
     )
 }
 
-// A release task that would silently produce an UNSIGNED apk is refused outright. An
-// unsigned app-release-unsigned.apk next to a signed one from an earlier run is exactly the
-// kind of mix-up that ends with the wrong file uploaded.
-tasks.matching { it.name == "packageRelease" }.configureEach {
+// Guards on the RESOLVED TASK GRAPH, not on the command line, because the command line lies:
+// `build`, `assemble` and Gradle's `bR` abbreviation reach a release artefact without
+// containing "bundleRelease" or "assembleRelease". packageRelease (APK) and signReleaseBundle
+// (AAB) are the two tasks that consume a signing config, so the checks belong on them.
+//
+// The dangerous mistake is the one with no flag: `bundleRelease` on its own would write an
+// AAB carrying the SOVEREIGN application ID signed with the release key. Uploading it would
+// permanently claim no.stormberry.metadatascrubber on Play and enrol the release certificate
+// in Play App Signing, which cannot be undone. A release task that would silently produce an
+// UNSIGNED apk is refused too: an app-release-unsigned.apk next to a signed one from an
+// earlier run is exactly the kind of mix-up that ends with the wrong file uploaded.
+tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }.configureEach {
+    val isBundle = name == "signReleaseBundle"
+    val play = playBuild
     val signed = canSignRelease
+    val haveUploadKey = canSignPlayUpload
     doFirst {
-        if (!signed) {
+        if (isBundle && !play) {
+            error(
+                "Refusing to build a release bundle without -PplayBuild=true. This AAB would " +
+                    "carry the sovereign application ID signed with the release key, and " +
+                    "uploading it would permanently claim that package on Play. The sovereign " +
+                    "channel ships APKs; Play takes the bundle, with -PplayBuild=true.",
+            )
+        }
+        if (!isBundle && play) {
+            error(
+                "Refusing to build a release APK with -PplayBuild=true. Play takes the app " +
+                    "bundle: run :app:bundleRelease -PplayBuild=true. An installable .play APK " +
+                    "has no destination and must never be mistaken for the Zapstore one.",
+            )
+        }
+        if (isBundle && play && !haveUploadKey) {
+            error(
+                "playBuild=true but the Play upload keystore is not fully configured. " +
+                    "playUploadStoreFile, playUploadKeyAlias (android/keystore.properties) and " +
+                    "PLAY_UPLOAD_STORE_PASSWORD and PLAY_UPLOAD_KEY_PASSWORD (from the keyring) " +
+                    "must all be set, and the store file must exist.",
+            )
+        }
+        if (!isBundle && !play && !signed) {
             error(
                 "Release signing is not configured. Set RELEASE_STORE_PASSWORD and " +
                     "RELEASE_KEY_PASSWORD (see android/keystore.properties) or the CI " +
@@ -64,6 +151,16 @@ tasks.matching { it.name == "packageRelease" }.configureEach {
     }
 }
 
+// ONE VISIBLE VERSION, TWO CODE LINES. The sovereign versionCode and versionName in
+// defaultConfig below are the only numbers ever bumped by hand. The Play build derives its
+// code from them and shows the same version name (Marcos, 2026-10-05: "1.0.0 for both"):
+//   Play versionCode = 1000 + sovereign versionCode   (1.0.0 code 4 -> code 1004)
+//   Play versionName = sovereign versionName          (1.0.0 -> 1.0.0)
+// Play only needs monotonic codes within its own package, and the offset keeps them distinct
+// from the sovereign line and rising with it. The package name and the signing key are what
+// keep the two apart, not the version. Build every Play upload from a sovereign release tag.
+val playVersionCodeOffset = 1000
+
 android {
     namespace = "no.stormberry.metadatascrubber"
     // compileSdk 37.1 because androidx core-ktx 1.19.0 requires compiling against API 37 or
@@ -72,14 +169,23 @@ android {
     compileSdkMinor = 1
 
     defaultConfig {
-        applicationId = "no.stormberry.metadatascrubber"
+        // The sovereign build keeps the original ID; the Play build gets its own. Once the Play
+        // listing is published this string is permanent. `namespace` above is unrelated (the R
+        // class package), so nothing in the Kotlin source changes with the flag.
+        applicationId =
+            if (playBuild) "no.stormberry.metadatascrubber.play" else "no.stormberry.metadatascrubber"
         minSdk = 24
         targetSdk = 36
         // 0.0.1 (code 1): the first release, published to Zapstore as an early version (Marcos, 2026-10-03).
         // 0.0.2 (code 2): details in collapsed Red, Amber and Green sections, red and amber ticked to start, the result button reads "Save <name>" (2026-10-03).
         // 0.0.3 (code 3): only red is ticked to start with, and captions, titles, descriptions, keywords and comments are red; amber is kept unless ticked. HDR JPEGs and iPhone HEICs keep their gain map and HDR brightness, holding only what they need to render. XMP is always written in a standard form. Green details keep only what the specifications define (2026-10-04).
-        versionCode = 3
-        versionName = "0.0.3"
+        // 1.0.0 (code 4): Share the new image with a warning that a picture online cannot be taken back (website: Share and Copy image; app: a warning before the first Share), a privacy page, a note when colours may look duller on HDR screens, and iPhone HDR brightness kept again when Apple's HDR gain is above 1 (2026-10-05). The Play build is 1.0.0 too, code 1004.
+        versionCode = 4
+        versionName = "1.0.0"
+        // Play line, derived from the code above (see playVersionCodeOffset); same versionName.
+        if (playBuild) {
+            versionCode = playVersionCodeOffset + versionCode!!
+        }
 
         // Density PNGs generated from vectors are a source of build nondeterminism, and the
         // app ships vector icons only.
@@ -103,6 +209,23 @@ android {
                 enableV4Signing = false
             }
         }
+        if (canSignPlayUpload) {
+            create("playUpload") {
+                storeFile = file(uploadStoreFile!!)
+                if (uploadStoreType != null) storeType = uploadStoreType
+                storePassword = uploadStorePassword
+                keyAlias = uploadKeyAlias
+                keyPassword = uploadKeyPassword
+                // v1 stays ON here, unlike the release config above. An app bundle is signed
+                // like a JAR, and this signature exists only so Play can verify who uploaded
+                // it: Play strips it and re-signs the APKs it generates with the app signing key
+                // it holds. Nothing a device installs ever carries this signature.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = false
+            }
+        }
     }
 
     buildTypes {
@@ -115,7 +238,13 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (canSignRelease) signingConfig = signingConfigs.getByName("release")
+            // The Play build never touches the release key and the sovereign build never touches
+            // the upload key. Both stay conditional so a clean checkout can still assembleDebug.
+            if (playBuild) {
+                if (canSignPlayUpload) signingConfig = signingConfigs.getByName("playUpload")
+            } else if (canSignRelease) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             // No META-INF/version-control-info.textproto. The gradle.properties switch alone
             // did not stop AGP writing it, and once AGP finds the repository it would carry
             // the commit hash, which differs per checkout.
@@ -179,6 +308,14 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = false
     }
+}
+
+// Under -PplayBuild=true the artefact is named for what it is
+// (metadatascrubber-play-release.aab), so a Play bundle can never share a filename with a
+// sovereign artefact. Deliberately NOT set for the sovereign build, whose app-release.apk
+// path the release workflow expects.
+if (playBuild) {
+    base { archivesName = "metadatascrubber-play" }
 }
 
 kotlin {

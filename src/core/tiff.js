@@ -922,9 +922,16 @@ export function removeTiffKeys(m, keys) {
 
 const APPLE_SIG = [0x41, 0x70, 0x70, 0x6c, 0x65, 0x20, 0x69, 0x4f, 0x53, 0, 0, 1, 0x4d, 0x4d];
 const APPLE_DEN = 1000000;
-// The ranges real iPhones write (tag 33 about 0.5 to 1.1, tag 48 about 0 to 0.02), with a
-// wide margin. A value outside them is not a headroom a screen can use, so it is not kept.
-const APPLE_RANGE = { 33: [0, 8], 48: [0, 1] };
+// The ranges a reader can use. Tag 33 only picks a branch of the formula below (under 1 or
+// not; iPhones write about 0.5 to 1.1), kept with a wide margin. Tag 48 lowers the stops as
+// it grows, and real photos go well past 1 (an iPhone 16e on iOS 26 wrote 1.6349, matching
+// its gain map's own headroom of 3.5). The stops reach zero at 1.601 / 0.101, about 15.9,
+// under the first branch and at 2.303 / 0.303, about 7.6, under the second; past that the
+// headroom is 1 whatever the value, so a larger number means nothing and could only carry
+// hidden bits. Tag 48 is therefore kept up to 16, and only while its stops stay at or above
+// zero (checked in appleHdrOf). A value outside is not a headroom a screen can use, so it
+// is not kept.
+const APPLE_RANGE = { 33: [0, 8], 48: [0, 16] };
 // The digits kept of each number: 0.001 and 0.0001. Chrome reads only the headroom they
 // give, so more digits would be free to carry anything. Rounding never moves a value across
 // the thresholds of Chrome's formula (1 for tag 33, 0.01 for tag 48).
@@ -969,6 +976,7 @@ function appleHdrOf(m, e) {
   const m33 = vals[33];
   const m48 = vals[48] ?? 0;
   const stops = m33 < 1 ? (m48 <= 0.01 ? -20 * m48 + 1.8 : -0.101 * m48 + 1.601) : (m48 <= 0.01 ? -70 * m48 + 3 : -0.303 * m48 + 2.303);
+  if (stops < 0) return null;
   return { maker33: m33, maker48: vals[48] ?? null, headroom: 2 ** Math.max(stops, 0) };
 }
 

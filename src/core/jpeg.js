@@ -18,10 +18,10 @@ import { describeC2pa } from './c2pa.js?v=fcdff418';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=15403b52';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb,
-} from './iptc.js?v=932cdff8';
+} from './iptc.js?v=a3bcfb3f';
 import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=93d7f069';
-import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=f010e347';
-import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=79671502';
+import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=1288a27c';
+import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=d8284a86';
 
 const XMP_ID = 'http://ns.adobe.com/xap/1.0/\0';
 const XMP_EXT_ID = 'http://ns.adobe.com/xmp/extension/\0';

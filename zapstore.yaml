@@ -43,7 +43,9 @@ description: |
     own.
   - HDR photos keep their gain map by default, so Ultra HDR JPEGs and
     iPhone HDR JPEG and HEIC photos stay bright on HDR screens; anything
-    else in it or around it is still listed and removed.
+    else in it or around it is still listed and removed. When your choices
+    remove the colour profile or the gain map, a note says that colours may
+    look a little duller and bright areas less vivid on HDR screens.
   - XMP, IPTC and PNG text that stay are always written again in a
     standard form, so their layout cannot carry hidden information.
   - Tick a whole colour at once, or open it to choose single details.
@@ -53,6 +55,8 @@ description: |
   - Reads the result back, so you see what remains before you share.
   - Neutral file names such as image.public.jpg.
   - Share a photo in from your gallery, then Save or Share the clean copy.
+    Before the first share, the app reminds you that once a picture is
+    online, you cannot take it back.
 
   JPEG, PNG, WebP and HEIC. HEIC metadata can be removed, but cropping and
   resizing HEIC are not available in the app, because Android's web engine
@@ -65,6 +69,9 @@ description: |
   The build checks that every one is byte for byte identical to the website's
   copy, apart from one added line in index.html that loads a small Android
   bridge for saving and sharing.
+
+  Privacy page: https://metadata.stormberry.as/privacy.html (also inside
+  the app).
 
 tags:
   - privacy
@@ -82,7 +89,7 @@ website: https://metadata.stormberry.as
 # android/tools/build-store-icon.py with the same composition as the launcher.
 icon: ./fastlane/metadata/android/en-US/images/icon.png
 
-# Phone screenshots of the release build, captured on an API 36 emulator at
+# Phone screenshots of the app, captured on an API 36 emulator at
 # 1080x1920. zsp uploads these to Blossom and references them from the app event.
 images:
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/01-loaded.png
