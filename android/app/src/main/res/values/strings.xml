@@ -1,19 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MetadataScrubber</string>
-    <string name="result_title">%1$s</string>
-    <string name="result_save">Save to a folder</string>
-    <string name="result_share">Share</string>
-    <string name="result_cancel">Cancel</string>
     <string name="share_chooser">Share the new file</string>
-    <!-- Shown before the first Share after the app starts, as the website does before its first Share. -->
-    <string name="share_warning_title">Share the new image.</string>
-    <string name="share_warning_text">Once it is online, you cannot take it back. Your device will open the app you choose.</string>
-    <string name="share_continue">Continue</string>
     <string name="preparing">Preparing %1$s</string>
     <string name="saved">Saved %1$s</string>
     <string name="save_failed">The file could not be saved.</string>
-    <string name="share_failed">The file could not be prepared for sharing.</string>
     <string name="transfer_failed">The new file could not be handed to Android. Try preparing it again.</string>
     <string name="file_gone">The new file is no longer available. Prepare it again.</string>
     <string name="no_app_for_link">No app on this device can open that link.</string>

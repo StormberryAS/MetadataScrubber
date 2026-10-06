@@ -21,7 +21,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspect, privacyWord } from '../src/scrub-core.js';
-import { SHARE_STATE, SHARE_TEXT, shareStub } from './share-stub.mjs';
+import { SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -155,7 +155,8 @@ function pil(script, ...files) {
 
 // ---- One page --------------------------------------------------------------------------
 // android: load the page the way the APK does (see androidIndex), with a stand-in for the
-// app's message channel, window.MSBridge, that records what the bridge posts.
+// app's message channel, window.MSBridge, that records what the bridge posts. android:
+// 'app' uses the stand-in of share-stub.mjs instead, which answers as the app does.
 // init: extra script run before the page's own, such as the share stand-ins (share-stub.mjs).
 async function openPage(width, height, { android = false, init = null } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext');
@@ -180,7 +181,9 @@ async function openPage(width, height, { android = false, init = null } = {}) {
   await send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: downloads, eventsEnabled: true, browserContextId });
   await s('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 });
   await s('Page.addScriptToEvaluateOnNewDocument', { source: "window.__csp=[];document.addEventListener('securitypolicyviolation',e=>window.__csp.push(e.violatedDirective+' '+e.blockedURI),true);" });
-  if (android) {
+  if (android === 'app') {
+    await s('Page.addScriptToEvaluateOnNewDocument', { source: appBridgeStub() });
+  } else if (android) {
     await s('Page.addScriptToEvaluateOnNewDocument', { source: "window.__msPosted=[];window.MSBridge={postMessage:function(m){window.__msPosted.push(JSON.parse(m));},addEventListener:function(t,fn){window.__msListen=fn;}};" });
   }
   if (init) await s('Page.addScriptToEvaluateOnNewDocument', { source: init });
@@ -798,6 +801,9 @@ try {
     const clip = await p.ev('window.__clip.calls[0]');
     st = await p.ev(SHARE_STATE);
     check(`${tag} Copy writes one PNG to the clipboard and says "${SHARE_TEXT.copied}"`, clip.types.join() === 'image/png' && clip.type === 'image/png' && st.status === SHARE_TEXT.copied, { types: clip.types, type: clip.type, status: st.status });
+    await p.ev(SKIP_CLOCK(5 * 60000));
+    await sleep(200);
+    check(`${tag} on the website the Copy line never expires (no 2 minutes there)`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copied);
     check(`${tag} Copy shares nothing`, st.shares === 5, st.shares);
     if (clip.b64) {
       const png = new Uint8Array(Buffer.from(clip.b64, 'base64'));
@@ -879,13 +885,13 @@ try {
     const link = await p.ev("(() => { const a = document.querySelector('.ms-download'); return a ? { name: a.download, text: a.textContent } : null; })()");
     check(`${tag} the result offers Save image.public.jpg`, !!link && link.name === 'image.public.jpg' && link.text === 'Save image.public.jpg', link);
     const shareSt = await p.ev(SHARE_STATE);
-    check(`${tag} the Share and Copy block is made but the bridge hides it, warning and all (the app has its own Share)`, shareSt.block && shareSt.webOnly && !shareSt.blockShown && !shareSt.shareShown && !shareSt.copyShown && shareSt.note && !shareSt.noteShown, shareSt);
+    check(`${tag} with the app's channel, Copy, Share and the warning are shown as on the website, and not marked data-web-only`, shareSt.block && !shareSt.webOnly && shareSt.blockShown && shareSt.shareShown && shareSt.copyShown && shareSt.noteShown && shareSt.noteText === SHARE_TEXT.note && shareSt.order.join() === 'save,copy,share,note,status', shareSt);
     const before = p.completed.length;
     await p.ev("document.querySelector('.ms-download').click()");
     await p.waitFor("window.__msPosted.some((m) => m.t === 'out-begin')", 10000);
     await sleep(500);
     const begin = (await p.ev("window.__msPosted.find((m) => m.t === 'out-begin')")) || {};
-    check(`${tag} Save is caught by the bridge and offered to the app, not downloaded by the browser`, begin.name === 'image.public.jpg' && begin.mime === 'image/jpeg' && begin.size > 0 && begin.chunks >= 1 && p.completed.length === before, { begin, downloads: p.completed.length - before });
+    check(`${tag} Save is caught by the bridge and handed to the app as a save, not downloaded by the browser`, begin.action === 'save' && begin.name === 'image.public.jpg' && begin.mime === 'image/jpeg' && begin.size > 0 && begin.chunks >= 1 && p.completed.length === before, { begin, downloads: p.completed.length - before });
     // Pull the chunks the way the app does and check the file that arrives.
     const parts = [];
     for (let i = 0; i < begin.chunks; i++) {
@@ -897,6 +903,129 @@ try {
     const got = new Uint8Array(Buffer.concat(parts));
     const out = await inspect(got);
     check(`${tag} the file handed to the app is whole and has no red left`, got.length === begin.size && out.format === 'jpeg' && !out.items.some((i) => i.tier === 'red'), { size: got.length, expected: begin.size, left: out.items.map((i) => i.tier + ':' + i.id) });
+    const csp = await p.ev('window.__csp');
+    check(`${tag} no policy violations`, csp.length === 0, csp);
+    check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
+    await p.shot(`${tag}-1-result`);
+    await p.close();
+  }
+
+  // The app (1.0.1): the same Save, Copy and Share as the website, through window.MSAndroid.
+  // The stand-in channel answers as MainActivity does; the share and clipboard stand-ins say
+  // no, as in Android's WebView, so only the app's channel can make the buttons appear.
+  {
+    const tag = 'app-mode';
+    const p = await openPage(360, 780, { android: 'app', init: shareStub({ share: false, clipboard: false }) });
+    const api = await p.ev(`(() => {
+      const a = window.MSAndroid;
+      let swapped = false;
+      try { window.MSAndroid = { share() {}, copyImage() {} }; } catch { /* refused, as intended */ }
+      swapped = window.MSAndroid !== a;
+      return { has: !!a, frozen: !!a && Object.isFrozen(a), keys: a ? Object.keys(a).sort().join() : '', swapped };
+    })()`);
+    check(`${tag} the bridge adds window.MSAndroid with share and copyImage only, frozen and not replaceable`, api.has && api.frozen && api.keys === 'copyImage,share' && !api.swapped, api);
+    const junk = await p.ev(`(async () => {
+      const before = window.__ms.posted.length;
+      const r = [
+        await MSAndroid.share('https://example.com/x.jpg', 'x.jpg'),
+        await MSAndroid.share({ size: 3, type: 'image/jpeg' }, 'x.jpg'),
+        await MSAndroid.share(new Blob([]), 'x.jpg'),
+        await MSAndroid.copyImage(new Blob([new Uint8Array([255, 216, 255])], { type: 'image/jpeg' })),
+        await MSAndroid.copyImage('file:///sdcard/DCIM/x.png'),
+      ];
+      return { results: r, posted: window.__ms.posted.length - before };
+    })()`);
+    check(`${tag} MSAndroid refuses anything but a non-empty Blob (a PNG for Copy): no address, no path, nothing posted`, junk.results.every((x) => x === false) && junk.posted === 0, junk);
+    await p.load(['jpeg-everything.jpg']);
+    await p.press();
+    let st = await p.ev(SHARE_STATE);
+    check(`${tag} Copy image, "${SHARE_TEXT.button}" and the warning show under Save, in the website's order`, st.block && !st.webOnly && st.blockShown && st.copyShown && st.copyText === 'Copy image' && st.shareShown && st.shareText === SHARE_TEXT.button && st.order.join() === 'save,copy,share,note,status', st);
+    check(`${tag} Share is pink like Save, and the amber warning is always shown under it with the exact text`, st.primary && st.noteShown && st.noteAmber && st.noteText === SHARE_TEXT.note && st.noteOwnsDescription, st);
+    check(`${tag} nothing reaches the app before a press`, (await p.ev('window.__ms.files.length')) === 0);
+
+    // Save: one save, nothing else.
+    const before = p.completed.length;
+    await p.ev("document.querySelector('#results-list .ms-download').click()");
+    await p.waitFor('window.__ms.files.length === 1', 10000);
+    const saved = await p.ev('window.__ms.files[0]');
+    check(`${tag} Save hands the app image.public.jpg as a save only (no share, no copy), and the browser downloads nothing`, !!saved && saved.action === 'save' && saved.name === 'image.public.jpg' && saved.mime === 'image/jpeg' && p.completed.length === before && (await p.ev("window.__ms.posted.filter((m) => m.t === 'out-begin').map((m) => m.action).join()")) === 'save', saved && { ...saved, parts: saved.parts.length });
+    const savedBytes = appFileBytes(saved);
+    check(`${tag} the saved file is whole`, savedBytes.length === saved.size && savedBytes.length > 0, { got: savedBytes.length, size: saved.size });
+
+    // Share: exactly the saved bytes and name, straight away.
+    await p.ev("document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor('window.__ms.files.length === 2', 10000);
+    const shared = await p.ev('window.__ms.files[1]');
+    const sharedBytes = appFileBytes(shared);
+    check(`${tag} Share hands the app one file to share, image.public.jpg, image/jpeg`, !!shared && shared.action === 'share' && shared.name === 'image.public.jpg' && shared.mime === 'image/jpeg', shared && { ...shared, parts: shared.parts.length });
+    check(`${tag} the shared bytes are exactly the saved bytes`, savedBytes.length > 0 && Buffer.compare(savedBytes, sharedBytes) === 0, { saved: savedBytes.length, shared: sharedBytes.length });
+    await sleep(200);
+    st = await p.ev(SHARE_STATE);
+    check(`${tag} after sharing nothing is said and the warning is still there`, st.status === '' && st.noteShown, st);
+
+    // Copy: a fresh PNG without file details, called image.png.
+    await p.ev("document.querySelector('#results-list .ms-copy-btn').click()");
+    await p.waitFor('window.__ms.files.length === 3', 20000);
+    await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(SHARE_TEXT.copiedApp)}`, 5000);
+    const copied = await p.ev('window.__ms.files[2]');
+    const png = await inspect(new Uint8Array(appFileBytes(copied)));
+    const src = await inspect(new Uint8Array(savedBytes));
+    check(`${tag} Copy hands the app image.png, a PNG with no metadata at all, at the picture's size, and says "${SHARE_TEXT.copiedApp}"`, !!copied && copied.action === 'copy' && copied.name === 'image.png' && copied.mime === 'image/png' && png.format === 'png' && png.items.length === 0 && png.width === src.width && png.height === src.height, copied && { action: copied.action, name: copied.name, mime: copied.mime, items: png.items.map((i) => i.id), size: [png.width, png.height] });
+    check(`${tag} in the app, the line after Copy is "${SHARE_TEXT.copiedApp}", not the website's`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copiedApp && SHARE_TEXT.copiedApp !== SHARE_TEXT.copied);
+
+    // The copy's end (1.0.1, Marcos: "fix it"). The stand-in reports a shortened time left
+    // (copyLife) instead of 2 minutes, and SKIP_CLOCK moves Date.now on and fires
+    // 'visibilitychange', as when Android shows the app again after freezing it.
+    {
+      const is = (t) => `document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(t)}`;
+      const copyNow = async (life) => {
+        await p.ev(`window.__ms.copyLife = ${life}; document.querySelector('#results-list .ms-share-status').textContent = ''; document.querySelector('#results-list .ms-copy-btn').click()`);
+        return p.waitFor(is(SHARE_TEXT.copiedApp), 20000);
+      };
+      check(`${tag} the line after Copy is a polite live region`, (await p.ev(SHARE_STATE)).live === 'polite');
+      await copyNow(1500);
+      const t1 = Date.now();
+      const ended = await p.waitFor(is(SHARE_TEXT.copyExpiredApp), 10000);
+      check(`${tag} when the copy's time is up, the line becomes "${SHARE_TEXT.copyExpiredApp}"`, ended && Date.now() - t1 >= 1000, { ended, after: Date.now() - t1 });
+      await copyNow(120000);
+      await sleep(300);
+      const before = await p.ev(SHARE_STATE);
+      await p.ev('window.__ms.expire()');
+      check(`${tag} the app's own word that the copy ended changes the line at once`, before.status === SHARE_TEXT.copiedApp && await p.waitFor(is(SHARE_TEXT.copyExpiredApp), 2000));
+      await copyNow(120000);
+      await p.ev(SKIP_CLOCK(60000));
+      await sleep(200);
+      check(`${tag} back after 1 minute, the copy still reads as live`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copiedApp);
+      await p.ev(SKIP_CLOCK(61000));
+      await sleep(200);
+      check(`${tag} back after 2 minutes (timers frozen meanwhile), the line already reads as expired`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copyExpiredApp);
+      await copyNow(2500);
+      await sleep(1500);
+      await copyNow(2500);
+      await sleep(1500);
+      check(`${tag} a new Copy starts the time again`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copiedApp);
+      check(`${tag} and then it ends in turn`, await p.waitFor(is(SHARE_TEXT.copyExpiredApp), 10000));
+      await p.ev('window.__ms.copyLife = 120000');
+    }
+
+    // The app reports a failure: the page says so.
+    await p.ev("window.__ms.mode = 'fail'; document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(SHARE_TEXT.failed)}`, 10000);
+    check(`${tag} a share the app could not do says "${SHARE_TEXT.failed}"`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.failed);
+    await p.ev("document.querySelector('#results-list .ms-copy-btn').click()");
+    await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(SHARE_TEXT.copyFailed)}`, 20000);
+    check(`${tag} a copy the app could not do says "${SHARE_TEXT.copyFailed}"`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copyFailed);
+    await p.ev("window.__ms.mode = 'ok'");
+
+    // A typed name: Share carries the new name, as Save does.
+    await p.ev("(() => { const i = document.getElementById('name-input'); i.value = 'holiday.jpg'; i.dispatchEvent(new Event('input', { bubbles: true })); })()");
+    await sleep(200);
+    const n = await p.ev('window.__ms.files.length');
+    await p.ev("document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor(`window.__ms.files.length === ${n + 1}`, 10000);
+    const renamed = await p.ev(`window.__ms.files[${n}]`);
+    check(`${tag} after a typed name, Share hands the app holiday.public.jpg`, !!renamed && renamed.name === 'holiday.public.jpg' && renamed.action === 'share', renamed && { name: renamed.name, action: renamed.action });
     const csp = await p.ev('window.__csp');
     check(`${tag} no policy violations`, csp.length === 0, csp);
     check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);

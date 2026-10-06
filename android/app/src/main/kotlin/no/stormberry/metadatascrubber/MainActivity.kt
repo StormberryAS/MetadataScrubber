@@ -1,9 +1,10 @@
 package no.stormberry.metadatascrubber
 
 import android.annotation.SuppressLint
-import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -52,8 +53,13 @@ import kotlin.io.encoding.Base64
 /**
  * One screen: a WebView running the bundled web app, which is the same set of files that
  * metadata.stormberry.as serves. Kotlin adds only what a browser would otherwise provide:
- * the system file picker, Save and Share for the finished file, and pictures shared in
- * from other apps. The scrubbing itself happens in the page, exactly as on the website.
+ * the system file picker, Save, Share and Copy for the finished file, and pictures shared
+ * in from other apps. The scrubbing itself happens in the page, exactly as on the website.
+ *
+ * Since 1.0.1 the page's own buttons decide what happens to a finished file, as on the
+ * website: Save opens Android's save screen and nothing else, "Share the new image" opens
+ * Android's share sheet straight away (the warning stays visible under the button in the
+ * page), and Copy image puts the page's fresh PNG on Android's clipboard.
  */
 class MainActivity : ComponentActivity() {
 
@@ -71,13 +77,16 @@ class MainActivity : ComponentActivity() {
     // File picking for the page's <input type="file">.
     private var pendingChooser: ValueCallback<Array<Uri>>? = null
 
-    // The finished file the user is choosing to save or share.
+    // The finished file the user is choosing where to save.
     private var pendingOut: OutFile? = null
     private var outTransfer: OutTransfer? = null
 
-    // The warning before sharing is shown once per page load, as on the website: the page
-    // lives as long as this activity (configChanges keeps it through rotation).
-    private var shareWarned = false
+    // The copied picture's 2 minutes (ClipboardFiles, OutgoingProvider). The timer tidies up
+    // on time while the app runs; the provider refuses an expired copy whatever happens.
+    private lateinit var clipFiles: ClipboardFiles
+    private val expireClip = Runnable { sweepClips() }
+    // The copy the page was told about; when it is gone, the page hears "clip-expired".
+    private var pageClip: File? = null
 
     // Pictures shared into the app, waiting for the page to pull them.
     private var nextBatchId = 1
@@ -100,6 +109,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         outgoingFiles = OutgoingFiles(cacheDir)
+        clipFiles = ClipboardFiles(cacheDir)
         if (savedInstanceState == null) {
             // A fresh start: whatever an earlier session left for sharing goes now.
             io.execute { outgoingFiles.clear() }
@@ -138,6 +148,24 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState?.getBoolean(STATE_INTENT_HANDLED) != true) handleShareIntent(intent)
     }
 
+    // The copied picture is checked whenever the app starts, comes back, goes to the
+    // background or is asked to free memory: anything past its 2 minutes goes then, and a
+    // live copy gets a timer for the rest of its time. (onStart also covers the start-up.)
+    override fun onStart() {
+        super.onStart()
+        sweepClips()
+    }
+
+    override fun onStop() {
+        sweepClips()
+        super.onStop()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        sweepClips()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShareIntent(intent)
@@ -153,6 +181,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        main.removeCallbacks(expireClip)
         incoming?.close()
         outTransfer?.abort()
         webView?.let { destroyWebView(it) }
@@ -364,36 +393,47 @@ class MainActivity : ComponentActivity() {
         outTransfer?.abort()
         outTransfer = null
         val id = msg.optInt("id")
-        val mime = ImageTypes.normalise(msg.optString("mime"))
-        val size = msg.optLong("size", -1)
-        val chunks = msg.optInt("chunks", -1)
-        if (mime == null || !ImageTypes.isSupported(mime) || size <= 0) {
-            send(JSONObject().put("t", "out-error").put("id", id))
-            toast(R.string.transfer_failed)
+        // Everything in this message comes from the page: OutgoingRequest checks the action,
+        // type, size, chunk count and name, and there is no field for an address or a path.
+        val request = OutgoingRequest.parse(
+            msg.optString("action").takeIf { msg.has("action") },
+            msg.optString("name").takeIf { msg.has("name") },
+            msg.optString("mime"),
+            msg.optLong("size", -1),
+            msg.optInt("chunks", -1),
+        )
+        if (request == null) {
+            failOut(id, null)
             return
         }
-        val name = FileNames.sanitise(msg.optString("name"), mime)
-        // A large result takes a few seconds to hand over, and the page shows nothing
-        // meanwhile, so say that something is happening.
-        Toast.makeText(this, getString(R.string.preparing, name), Toast.LENGTH_SHORT).show()
+        if (request.action != OutgoingRequest.Action.COPY) {
+            // A large result takes a few seconds to hand over, and the page shows nothing
+            // meanwhile, so say that something is happening.
+            Toast.makeText(this, getString(R.string.preparing, request.name), Toast.LENGTH_SHORT).show()
+        }
         io.execute {
             val transfer = try {
-                val file = outgoingFiles.newFile(name)
+                val file = outgoingFiles.newFile(request.name)
                 val stream = FileOutputStream(file)
-                OutTransfer(id, OutFile(file, mime), stream, ChunkAssembler(size, chunks, stream))
+                OutTransfer(id, request.action, OutFile(file, request.mime), stream, ChunkAssembler(request.size, request.chunks, stream))
             } catch (_: Exception) {
                 null
             }
             main.post {
                 if (transfer == null) {
-                    send(JSONObject().put("t", "out-error").put("id", id))
-                    toast(R.string.transfer_failed)
+                    failOut(id, request.action)
                 } else {
                     outTransfer = transfer
                     send(JSONObject().put("t", "out-pull").put("id", id).put("index", 0))
                 }
             }
         }
+    }
+
+    /** Tells the page the file did not arrive. Only Save has no message of its own in the page. */
+    private fun failOut(id: Int, action: OutgoingRequest.Action?) {
+        send(JSONObject().put("t", "out-error").put("id", id))
+        if (action == null || action == OutgoingRequest.Action.SAVE) toast(R.string.transfer_failed)
     }
 
     private fun onOutChunk(msg: JSONObject) {
@@ -409,6 +449,10 @@ class MainActivity : ComponentActivity() {
                 if (next == null) {
                     transfer.assembler.finish()
                     transfer.stream.close()
+                    // The clipboard gets pixels only: the PNG is read through once more,
+                    // refused if it carries anything but the chunks that draw the picture,
+                    // and written again without drawing hints such as sRGB (PngCheck).
+                    if (transfer.action == OutgoingRequest.Action.COPY) pixelsOnly(transfer.out.file)
                 }
                 next ?: DONE
             } catch (_: Exception) {
@@ -420,13 +464,11 @@ class MainActivity : ComponentActivity() {
                 when (result) {
                     FAILED -> {
                         outTransfer = null
-                        send(JSONObject().put("t", "out-error").put("id", id))
-                        toast(R.string.transfer_failed)
+                        failOut(id, transfer.action)
                     }
                     DONE -> {
                         outTransfer = null
-                        send(JSONObject().put("t", "out-done").put("id", id))
-                        offerSaveOrShare(transfer.out)
+                        finishOut(transfer)
                     }
                     else -> send(JSONObject().put("t", "out-pull").put("id", id).put("index", result))
                 }
@@ -434,37 +476,39 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun offerSaveOrShare(out: OutFile) {
-        if (isFinishing || isDestroyed) return
-        pendingOut = out
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.result_title, out.file.name))
-            .setItems(arrayOf(getString(R.string.result_save), getString(R.string.result_share))) { _, which ->
-                if (which == 0) startSave(out) else confirmShare(out)
-            }
-            .setNegativeButton(R.string.result_cancel, null)
-            .show()
+    /** Rewrites [file] in place as a PNG of its pixel chunks only, or throws. IO thread only. */
+    private fun pixelsOnly(file: File) {
+        val clean = File(file.parentFile, "${file.name}.clean")
+        val ok = file.inputStream().buffered().use { input ->
+            FileOutputStream(clean).buffered().use { output -> PngCheck.copyPixelsOnly(input, output) }
+        }
+        if (!ok || !clean.renameTo(file)) {
+            clean.delete()
+            throw IllegalStateException("not a plain PNG")
+        }
     }
 
-    /** The first Share shows the same warning as the website's Share button; later ones go straight on. */
-    private fun confirmShare(out: OutFile) {
-        if (shareWarned) {
-            share(out)
-            return
-        }
-        if (isFinishing || isDestroyed) return
-        AlertDialog.Builder(this)
-            .setTitle(R.string.share_warning_title)
-            .setMessage(R.string.share_warning_text)
-            .setPositiveButton(R.string.share_continue) { _, _ ->
-                shareWarned = true
-                share(out)
+    /** The whole file is here: do exactly what the page's button asked, and nothing else. */
+    private fun finishOut(transfer: OutTransfer) {
+        val ok = when (transfer.action) {
+            OutgoingRequest.Action.SAVE -> {
+                startSave(transfer.out)
+                true
             }
-            .setNegativeButton(R.string.result_cancel, null)
-            .show()
+            OutgoingRequest.Action.SHARE -> share(transfer.out)
+            OutgoingRequest.Action.COPY -> copyToClipboard(transfer.out)
+        }
+        if (!ok) io.execute { outgoingFiles.delete(transfer.out.file) }
+        val reply = JSONObject().put("t", if (ok) "out-done" else "out-error").put("id", transfer.id).put("ok", ok)
+        // For a copy, the time it can still be pasted, so the page's line ends when the copy does.
+        if (ok && transfer.action == OutgoingRequest.Action.COPY) {
+            clipFiles.current()?.let { reply.put("expiresIn", clipFiles.remainingMs(it)) }
+        }
+        send(reply)
     }
 
     private fun startSave(out: OutFile) {
+        if (isFinishing || isDestroyed) return
         pendingOut = out
         try {
             saveDocument.launch(out.mime to out.file.name)
@@ -507,9 +551,11 @@ class MainActivity : ComponentActivity() {
             null
         } ?: contentResolver.openOutputStream(uri, "w") ?: throw IllegalStateException("no stream")
 
-    private fun share(out: OutFile) {
-        try {
-            val uri = FileProvider.getUriForFile(this, "$packageName.outgoing", out.file)
+    /** Android's share sheet with the file, straight away; the page shows the warning. */
+    private fun share(out: OutFile): Boolean {
+        if (isFinishing || isDestroyed) return false
+        return try {
+            val uri = FileProvider.getUriForFile(this, authority, out.file)
             val send = Intent(Intent.ACTION_SEND)
                 .setType(out.mime)
                 .putExtra(Intent.EXTRA_STREAM, uri)
@@ -520,10 +566,78 @@ class MainActivity : ComponentActivity() {
             // leaves itself out of the list.
             chooser.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(android.content.ComponentName(this, MainActivity::class.java)))
             startActivity(chooser)
+            true
         } catch (_: Exception) {
-            toast(R.string.share_failed)
+            false
         }
     }
+
+    /**
+     * Android's clipboard gets the page's fresh PNG (checked by PngCheck) through the
+     * FileProvider, under the label "image". The PNG moves to cache/clipboard/ and can be
+     * pasted for 2 minutes (ClipboardFiles.LIFETIME_MS): a newer Copy deletes the older one at
+     * once and starts its own 2 minutes; after them the timer deletes the file, withdraws the
+     * read grants and clears the clipboard if it still holds this picture, and
+     * OutgoingProvider refuses the address in any case.
+     */
+    private fun copyToClipboard(out: OutFile): Boolean {
+        if (out.mime != OutgoingRequest.COPY_MIME) return false
+        var moved: File? = null
+        return try {
+            val clipboard = getSystemService(ClipboardManager::class.java) ?: return false
+            clipFiles.current()?.let { revokeClip(it) }
+            val file = clipFiles.adopt(out.file)
+            moved = file
+            pageClip = file
+            val uri = FileProvider.getUriForFile(this, authority, file)
+            clipboard.setPrimaryClip(ClipData(ClipDescription(CLIP_LABEL, arrayOf(out.mime)), ClipData.Item(uri)))
+            main.removeCallbacks(expireClip)
+            main.postDelayed(expireClip, ClipboardFiles.LIFETIME_MS + CLIP_TIMER_SLACK_MS)
+            ClipExpiry.setAlarm(this, ClipboardFiles.LIFETIME_MS + CLIP_TIMER_SLACK_MS)
+            true
+        } catch (_: Exception) {
+            moved?.parentFile?.deleteRecursively()
+            false
+        }
+    }
+
+    /**
+     * Deletes every copy past its 2 minutes, withdraws its read grants, clears the clipboard
+     * if it still holds that picture (only possible while the app has the focus), and sets
+     * the timer for the copy still live, if any.
+     */
+    private fun sweepClips() {
+        main.removeCallbacks(expireClip)
+        val gone = ClipExpiry.sweep(this)
+        if (gone.isNotEmpty()) clearClipboardIfOurs(gone)
+        // Also when the background alarm ended it while the app was away.
+        if (clipFiles.hasEnded(pageClip)) {
+            pageClip = null
+            send(JSONObject().put("t", "clip-expired"))
+        }
+        val live = clipFiles.current() ?: return
+        val left = clipFiles.remainingMs(live) + CLIP_TIMER_SLACK_MS
+        main.postDelayed(expireClip, left)
+        ClipExpiry.setAlarm(this, left)
+    }
+
+    private fun revokeClip(file: File) = ClipExpiry.revoke(this, file)
+
+    private fun clearClipboardIfOurs(files: List<File>) {
+        if (android.os.Build.VERSION.SDK_INT < 28) return
+        try {
+            val clipboard = getSystemService(ClipboardManager::class.java) ?: return
+            val uris = files.map { FileProvider.getUriForFile(this, authority, it) }.toSet()
+            // Android shows the clipboard only to the app in focus; in the background this
+            // reads nothing and the clipboard is left alone (the provider still refuses).
+            val clip = clipboard.primaryClip ?: return
+            if (clip.itemCount == 1 && clip.getItemAt(0).uri in uris) clipboard.clearPrimaryClip()
+        } catch (_: Exception) {
+            // Leave the clipboard alone.
+        }
+    }
+
+    private val authority: String get() = ClipExpiry.authority(this)
 
     private fun restorePendingOut(state: Bundle) {
         val path = state.getString(STATE_OUT_PATH) ?: return
@@ -630,7 +744,13 @@ class MainActivity : ComponentActivity() {
 
     private class OutFile(val file: File, val mime: String)
 
-    private class OutTransfer(val id: Int, val out: OutFile, val stream: OutputStream, val assembler: ChunkAssembler) {
+    private class OutTransfer(
+        val id: Int,
+        val action: OutgoingRequest.Action,
+        val out: OutFile,
+        val stream: OutputStream,
+        val assembler: ChunkAssembler,
+    ) {
         fun abort() {
             try { stream.close() } catch (_: Exception) {}
             out.file.delete()
@@ -703,6 +823,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val START_URL = "https://${NavigationPolicy.ASSET_HOST}/index.html"
         private const val BRIDGE_NAME = "MSBridge"
+        private const val CLIP_LABEL = "image"
+        private const val CLIP_TIMER_SLACK_MS = 250L
 
         private const val DONE = -1
         private const val FAILED = -2

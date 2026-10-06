@@ -20,7 +20,7 @@
 // only want to crop or resize. When nothing would change, no identical copy is made;
 // the page says so instead.
 
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=f83b35f4';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=7917c1ca';
 
 // ---------------------------------------------------------------------------------------
 // Constants
@@ -71,6 +71,11 @@ const GAIN_MAP_KEPT_NOTE = 'The HDR gain map stays, so the photo keeps its brigh
 const SHARE_WARNING_TEXT = 'Once it is online, you cannot take it back. Your device will open the app you choose.';
 const SHARE_FAILED = 'The file could not be shared. Save it and share it from your device instead.';
 const COPY_DONE = 'Copied. The image is on your clipboard without its file details. Once you paste it online, you cannot take it back.';
+// In the Android app the copied picture can be pasted for 2 minutes, then the app deletes it
+// (Marcos, 2026-10-06: "keep website as is. do the 2 minutes limit on the app, including the message").
+const COPY_DONE_APP = 'Copied. You can paste it for the next 2 minutes.';
+// Shown in its place once those 2 minutes are over (Marcos, 2026-10-06: "fix it").
+const COPY_EXPIRED_APP = 'The copy has expired. Tap Copy image again to paste it.';
 const COPY_FAILED = 'The image could not be copied. Save it instead.';
 
 const RATIOS = { free: null, '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9, '1.91:1': 1.91 };
@@ -1452,8 +1457,8 @@ async function drawResultPreview(canvas, blob) {
 // ---------------------------------------------------------------------------------------
 // Share and Copy
 //
-// Both sit under Save, inside one block marked data-web-only: the Android app has its own
-// Save and Share, and its bridge hides that block. Neither sends anything from the page.
+// Both sit under Save, with an amber warning under them. Neither sends anything from the
+// page.
 //  * Share hands exactly the bytes Save would download to the device's share sheet
 //    (Web Share API). It is offered only where the browser says it can share this file.
 //    A press shares straight away; the warning stays visible under the button whenever
@@ -1463,6 +1468,54 @@ async function drawResultPreview(canvas, blob) {
 //    file's details travels, whatever was kept in the file itself. The web clipboard takes
 //    pictures as PNG only, and Chromium re-encodes them on the way in, so the exact file
 //    could not be copied in any case.
+// In the Android app (1.0.1), the bridge (android/web-overlay/android-bridge.js) adds
+// window.MSAndroid, and the same buttons use it instead: Share hands the same bytes to
+// Android's share sheet, and Copy hands the same fresh PNG to Android's clipboard. There
+// the buttons always show (Copy only for a picture the app can open), because Android
+// offers both. Without MSAndroid the block is marked data-web-only, so an app whose
+// WebView is too old for the bridge still hides it, as 1.0.0 did.
+
+// The app's one live copy. The app keeps a single copied picture and ends it after
+// 2 minutes; its copyImage answers how long the copy has left, and it fires
+// 'msandroid:clip-expired' when it ends the copy or finds it ended while the app was away.
+// The line under the buttons follows both: a timer from the app's own count, a check when
+// the page becomes visible again (timers do not run while Android has frozen the app), and
+// the app's event. A newer Copy replaces the copy, so an older line reads as expired.
+const appCopy = { status: null, deadline: 0, timer: 0, listening: false };
+
+function expireAppCopy() {
+  clearTimeout(appCopy.timer);
+  const el = appCopy.status;
+  appCopy.status = null;
+  if (el && el.isConnected && el.textContent === COPY_DONE_APP) el.textContent = COPY_EXPIRED_APP;
+}
+
+function checkAppCopy() {
+  if (!appCopy.status) return;
+  clearTimeout(appCopy.timer);
+  const left = appCopy.deadline - Date.now();
+  if (left <= 0) expireAppCopy();
+  else appCopy.timer = setTimeout(checkAppCopy, left);
+}
+
+function startAppCopy(status, expiresIn) {
+  if (!appCopy.listening) {
+    appCopy.listening = true;
+    window.addEventListener('msandroid:clip-expired', expireAppCopy);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkAppCopy(); });
+    window.addEventListener('pageshow', checkAppCopy);
+  }
+  if (appCopy.status && appCopy.status !== status) expireAppCopy();
+  clearTimeout(appCopy.timer);
+  appCopy.status = status;
+  appCopy.deadline = Date.now() + expiresIn;
+  appCopy.timer = setTimeout(checkAppCopy, expiresIn);
+}
+
+function androidApp() {
+  const a = window.MSAndroid;
+  return a && typeof a.share === 'function' && typeof a.copyImage === 'function' ? a : null;
+}
 
 function resultFile(r) {
   return new File([r.bytes], resultName(r), { type: MIME[r.format] });
@@ -1507,8 +1560,10 @@ async function pngWithoutDetails(blob) {
 }
 
 function renderShare(r, blob) {
-  const share = canShareFile(resultFile(r));
-  const copy = canCopy(r);
+  const app = androidApp();
+  const share = app ? true : canShareFile(resultFile(r));
+  // A HEIC result stays HEIC only when nothing re-saved it; Copy needs the page to open it.
+  const copy = app ? (r.format !== 'heic' || r.entry.decodable) : canCopy(r);
   if (!share && !copy) return null;
   const id = `r${r.index}-share`;
   const status = h('p', { class: 'ms-share-status', id: `${id}-status`, role: 'status', 'aria-live': 'polite' });
@@ -1520,7 +1575,11 @@ function renderShare(r, blob) {
     sharing = true;
     try {
       const file = resultFile(r);
-      await navigator.share({ files: [file], title: file.name });
+      if (app) {
+        if (!(await app.share(file, file.name))) say(SHARE_FAILED);
+      } else {
+        await navigator.share({ files: [file], title: file.name });
+      }
     } catch (err) {
       // AbortError: the person closed the share sheet. Nothing to say.
       if (!err || err.name !== 'AbortError') say(SHARE_FAILED);
@@ -1549,13 +1608,23 @@ function renderShare(r, blob) {
       if (copying) return;
       copying = true;
       say('');
-      // The PNG is made after the press, so the clipboard gets a promise: the write itself
-      // starts inside the press, as browsers require.
-      const png = pngWithoutDetails(blob);
-      png.catch(() => {});
       try {
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
-        say(COPY_DONE);
+        if (app) {
+          const copied = await app.copyImage(await pngWithoutDetails(blob));
+          if (copied) {
+            say(COPY_DONE_APP);
+            startAppCopy(status, Number.isFinite(copied.expiresIn) ? copied.expiresIn : 120000);
+          } else {
+            say(COPY_FAILED);
+          }
+        } else {
+          // The PNG is made after the press, so the clipboard gets a promise: the write
+          // itself starts inside the press, as browsers require.
+          const png = pngWithoutDetails(blob);
+          png.catch(() => {});
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+          say(COPY_DONE);
+        }
       } catch {
         say(COPY_FAILED);
       } finally {
@@ -1564,7 +1633,7 @@ function renderShare(r, blob) {
     },
   }, 'Copy image') : null;
 
-  return h('div', { class: 'ms-share', dataset: { webOnly: '' } },
+  return h('div', { class: 'ms-share', dataset: app ? { app: '' } : { webOnly: '' } },
     h('div', { class: 'ms-share-row' }, copyBtn, shareBtn),
     note,
     status);

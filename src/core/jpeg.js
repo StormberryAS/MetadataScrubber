@@ -606,7 +606,7 @@ function classifyTrailing(b, start, mpf, hints, photoSof) {
 const TRAILING = {
   video: { id: 'jpeg:trailing:motion-video', group: 'hidden', tier: 'red', label: 'Hidden video clip (Motion Photo)', note: 'A short video recorded around the moment the photo was taken.' },
   samsung: { id: 'jpeg:trailing:samsung', group: 'hidden', tier: 'red', label: 'Samsung extra data', note: 'Data the phone adds after the picture, sometimes including a video clip.' },
-  gainmap: { id: 'jpeg:trailing:gain-map', group: 'hidden', tier: 'amber', label: 'HDR gain map', note: 'An extra image that makes the picture brighter on HDR screens. Kept to start with, holding only what it needs to work; anything else in it or around it is listed on its own. Removing it leaves the normal picture unchanged.' },
+  gainmap: { id: 'jpeg:trailing:gain-map', group: 'hidden', tier: 'amber', label: 'HDR gain map', note: 'Keeps the extra brightness on HDR screens. It is a second, smaller picture of the same scene: if you edited or blurred this photo in another app first, the hidden picture may still show the original.' },
   'gainmap-after': { id: 'jpeg:trailing:gain-map:after', group: 'hidden', tier: 'red', label: 'Unknown data after the HDR gain map', note: 'Bytes stored after the end of the gain map. No program needs them to show the picture. They may hold anything.' },
   mpf: { id: 'jpeg:trailing:mpf-image', group: 'hidden', tier: 'red', label: 'Extra embedded image', note: 'Another picture stored in the file, for example a second camera view or an uncropped version.' },
   preview: { id: 'jpeg:trailing:preview', group: 'hidden', tier: 'red', label: 'Built-in preview image', note: 'Can still show the original, uncropped photo after cropping.' },

@@ -154,8 +154,8 @@ tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }
 // ONE VISIBLE VERSION, TWO CODE LINES. The sovereign versionCode and versionName in
 // defaultConfig below are the only numbers ever bumped by hand. The Play build derives its
 // code from them and shows the same version name (Marcos, 2026-10-05: "1.0.0 for both"):
-//   Play versionCode = 1000 + sovereign versionCode   (1.0.0 code 4 -> code 1004)
-//   Play versionName = sovereign versionName          (1.0.0 -> 1.0.0)
+//   Play versionCode = 1000 + sovereign versionCode   (1.0.1 code 5 -> code 1005)
+//   Play versionName = sovereign versionName          (1.0.1 -> 1.0.1)
 // Play only needs monotonic codes within its own package, and the offset keeps them distinct
 // from the sovereign line and rising with it. The package name and the signing key are what
 // keep the two apart, not the version. Build every Play upload from a sovereign release tag.
@@ -180,8 +180,9 @@ android {
         // 0.0.2 (code 2): details in collapsed Red, Amber and Green sections, red and amber ticked to start, the result button reads "Save <name>" (2026-10-03).
         // 0.0.3 (code 3): only red is ticked to start with, and captions, titles, descriptions, keywords and comments are red; amber is kept unless ticked. HDR JPEGs and iPhone HEICs keep their gain map and HDR brightness, holding only what they need to render. XMP is always written in a standard form. Green details keep only what the specifications define (2026-10-04).
         // 1.0.0 (code 4): Share the new image with a warning that a picture online cannot be taken back (website: Share and Copy image; app: a warning before the first Share), a privacy page, a note when colours may look duller on HDR screens, and iPhone HDR brightness kept again when Apple's HDR gain is above 1 (2026-10-05). The Play build is 1.0.0 too, code 1004.
-        versionCode = 4
-        versionName = "1.0.0"
+        // 1.0.1 (code 5): the app shows the website's Save, Copy image and Share the new image buttons, with the warning always under Share; Share goes straight to Android's share sheet, Copy image puts a fresh PNG without file details on Android's clipboard for 2 minutes (Marcos, 2026-10-06: "do the 2 minutes limit on the app, including the message"), and Save only saves (Marcos, 2026-10-05: "Build 1.0.1"); the HDR gain map keeps Amber with a new note that it is a second, smaller picture that may still show what was edited or blurred elsewhere. The Play build is 1.0.1 too, code 1005.
+        versionCode = 5
+        versionName = "1.0.1"
         // Play line, derived from the code above (see playVersionCodeOffset); same versionName.
         if (playBuild) {
             versionCode = playVersionCodeOffset + versionCode!!

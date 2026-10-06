@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The FileProvider can hand out ONE folder: cache/outgoing/, where a new file is written
-  just before it is shared. Nothing else in the app's storage is reachable through it.
+  The FileProvider can hand out TWO folders and nothing else in the app's storage:
+  cache/outgoing/, where a new file is written just before it is shared, and (1.0.1)
+  cache/clipboard/, which holds the one copied picture for its 2 minutes (OutgoingProvider
+  refuses it after that).
 -->
 <paths>
     <cache-path name="outgoing" path="outgoing/" />
+    <cache-path name="clipboard" path="clipboard/" />
 </paths>

@@ -1,6 +1,6 @@
 MetadataScrubber shows what a photo carries besides the picture itself, lets you choose what to remove, and then reads the new file back so you can see what is left. GPS position, camera serial numbers, owner names, dates, a built-in preview image and more.
 
-It declares no Android permissions at all. There is no internet permission, so it cannot send your photos anywhere, and no storage permission either: pictures come in through the system file picker or a share from your gallery, and go out through the system save screen or a share. Check it yourself before installing:
+It declares no Android permissions at all. There is no internet permission, so it cannot send your photos anywhere, and no storage permission either: pictures come in through the system file picker or a share from your gallery, and go out through the system save screen, a share or the clipboard. Check it yourself before installing:
 
     aapt dump permissions <the APK you downloaded>
 
@@ -15,7 +15,7 @@ The only line you should see is the package name.
 - Crop, resize and convert when you need to, for JPEG, PNG and WebP.
 - Reads the result back, so the list shows what remains in the new file.
 - Neutral file names. The phone's file name, which carries the date and time, is never reused. Results are named like image.public.jpg.
-- Save or Share. Press Save image.public.jpg, then save the clean copy to a folder or share it straight on. The first share warns that once a picture is online, you cannot take it back. Photos can also be shared into the app from your gallery.
+- Save, Copy or Share. Copy puts it on the clipboard without file details for 2 minutes; Share opens the share sheet, with a note under it: once a picture is online, you cannot take it back. Photos can also be shared in from your gallery.
 
 Supported formats: JPEG, PNG, WebP and HEIC. HEIC metadata can be removed, but cropping and resizing HEIC are not available in the app, because Android's web engine cannot open HEIC pictures.
 

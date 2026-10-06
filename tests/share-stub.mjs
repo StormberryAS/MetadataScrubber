@@ -66,6 +66,10 @@ export const SHARE_TEXT = {
   note: 'Once it is online, you cannot take it back. Your device will open the app you choose.',
   failed: 'The file could not be shared. Save it and share it from your device instead.',
   copied: 'Copied. The image is on your clipboard without its file details. Once you paste it online, you cannot take it back.',
+  // The Android app's own line after Copy (1.0.1): the copy expires after 2 minutes there.
+  copiedApp: 'Copied. You can paste it for the next 2 minutes.',
+  // ... and in its place once the app's copy has ended (2 minutes, or a newer Copy).
+  copyExpiredApp: 'The copy has expired. Tap Copy image again to paste it.',
   copyFailed: 'The image could not be copied. Save it instead.',
 };
 
@@ -99,3 +103,64 @@ export const SHARE_STATE = `(() => {
     shares: window.__share ? window.__share.calls.length : null, copies: window.__clip ? window.__clip.calls.length : null,
   };
 })()`;
+
+// A stand-in for the Android app's side of the message channel (window.MSBridge), for the
+// app-mode tests (1.0.1). The bridge (android/web-overlay/android-bridge.js) sees a channel,
+// so it adds window.MSAndroid and the page shows Save, Copy and Share as in the app. The
+// stand-in answers the way MainActivity does: on 'out-begin' it pulls every chunk in order,
+// keeps the file, and answers 'out-done' (or 'out-error' when window.__ms.mode is 'fail').
+// Nothing is sent anywhere: the bytes stay in the page for the test to read back.
+//
+//   window.__ms = { mode, copyLife, posted: [{ t, id, action, name, mime, size, chunks, index }],
+//                   files: [{ action, name, mime, size, chunks, parts: [base64, ...] }], expire() }
+// copyLife is the expiresIn the stand-in reports for a copy (the app reports the copy's time
+// left, 2 minutes after a Copy); tests shorten it instead of waiting 2 minutes. expire() sends
+// the app's 'clip-expired' message, as the app does when it ends the copy.
+// Each file's parts are the chunks exactly as the bridge sent them; decode each one and
+// join the bytes (a chunk's base64 cannot simply be joined to the next one's).
+export function appBridgeStub() {
+  return `(() => {
+  const ms = window.__ms = { mode: 'ok', copyLife: 120000, posted: [], files: [] };
+  let listen = null;
+  let cur = null;
+  const reply = (msg) => setTimeout(() => { if (listen) listen({ data: JSON.stringify(msg) }); }, 0);
+  window.MSBridge = {
+    postMessage(text) {
+      const m = JSON.parse(text);
+      ms.posted.push({ t: m.t, id: m.id, action: m.action, name: m.name, mime: m.mime, size: m.size, chunks: m.chunks, index: m.index });
+      if (m.t === 'out-begin') {
+        cur = { id: m.id, action: m.action, name: m.name, mime: m.mime, size: m.size, chunks: m.chunks, parts: [] };
+        reply({ t: 'out-pull', id: m.id, index: 0 });
+      } else if (m.t === 'out-chunk' && cur && m.id === cur.id) {
+        cur.parts.push(m.data);
+        if (m.index + 1 < cur.chunks) { reply({ t: 'out-pull', id: m.id, index: m.index + 1 }); return; }
+        const done = cur;
+        cur = null;
+        ms.files.push(done);
+        const ok = { t: 'out-done', id: done.id, ok: true };
+        if (done.action === 'copy') ok.expiresIn = ms.copyLife;
+        reply(ms.mode === 'fail' ? { t: 'out-error', id: done.id } : ok);
+      }
+    },
+    addEventListener(type, fn) { if (type === 'message') listen = fn; },
+  };
+  ms.expire = () => reply({ t: 'clip-expired' });
+})();`;
+}
+
+// Joins one recorded file's chunks back into its bytes (Node side).
+export function appFileBytes(file) {
+  return Buffer.concat((file && file.parts ? file.parts : []).map((p) => Buffer.from(p, 'base64')));
+}
+
+// A clock moved on by ms for Date.now only, then a 'visibilitychange' as when Android shows
+// the app again after freezing it (its timers did not run meanwhile). For page.evaluate.
+export const SKIP_CLOCK = (ms) => `(() => {
+  const real = window.__realNow || (window.__realNow = Date.now.bind(Date));
+  const skew = (window.__skew || 0) + ${ms};
+  window.__skew = skew;
+  Date.now = () => real() + skew;
+  document.dispatchEvent(new Event('visibilitychange'));
+  return document.visibilityState;
+})()`;
+

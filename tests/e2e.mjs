@@ -43,7 +43,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GROUPS, detectFormat, inspect, privacyWord, scrub } from '../src/scrub-core.js';
-import { SHARE_STATE, SHARE_TEXT, shareStub } from './share-stub.mjs';
+import { SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -67,6 +67,10 @@ const PHONE = { width: 390, height: 844, mobile: true, label: 'phone' };
 // The page as the Android app loads it, on a phone-sized screen (see openPage). The share
 // and clipboard stand-ins say yes here, so only the bridge can hide Share and Copy.
 const ANDROID = { ...PHONE, label: 'android', android: true, init: shareStub({ share: true, clipboard: true }) };
+// The page as the Android app runs it (1.0.1): the bridge line, plus a stand-in for the app's
+// message channel that answers as MainActivity does (share-stub.mjs). The share and
+// clipboard stand-ins say no, as Android's WebView does, so only the app can show the buttons.
+const ANDROID_APP = { ...PHONE, label: 'android-app', android: true, init: `${appBridgeStub()}\n${shareStub({ share: false, clipboard: false })}` };
 // A phone with a share sheet (Linux Chromium has none, so share-stub.mjs stands in for it
 // and for the clipboard, and records what the page hands over).
 const SHARE_PHONE = { ...PHONE, label: 'phone-share', init: shareStub({ share: true, clipboard: true }) };
@@ -2208,6 +2212,92 @@ flow(ANDROID_FLOW, ANDROID, async (p) => {
   check('android: the section stays hidden after a result', await p.ev("document.getElementById('android-app').hidden && document.getElementById('android-app').getBoundingClientRect().height === 0"));
 });
 
+// The app (1.0.1) with its message channel: the website's Save, Copy and Share, tapped by
+// finger, each handed to the app by the bridge (window.MSAndroid) with what to do with it.
+const ANDROID_APP_FLOW = 'android-app-bridge';
+flow(ANDROID_APP_FLOW, ANDROID_APP, async (p) => {
+  check('android-app: the page came with the bridge line added, as the APK serves it', p.androidInjected === true);
+  check('android-app: the bridge adds window.MSAndroid (share and copyImage) on top of the channel', await p.ev("!!window.MSAndroid && Object.isFrozen(window.MSAndroid) && Object.keys(window.MSAndroid).sort().join() === 'copyImage,share'"));
+  check('android-app: the Zapstore section is still hidden', await p.ev("document.getElementById('android-app').hidden && document.getElementById('android-app').getBoundingClientRect().height === 0"));
+  await p.load(['jpeg-everything.jpg']);
+  await p.press();
+  let st = await p.ev(SHARE_STATE);
+  check(`android-app: Copy image, "${SHARE_TEXT.button}" and the warning show under Save, not marked data-web-only`, st.block && !st.webOnly && st.blockShown && st.copyShown && st.shareShown && st.noteShown && st.order.join() === 'save,copy,share,note,status', st);
+  check('android-app: Share is pink like Save; the warning is amber, with the exact text, and Share points to it', st.primary && st.noteAmber && st.noteText === SHARE_TEXT.note && st.noteOwnsDescription, st);
+  const sizes = await p.ev("[...document.querySelectorAll('#results-list .ms-share button')].filter((b) => b.getClientRects().length).map((b) => Math.round(b.getBoundingClientRect().height))");
+  check('android-app: Share and Copy are at least 44 px tall', sizes.length === 2 && sizes.every((h) => h >= 44), sizes);
+  await textCheck(p, 'app result with Save, Copy and Share');
+  await p.layout('app result with Save, Copy and Share');
+  await p.shot('6-app-buttons', { selector: '#results .ms-result-main' });
+
+  // Save: the app gets a save, and only a save.
+  await p.click('#results-list .ms-download');
+  await p.waitFor('window.__ms.files.length === 1', 10000, 'the save hand-over');
+  const saved = await p.ev('window.__ms.files[0]');
+  const savedBytes = appFileBytes(saved);
+  check('android-app: Save hands the app image.public.jpg as a save, and nothing else (no share option in the Save path)', saved.action === 'save' && saved.name === 'image.public.jpg' && saved.mime === 'image/jpeg' && savedBytes.length === saved.size && (await p.ev("window.__ms.posted.filter((m) => m.t === 'out-begin').map((m) => m.action).join()")) === 'save', { ...saved, parts: saved.parts.length });
+  await verifyDownload(p, { name: 'image.public.jpg', url: await p.ev("document.querySelector('#results-list .ms-download').href"), bytes: new Uint8Array(savedBytes) }, { fixture: 'jpeg-everything.jpg', removed: ['red'], lossless: true, word: 'public' });
+
+  // Share: exactly the saved bytes and name, on the first tap.
+  await p.click('#results-list .ms-share-btn');
+  await p.waitFor('window.__ms.files.length === 2', 10000, 'the share hand-over');
+  const shared = await p.ev('window.__ms.files[1]');
+  const sharedBytes = appFileBytes(shared);
+  check('android-app: a tap on Share hands the app image.public.jpg to share, at once', shared.action === 'share' && shared.name === 'image.public.jpg' && shared.mime === 'image/jpeg', { ...shared, parts: shared.parts.length });
+  check('android-app: the shared bytes are exactly the saved bytes', Buffer.compare(savedBytes, sharedBytes) === 0, { saved: savedBytes.length, shared: sharedBytes.length });
+  await sleep(200);
+  st = await p.ev(SHARE_STATE);
+  check('android-app: after sharing nothing is said, and the warning is still there', st.status === '' && st.noteShown, st);
+
+  // Copy: a fresh PNG without file details, image.png.
+  await p.click('#results-list .ms-copy-btn');
+  await p.waitFor('window.__ms.files.length === 3', 20000, 'the copy hand-over');
+  await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${J(SHARE_TEXT.copiedApp)}`, 5000, 'the copy message');
+  check(`android-app: the line after Copy is the app's own, "${SHARE_TEXT.copiedApp}"`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copiedApp);
+  const copied = await p.ev('window.__ms.files[2]');
+  const png = await inspect(new Uint8Array(appFileBytes(copied)));
+  const src = await inspect(new Uint8Array(savedBytes));
+  check('android-app: Copy hands the app image.png, a PNG with no metadata at all, at the picture\'s size', copied.action === 'copy' && copied.name === 'image.png' && copied.mime === 'image/png' && png.format === 'png' && png.items.length === 0 && png.width === src.width && png.height === src.height, { action: copied.action, name: copied.name, items: png.items.map((i) => i.id), size: [png.width, png.height] });
+  await textCheck(p, 'app after copy');
+  await p.layout('app after copy');
+  await p.shot('6-app-copied', { selector: '#results .ms-result-main' });
+
+  // The copy's end, by finger, with the stand-in's time left shortened from 2 minutes.
+  const isLine = (t) => `document.querySelector('#results-list .ms-share-status').textContent === ${J(t)}`;
+  await p.ev("window.__ms.copyLife = 1500; document.querySelector('#results-list .ms-share-status').textContent = ''");
+  await p.click('#results-list .ms-copy-btn');
+  await p.waitFor(isLine(SHARE_TEXT.copiedApp), 20000, 'the copy line');
+  check(`android-app: when the copy's time is up, the line becomes "${SHARE_TEXT.copyExpiredApp}"`, await p.waitFor(isLine(SHARE_TEXT.copyExpiredApp), 10000, 'the expired line'));
+  const live = await p.ev(SHARE_STATE);
+  check('android-app: the expired line is in the polite live region', live.live === 'polite' && live.status === SHARE_TEXT.copyExpiredApp, live);
+  await textCheck(p, 'app copy expired');
+  await p.layout('app copy expired');
+  await p.shot('6-app-copy-expired', { selector: '#results .ms-result-main' });
+  await p.ev("window.__ms.copyLife = 120000; document.querySelector('#results-list .ms-share-status').textContent = ''");
+  await p.click('#results-list .ms-copy-btn');
+  await p.waitFor(isLine(SHARE_TEXT.copiedApp), 20000, 'the copy line again');
+  await p.ev(SKIP_CLOCK(121000));
+  await sleep(200);
+  check('android-app: back after 2 minutes away (timers frozen), the line already reads as expired', (await p.ev(SHARE_STATE)).status === SHARE_TEXT.copyExpiredApp);
+  await p.ev('window.__ms.copyLife = 120000');
+
+  // When the app reports a failure, the page says so.
+  await p.ev("window.__ms.mode = 'fail'");
+  await p.click('#results-list .ms-share-btn');
+  await p.waitFor(`document.querySelector('#results-list .ms-share-status').textContent === ${J(SHARE_TEXT.failed)}`, 10000, 'the share failure');
+  check(`android-app: a share the app could not do says "${SHARE_TEXT.failed}"`, (await p.ev(SHARE_STATE)).status === SHARE_TEXT.failed);
+  await p.ev("window.__ms.mode = 'ok'");
+  check('android-app: a tap on Save never makes the browser download (the app saves)', (await p.download()).length === 0);
+  // Start again clears the line, and a late end of the copy does not bring it back.
+  await p.ev("window.__ms.copyLife = 800");
+  await p.click('#results-list .ms-copy-btn');
+  await p.waitFor(isLine(SHARE_TEXT.copiedApp), 20000, 'the copy line, third time');
+  await p.click('#reset-btn');
+  await sleep(1500);
+  const cleared = await p.ev(`({ lines: document.querySelectorAll('#results-list .ms-share-status').length, results: document.getElementById('results').hidden, expired: document.body.innerText.includes(${J(SHARE_TEXT.copyExpiredApp)}) })`);
+  check('android-app: Start again clears the line, and the copy ending later brings nothing back', cleared.lines === 0 && cleared.results && !cleared.expired, cleared);
+});
+
 // ---------------------------------------------------------------------------------------
 // Run
 
@@ -2243,7 +2333,7 @@ await sleep(300);
 for (const key of Object.keys(record)) record[key] = record[key].filter((r) => r.flow !== SELF_TEST);
 const web = record.requests.filter((r) => /^(https?|wss?):/.test(r.url));
 // android-bridge.js is not a website file; the harness serves it in the android flow only.
-const bridgeLoad = (r) => r.flow === ANDROID_FLOW && new URL(r.url).pathname === `/${BRIDGE_FILE}`;
+const bridgeLoad = (r) => (r.flow === ANDROID_FLOW || r.flow === ANDROID_APP_FLOW) && new URL(r.url).pathname === `/${BRIDGE_FILE}`;
 const servedOk = (r) => published(r.url) || bridgeLoad(r);
 const offsite = web.filter((r) => new URL(r.url).origin !== ORIGIN);
 check('no request to any other origin, at any time', !offsite.length, offsite.map((r) => `${r.flow}: ${r.url}`));

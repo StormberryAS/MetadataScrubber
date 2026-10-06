@@ -23,8 +23,9 @@
     <!--
       androidx.core declares a private signature permission for its registerReceiver
       compatibility shim. It grants nothing to anyone but this app, yet it still shows up in
-      `aapt dump permissions`. This app registers no broadcast receivers, so both halves of
-      it are removed.
+      `aapt dump permissions`. This app registers no broadcast receivers at run time (its one
+      receiver, for the clipboard alarm, is declared below and needs no permission), so both
+      halves of it are removed.
     -->
     <permission
         android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
@@ -111,11 +112,23 @@
             tools:node="remove" />
 
         <!--
-          Shares the finished file with the app the user picks. Not exported: other apps get
-          a one-off read grant for one file, and the paths file limits it to cache/outgoing/.
+          Ends a copied picture's 2 minutes while the app is in the background (1.0.1): an
+          inexact AlarmManager alarm, which needs no permission, wakes the app to delete it.
+          Not exported, so only the app's own PendingIntent can reach it.
+        -->
+        <receiver
+            android:name=".ClipExpiryReceiver"
+            android:exported="false" />
+
+        <!--
+          Shares the finished file with the app the user picks, and serves the copied picture
+          to the app it is pasted into. Not exported: other apps get a one-off read grant for
+          one file, and the paths file limits it to cache/outgoing/ and cache/clipboard/.
+          OutgoingProvider is androidx's FileProvider plus one rule: a copied picture can be
+          read for 2 minutes after the Copy, never after.
         -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name=".OutgoingProvider"
             android:authorities="${applicationId}.outgoing"
             android:exported="false"
             android:grantUriPermissions="true">

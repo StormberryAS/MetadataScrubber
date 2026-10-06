@@ -8,14 +8,24 @@
  * (connect-src 'none'): no fetch, no XHR, nothing leaves the device.
  *
  *  0. WEBSITE-ONLY PARTS. Every element marked data-web-only (the "Get the Android app on
- *     Zapstore" section, and the Share and Copy buttons under each new file) is hidden: the
- *     ones in the page once it has been parsed, and the ones the page adds later as soon as
- *     they are added. The app offers its own Save and Share instead.
+ *     Zapstore" section) is hidden: the ones in the page once it has been parsed, and the
+ *     ones the page adds later as soon as they are added.
  *
- *  1. SAVING AND SHARING. A WebView cannot follow a download link to a blob: address, so a
- *     click on the page's "Save" link is caught here. The Blob behind it is read in the
- *     page (Blob.arrayBuffer) and handed to the app in chunks, which then offers Save or
- *     Share. The file name is the page's own, for example image.minimal.jpg.
+ *  1. SAVE, SHARE AND COPY. A WebView cannot follow a download link to a blob: address, so
+ *     a click on the page's "Save" link is caught here. The Blob behind it is read in the
+ *     page (Blob.arrayBuffer) and handed to the app in chunks, and the app opens Android's
+ *     save screen with it. The file name is the page's own, for example image.minimal.jpg.
+ *     Share and Copy go the same way, through window.MSAndroid, which this script adds
+ *     (1.0.1): share(file, name) hands the exact file Save gives to Android's share sheet,
+ *     and copyImage(png) hands the fresh PNG the page draws (no file details) to Android's
+ *     clipboard. share returns a Promise of true once the app has done it, or false;
+ *     copyImage a Promise of { expiresIn } (the milliseconds the copy can still be pasted,
+ *     as the app counts them) or false. When the app ends a copy's 2 minutes (or finds it
+ *     ended while the app was away) it says so, and this script fires the window event
+ *     'msandroid:clip-expired', so the page's line and the app's file provider agree. The
+ *     page shows its Share and Copy buttons, and the warning under them, only because
+ *     window.MSAndroid exists; without the message channel it is never added, and the page
+ *     marks that block data-web-only, so it is hidden as before.
  *
  *  2. PICTURES SHARED INTO THE APP. When a gallery shares a picture to the app, the app
  *     hands it over in chunks; this script rebuilds it as a File, puts it in the page's
@@ -24,7 +34,10 @@
  *
  * The channel is window.MSBridge, injected by the app through
  * WebViewCompat.addWebMessageListener and ONLY into pages from
- * https://appassets.androidplatform.net, the bundled app's own origin.
+ * https://appassets.androidplatform.net, the bundled app's own origin. window.MSAndroid is
+ * plain JavaScript on top of that channel: it adds no Java object to the page (no
+ * addJavascriptInterface), it carries bytes only (never an address or a path), and the
+ * app checks every request again (OutgoingRequest.kt) before it saves, shares or copies.
  */
 (function () {
   'use strict';
@@ -95,7 +108,7 @@
     return out;
   }
 
-  /* ---------- 1. Saving and sharing ---------- */
+  /* ---------- 1. Save, Share and Copy ---------- */
 
   /* Remember which Blob each blob: address stands for, so a click can hand over the
      bytes without fetching the address (the page forbids fetch, and rightly). */
@@ -115,43 +128,85 @@
   var nextOutId = 1;
   var outQueue = [];
   var outCurrent = null;
-  /* Every Blob that is queued or on its way to the app. A second tap on the same Save link
-     while it is still being handed over does nothing, so one result never arrives twice. */
-  var outPending = new Set();
+  /* Every job queued or on its way to the app. The same Blob asked for the same action
+     again while it is still being handed over gets the job already under way, so a second
+     tap on Save never makes the file arrive twice. */
+  var outJobs = [];
+
+  /* Largest file handed to the app; the app refuses anything bigger in any case
+     (ChunkAssembler.DEFAULT_MAX_BYTES). */
+  var MAX_OUT = 512 * 1024 * 1024;
+
+  function finishJob(job, ok) {
+    var i = outJobs.indexOf(job);
+    if (i >= 0) outJobs.splice(i, 1);
+    job.resolve(ok);
+  }
+
+  /* Queues one Blob for the app. action is 'save', 'share' or 'copy'. Resolves to true
+     once the app reports it done, or false. */
+  function sendOut(blob, name, action) {
+    for (var i = 0; i < outJobs.length; i++) {
+      if (outJobs[i].blob === blob && outJobs[i].action === action) return outJobs[i].promise;
+    }
+    var job = { blob: blob, name: name, mime: blob.type || '', action: action };
+    job.promise = new Promise(function (resolve) { job.resolve = resolve; });
+    outJobs.push(job);
+    outQueue.push(job);
+    startNextOut();
+    return job.promise;
+  }
 
   function startNextOut() {
     if (outCurrent || !outQueue.length) return;
     var job = outQueue.shift();
+    outCurrent = { id: nextOutId++, bytes: null, job: job };
+    var current = outCurrent;
     job.blob.arrayBuffer().then(function (buf) {
+      if (outCurrent !== current) return;
       var bytes = new Uint8Array(buf);
-      if (!bytes.length) { outPending.delete(job.blob); startNextOut(); return; }
-      outCurrent = { id: nextOutId++, bytes: bytes, blob: job.blob };
+      if (!bytes.length || bytes.length > MAX_OUT) { endOut(current, false); return; }
+      current.bytes = bytes;
       post({
         t: 'out-begin',
-        id: outCurrent.id,
+        id: current.id,
+        action: job.action,
         name: job.name,
         mime: job.mime,
         size: bytes.length,
         chunks: Math.ceil(bytes.length / CHUNK)
       });
     }, function () {
-      outPending.delete(job.blob);
-      startNextOut();
+      if (outCurrent === current) endOut(current, false);
     });
   }
 
+  function endOut(current, ok, msg) {
+    if (outCurrent !== current) return;
+    outCurrent = null;
+    var result = ok;
+    if (ok && current.job.action === 'copy') {
+      var left = msg && typeof msg.expiresIn === 'number' && isFinite(msg.expiresIn) ? msg.expiresIn : CLIP_LIFETIME;
+      result = Object.freeze({ expiresIn: Math.max(0, Math.min(left, CLIP_LIFETIME)) });
+    }
+    finishJob(current.job, result);
+    startNextOut();
+  }
+
+  /* A copied picture can be pasted for 2 minutes (ClipboardFiles.LIFETIME_MS in the app). */
+  var CLIP_LIFETIME = 2 * 60 * 1000;
+
   function onOutPull(msg) {
-    if (!outCurrent || msg.id !== outCurrent.id) return;
+    if (!outCurrent || !outCurrent.bytes || msg.id !== outCurrent.id) return;
     var start = msg.index * CHUNK;
+    if (!(start >= 0 && start < outCurrent.bytes.length)) return;
     var piece = outCurrent.bytes.subarray(start, Math.min(start + CHUNK, outCurrent.bytes.length));
     post({ t: 'out-chunk', id: outCurrent.id, index: msg.index, data: toBase64(piece) });
   }
 
   function onOutEnd(msg) {
     if (!outCurrent || msg.id !== outCurrent.id) return;
-    outPending.delete(outCurrent.blob);
-    outCurrent = null;
-    startNextOut();
+    endOut(outCurrent, msg.t === 'out-done' && msg.ok !== false, msg);
   }
 
   document.addEventListener('click', function (ev) {
@@ -162,15 +217,25 @@
     if (href.indexOf('blob:') !== 0) return;
     ev.preventDefault();
     var blob = blobs.get(link.href) || blobs.get(href);
-    if (!blob || outPending.has(blob)) return;
-    outPending.add(blob);
-    outQueue.push({
-      blob: blob,
-      name: link.getAttribute('download') || 'image',
-      mime: blob.type || ''
-    });
-    startNextOut();
+    if (!blob) return;
+    sendOut(blob, link.getAttribute('download') || 'image', 'save');
   }, true);
+
+  /* Share and Copy for the page. Only Blobs go in: no address, no path. The page checks
+     for both functions before it shows its buttons. */
+  function isBlob(x) { return typeof Blob === 'function' && x instanceof Blob; }
+  var api = {
+    share: function (file, name) {
+      if (!isBlob(file) || !file.size) return Promise.resolve(false);
+      return sendOut(file, String(name || file.name || 'image'), 'share');
+    },
+    copyImage: function (png) {
+      if (!isBlob(png) || !png.size || png.type !== 'image/png') return Promise.resolve(false);
+      return sendOut(png, 'image.png', 'copy');
+    }
+  };
+  Object.freeze(api);
+  Object.defineProperty(window, 'MSAndroid', { value: api, writable: false, configurable: false, enumerable: false });
 
   /* ---------- 2. Pictures shared into the app ---------- */
 
@@ -262,6 +327,7 @@
       case 'incoming': onIncoming(msg); break;
       case 'in-chunk': onInChunk(msg); break;
       case 'in-error': onInError(msg); break;
+      case 'clip-expired': window.dispatchEvent(new Event('msandroid:clip-expired')); break;
       default: break;
     }
   });

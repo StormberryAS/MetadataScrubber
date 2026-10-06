@@ -21,7 +21,8 @@ description: |
   It declares no Android permissions at all. There is no internet permission,
   so it cannot send your photos anywhere, and no storage permission either:
   pictures come in through the system file picker or a share from your
-  gallery, and go out through the system save screen or a share. Check it
+  gallery, and go out through the system save screen, a share or the
+  clipboard. Check it
   yourself before installing:
 
       aapt dump permissions <the APK you downloaded>
@@ -54,9 +55,11 @@ description: |
   - Crop, resize and convert JPEG, PNG and WebP when you need to.
   - Reads the result back, so you see what remains before you share.
   - Neutral file names such as image.public.jpg.
-  - Share a photo in from your gallery, then Save or Share the clean copy.
-    Before the first share, the app reminds you that once a picture is
-    online, you cannot take it back.
+  - Share a photo in from your gallery, then Save, Copy image or Share the
+    clean copy, as on the website. Copy image puts a fresh copy without
+    file details on the clipboard, where it can be pasted for 2 minutes
+    before the app deletes it, and a note under Share reminds you that
+    once a picture is online, you cannot take it back.
 
   JPEG, PNG, WebP and HEIC. HEIC metadata can be removed, but cropping and
   resizing HEIC are not available in the app, because Android's web engine
