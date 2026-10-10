@@ -398,12 +398,64 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: var(--text-primary);
 }
 
-/* Replaces the inline style="width:32px;height:32px;opacity:0.9" the
-   sibling apps carry, which this page's CSP would refuse. */
+/* Icon size here, not in an inline style="...", which this page's CSP
+   would refuse. Every sibling app does the same since 2026-10-10. */
 .switcher-card img {
   width: 32px;
   height: 32px;
   opacity: 0.9;
+}
+
+/* ---- Carousel and footer access (2026-10-10) ---------------------- */
+/* The page's own app, the last card of every set, is marked for screen
+   readers (aria-current) and for the eye (an accent border). */
+.switcher-card[aria-current="page"] { border-color: var(--accent-primary); }
+
+/* Rounded focus ring, whatever corner radius the page's own ring uses */
+.switcher-card:focus-visible { border-radius: 12px; }
+
+/* Keyboard focus stops the slide and the row scrolls to the focused card,
+   so it is never off-screen. :focus-visible and not :focus-within, so a
+   mouse click does not move the card from under the pointer. */
+.app-switcher-marquee:has(.switcher-card:focus-visible) { overflow-x: auto; }
+.app-switcher-marquee:has(.switcher-card:focus-visible) .app-switcher-track { animation: none; }
+
+/* The pause tick box (WCAG 2.2.2): ticked, the slide stops and the row
+   scrolls by hand. Plain CSS, no script. `all: revert` keeps the page's
+   own form styles off it. */
+.app-switcher-container input.switcher-pause {
+  all: revert;
+  margin: 0 0.5rem 0.75rem 0;
+  vertical-align: middle;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.app-switcher-container label.switcher-pause-label {
+  all: revert;
+  display: inline-block;
+  margin-bottom: 0.75rem;
+  vertical-align: middle;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.app-switcher-container input.switcher-pause:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.switcher-pause:checked ~ .app-switcher-marquee { overflow-x: auto; }
+.switcher-pause:checked ~ .app-switcher-marquee .app-switcher-track { animation: none; }
+
+/* A footer link never breaks inside itself (the org.nr. did at 320 px) */
+.footer-bottom p a { white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Nothing slides, so there is nothing to pause. */
+  .app-switcher-container input.switcher-pause,
+  .app-switcher-container label.switcher-pause-label { display: none; }
 }
 
 /* ---- Footer -------------------------------------------------------- */
