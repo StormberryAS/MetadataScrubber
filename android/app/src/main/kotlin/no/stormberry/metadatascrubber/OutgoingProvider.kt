@@ -11,8 +11,10 @@ import java.io.FileNotFoundException
 
 /**
  * The app's FileProvider, with one rule added: a copied picture (cache/clipboard/) can be
- * read for 2 minutes after the Copy and never after (ClipboardFiles.isExpired). Shared files
- * (cache/outgoing/) are served exactly as before.
+ * read for 2 minutes after the Copy and never after (ClipboardFiles.isExpired), and a shared
+ * file (cache/outgoing/) for 10 minutes after the share and never after (1.1.0;
+ * OutgoingFiles.isRefusedPath, which also refuses a file in cache/outgoing/ that was never
+ * shared, such as one waiting for its save screen).
  *
  * This is where the 2 minutes are enforced, because it is the only code every paste has to
  * go through: an app that pastes opens the address here, and Android starts or wakes this
@@ -25,8 +27,9 @@ class OutgoingProvider : FileProvider() {
 
     private fun expired(uri: Uri): Boolean {
         val ctx = context ?: return true
-        val clips = ClipboardFiles(ctx.cacheDir)
-        if (!clips.isExpiredPath(uri.pathSegments)) return false
+        val segments = uri.pathSegments
+        val refused = ClipboardFiles(ctx.cacheDir).isExpiredPath(segments) || OutgoingFiles(ctx.cacheDir).isRefusedPath(segments)
+        if (!refused) return false
         // Delete whatever has expired (taking back its grants), and the grant for this address.
         ClipExpiry.sweep(ctx)
         try {

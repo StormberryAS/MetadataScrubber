@@ -6,12 +6,25 @@ activity = "1.13.0"      # same release UsernameGenerator ships (activity-compos
 coreKtx = "1.19.0"       # same release UsernameGenerator ships
 webkit = "1.17.0"        # 2026-08-12; 1.17.1 (2026-09-23) was under 14 days old at build time
 junit = "4.13.2"
+# CameraX 1.5.3 (2026-01-29) for the in-app camera (1.1.0), deliberately NOT 1.6.x: from 1.6
+# its camera2 runs on camera-camera2-pipe and brings Dagger, javax/jakarta inject, full Guava,
+# checker-qual, jsr305, errorprone, j2objc and atomicfu, about +1.2 MB of dex against
+# +0.7 MB here, whose only non-AndroidX library is auto-value-annotations (Apache 2.0).
+# Move to 1.6.x only if a real device misbehaves on 1.5.3 (build spec, 2026-10-10).
+# "strictly", not a plain version: Gradle would otherwise raise it silently whenever another
+# dependency asked for a newer CameraX, and with it bring in camera-camera2-pipe. With it,
+# such a dependency fails the build instead.
+camerax = { strictly = "1.5.3" }
 
 [libraries]
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-webkit = { group = "androidx.webkit", name = "webkit", version.ref = "webkit" }
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

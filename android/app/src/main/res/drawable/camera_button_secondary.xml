@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The page's plain button (btn-secondary in style.css), for the camera's explanation (1.1.0). -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/camera_border">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="12dp" />
+            <solid android:color="@color/camera_secondary_fill" />
+            <stroke android:width="1dp" android:color="@color/camera_secondary_border" />
+        </shape>
+    </item>
+</ripple>

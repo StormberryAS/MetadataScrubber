@@ -154,8 +154,8 @@ tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }
 // ONE VISIBLE VERSION, TWO CODE LINES. The sovereign versionCode and versionName in
 // defaultConfig below are the only numbers ever bumped by hand. The Play build derives its
 // code from them and shows the same version name (Marcos, 2026-10-05: "1.0.0 for both"):
-//   Play versionCode = 1000 + sovereign versionCode   (1.0.1 code 5 -> code 1005)
-//   Play versionName = sovereign versionName          (1.0.1 -> 1.0.1)
+//   Play versionCode = 1000 + sovereign versionCode   (1.1.0 code 6 -> code 1006)
+//   Play versionName = sovereign versionName          (1.1.0 -> 1.1.0)
 // Play only needs monotonic codes within its own package, and the offset keeps them distinct
 // from the sovereign line and rising with it. The package name and the signing key are what
 // keep the two apart, not the version. Build every Play upload from a sovereign release tag.
@@ -181,8 +181,9 @@ android {
         // 0.0.3 (code 3): only red is ticked to start with, and captions, titles, descriptions, keywords and comments are red; amber is kept unless ticked. HDR JPEGs and iPhone HEICs keep their gain map and HDR brightness, holding only what they need to render. XMP is always written in a standard form. Green details keep only what the specifications define (2026-10-04).
         // 1.0.0 (code 4): Share the new image with a warning that a picture online cannot be taken back (website: Share and Copy image; app: a warning before the first Share), a privacy page, a note when colours may look duller on HDR screens, and iPhone HDR brightness kept again when Apple's HDR gain is above 1 (2026-10-05). The Play build is 1.0.0 too, code 1004.
         // 1.0.1 (code 5): the app shows the website's Save, Copy image and Share the new image buttons, with the warning always under Share; Share goes straight to Android's share sheet, Copy image puts a fresh PNG without file details on Android's clipboard for 2 minutes (Marcos, 2026-10-06: "do the 2 minutes limit on the app, including the message"), and Save only saves (Marcos, 2026-10-05: "Build 1.0.1"); the HDR gain map keeps Amber with a new note that it is a second, smaller picture that may still show what was edited or blurred elsewhere. The Play build is 1.0.1 too, code 1005.
-        versionCode = 5
-        versionName = "1.0.1"
+        // 1.1.0 (code 6): Take a photo in the app, a simple camera (shutter, front or back camera, flash where there is one, pinch to zoom) whose photo is made without a location or device details, is never added to the gallery and goes straight to Save, Copy image and Share (Marcos, 2026-10-10). CAMERA is the only permission, asked when Take a photo is tapped and the app does not have it yet; there is still no internet. A shared file is deleted after 10 minutes, and a file waiting for the save screen is deleted when that screen is closed without saving. On the website, phones and tablets get Take a photo too, through the device's own camera app. The Play build is 1.1.0 too, code 1006.
+        versionCode = 6
+        versionName = "1.1.0"
         // Play line, derived from the code above (see playVersionCodeOffset); same versionName.
         if (playBuild) {
             versionCode = playVersionCodeOffset + versionCode!!
@@ -284,6 +285,10 @@ android {
         // The fonts are already compressed (woff2) and the page reads every file through
         // the asset loader; leaving them stored keeps the copy byte-identical and cheap to open.
         noCompress += listOf("woff2", "png")
+        // The app is in English only (Marcos, 2026-10-05). CameraX's camera-view brings
+        // appcompat, whose strings come in about 90 languages; keeping only English means no
+        // screen can mix languages, and the APK carries no strings it never shows.
+        localeFilters += listOf("en")
     }
 
     dependenciesInfo {
@@ -777,7 +782,9 @@ val verifyWebAssetsCommitted = tasks.register<VerifyWebAssetsCommitted>("verifyW
 // actually resolves, and the build fails on a library whose licence is not accounted for.
 object Licences {
     // Every one of these groups publishes its artefacts under Apache-2.0.
-    val APACHE_GROUPS = listOf("androidx.", "org.jetbrains.kotlin", "org.jetbrains.kotlinx", "org.jspecify", "com.google.guava")
+    // com.google.auto.value: auto-value-annotations, pulled in by CameraX (1.1.0); its POM
+    // inherits the Apache 2.0 licence block from com.google.auto:auto-parent.
+    val APACHE_GROUPS = listOf("androidx.", "org.jetbrains.kotlin", "org.jetbrains.kotlinx", "org.jspecify", "com.google.guava", "com.google.auto.value")
 
     fun isApache(group: String): Boolean =
         APACHE_GROUPS.any { if (it.endsWith(".")) group.startsWith(it) else group == it || group.startsWith("$it.") } ||
@@ -876,4 +883,9 @@ dependencies {
     implementation(libs.androidx.activity)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.webkit)
+    // The in-app camera (1.1.0). See the camerax line in gradle/libs.versions.toml for why 1.5.3.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 }

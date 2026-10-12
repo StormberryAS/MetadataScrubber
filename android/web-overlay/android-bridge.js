@@ -4,7 +4,7 @@
  * adds one line to index.html that loads this script before gate.js and app.js; nothing
  * else in the page is changed. On the website this file is never loaded.
  *
- * It does three jobs, and all keep the page's own Content Security Policy intact
+ * It does four jobs, and all keep the page's own Content Security Policy intact
  * (connect-src 'none'): no fetch, no XHR, nothing leaves the device.
  *
  *  0. WEBSITE-ONLY PARTS. Every element marked data-web-only (the "Get the Android app on
@@ -31,6 +31,17 @@
  *     hands it over in chunks; this script rebuilds it as a File, puts it in the page's
  *     file input and fires the same change event a user's pick would, so the page's normal
  *     flow takes over.
+ *
+ *  3. TAKE A PHOTO (1.1.0). window.MSAndroid.takePhoto() asks the app to open its own
+ *     camera screen. It takes no arguments, so there is nothing to forge, and it only opens
+ *     the screen: the photo is taken by the camera screen's own shutter button, never by a
+ *     message from the page. It returns a Promise of true when a photo is on its way, or
+ *     false (closed, permission refused, no camera, or failed); a second call while the
+ *     camera is open gets the same Promise. The photo then arrives like a picture shared
+ *     in, marked as taken in the app (source 'camera'), and this script fires the window
+ *     event 'msandroid:photo' with the File instead of filling the file input, so the page
+ *     can show the photo's result straight away. The app deletes its copy as soon as the
+ *     page has the bytes.
  *
  * The channel is window.MSBridge, injected by the app through
  * WebViewCompat.addWebMessageListener and ONLY into pages from
@@ -221,8 +232,20 @@
     sendOut(blob, link.getAttribute('download') || 'image', 'save');
   }, true);
 
-  /* Share and Copy for the page. Only Blobs go in: no address, no path. The page checks
-     for both functions before it shows its buttons. */
+  /* Take a photo (1.1.0): one camera screen at a time. */
+  var cameraPromise = null;
+  var cameraResolve = null;
+
+  function onCameraResult(msg) {
+    var resolve = cameraResolve;
+    cameraPromise = null;
+    cameraResolve = null;
+    if (resolve) resolve(msg.ok === true);
+  }
+
+  /* Share, Copy and Take a photo for the page. Only Blobs go in: no address, no path.
+     The page checks for share and copyImage before it shows its Share and Copy buttons,
+     and for takePhoto before it shows Take a photo as the app's. */
   function isBlob(x) { return typeof Blob === 'function' && x instanceof Blob; }
   var api = {
     share: function (file, name) {
@@ -232,6 +255,12 @@
     copyImage: function (png) {
       if (!isBlob(png) || !png.size || png.type !== 'image/png') return Promise.resolve(false);
       return sendOut(png, 'image.png', 'copy');
+    },
+    takePhoto: function () {
+      if (cameraPromise) return cameraPromise;
+      cameraPromise = new Promise(function (resolve) { cameraResolve = resolve; });
+      post({ t: 'camera-open' });
+      return cameraPromise;
     }
   };
   Object.freeze(api);
@@ -263,7 +292,7 @@
   }
 
   function onIncoming(msg) {
-    inBatch = { id: msg.batch, files: msg.files || [], done: [], file: 0, parts: [] };
+    inBatch = { id: msg.batch, files: msg.files || [], done: [], file: 0, parts: [], source: msg.source === 'camera' ? 'camera' : 'share' };
     if (!inBatch.files.length) { inBatch = null; return; }
     var id = inBatch.id;
     whenReady(function () {
@@ -307,6 +336,14 @@
     inBatch = null;
     post({ t: 'in-done', batch: b.id });
     if (!b.done.length) return;
+    /* A photo taken in the app: exactly one JPEG, handed to the page by event, never through
+       the file input. Anything else marked as a camera batch is dropped. */
+    if (b.source === 'camera') {
+      if (b.done.length === 1 && b.done[0].type === 'image/jpeg') {
+        window.dispatchEvent(new CustomEvent('msandroid:photo', { detail: Object.freeze({ file: b.done[0] }) }));
+      }
+      return;
+    }
     var input = document.getElementById('file-input');
     var dt = new DataTransfer();
     b.done.forEach(function (f) { dt.items.add(f); });
@@ -328,6 +365,7 @@
       case 'in-chunk': onInChunk(msg); break;
       case 'in-error': onInError(msg); break;
       case 'clip-expired': window.dispatchEvent(new Event('msandroid:clip-expired')); break;
+      case 'camera-result': onCameraResult(msg); break;
       default: break;
     }
   });

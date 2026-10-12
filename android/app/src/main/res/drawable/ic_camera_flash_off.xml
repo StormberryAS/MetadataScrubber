@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The flash is off (the camera screen, 1.1.0): the bolt in outline, struck through. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M13,2L4.5,13.5H11L10,22L19.5,10H13Z"
+        android:strokeWidth="1.6"
+        android:strokeColor="@color/camera_text"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M3.5,3.5L20.5,20.5"
+        android:strokeWidth="2"
+        android:strokeColor="@color/camera_text"
+        android:strokeLineCap="round" />
+</vector>

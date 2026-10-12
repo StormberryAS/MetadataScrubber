@@ -128,6 +128,40 @@ def cmd_sos_offset(args):
     print(jpeg_header_segments(read(args[0]))[-1][0])
 
 
+def cmd_jpeg_pixels_only(args):
+    """jpeg-pixels-only IN OUT: keep only DQT, DHT, DRI, SOF0-2, the scans and EOI, as the
+    Android app's JpegCheck does for a photo taken in the app (1.1.0)."""
+    data = read(args[0])
+    if data[:2] != b'\xff\xd8':
+        die('not a JPEG (no SOI)')
+    keep = {0xDB, 0xC4, 0xDD, 0xC0, 0xC1, 0xC2}
+    out = bytearray(b'\xff\xd8')
+    pos = 2
+    while True:
+        if pos + 2 > len(data) or data[pos] != 0xFF:
+            die('expected a marker at offset %d' % pos)
+        marker = data[pos + 1]
+        if marker == 0xFF:
+            pos += 1
+            continue
+        if marker == 0xD9:
+            out += b'\xff\xd9'
+            break
+        length = struct.unpack('>H', data[pos + 2:pos + 4])[0]
+        end = pos + 2 + length
+        if marker == 0xDA:
+            # The scan header, then the entropy-coded data up to the next real marker.
+            while not (data[end] == 0xFF and data[end + 1] != 0x00 and not 0xD0 <= data[end + 1] <= 0xD7):
+                end += 1
+            out += data[pos:end]
+        elif marker in keep:
+            out += data[pos:end]
+        elif not (0xE0 <= marker <= 0xEF or marker == 0xFE):
+            die('marker %02X is not expected in a camera photo' % marker)
+        pos = end
+    write(args[1], bytes(out))
+
+
 def cmd_xmp_payload(args):
     """xmp-payload IN.xml OUT: wrap an XMP document in an xpacket and the APP1 namespace header."""
     xml = read(args[0]).strip()
@@ -1055,7 +1089,7 @@ def cmd_scan(args):
 
 COMMANDS = {
     'jpeg-insert': cmd_jpeg_insert, 'jpeg-exif': cmd_jpeg_exif, 'jpeg-segment': cmd_jpeg_segment,
-    'sos-offset': cmd_sos_offset, 'xmp-payload': cmd_xmp_payload, 'xpacket': cmd_xpacket,
+    'sos-offset': cmd_sos_offset, 'jpeg-pixels-only': cmd_jpeg_pixels_only, 'xmp-payload': cmd_xmp_payload, 'xpacket': cmd_xpacket,
     'blob': cmd_blob, 'mpf': cmd_mpf, 'uhdr': cmd_uhdr, 'samsung': cmd_samsung, 'c2pa': cmd_c2pa, 'icc': cmd_icc,
     'icc-text': cmd_icc_text,
     'png-build': cmd_png_build, 'webp-build': cmd_webp_build, 'mp4-udta': cmd_mp4_udta,

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Switch between the back and the front camera (the camera screen, 1.1.0). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M3,8.5C3,7.67 3.67,7 4.5,7H7.5L9,5H15L16.5,7H19.5C20.33,7 21,7.67 21,8.5V18.5C21,19.33 20.33,20 19.5,20H4.5C3.67,20 3,19.33 3,18.5Z"
+        android:strokeWidth="1.6"
+        android:strokeColor="@color/camera_text"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M8.64,12.53A3.5,3.5 0,0 1,15.03 11.75M15.17,9.59L15.03,11.75L13.09,10.79M15.36,14.47A3.5,3.5 0,0 1,8.97 15.25M8.83,17.41L8.97,15.25L10.91,16.21"
+        android:strokeWidth="1.5"
+        android:strokeColor="@color/camera_text"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

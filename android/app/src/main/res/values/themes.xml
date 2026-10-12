@@ -12,4 +12,15 @@
         <item name="android:navigationBarColor">@color/page_background</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!--
+      The camera screen (1.1.0): black behind the preview, so the frame shows as it will be
+      saved, with no action bar. Its explanation panels draw the page's own background.
+    -->
+    <style name="Theme.MetadataScrubber.Camera" parent="Theme.MetadataScrubber">
+        <item name="android:windowBackground">@color/camera_background</item>
+        <item name="android:colorBackground">@color/camera_background</item>
+        <item name="android:statusBarColor">@color/camera_background</item>
+        <item name="android:navigationBarColor">@color/camera_background</item>
+    </style>
 </resources>

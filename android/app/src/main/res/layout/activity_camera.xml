@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The in-app camera (1.1.0). Not a full camera: Close and, where the camera has one, a flash
+  toggle at the top; the shutter and the front or back switch at the bottom; pinch to zoom.
+  The preview fits the whole frame on screen (black bars on a tall phone), so it shows
+  exactly what the photo will hold. The panel on top explains the CAMERA permission before
+  Android asks, or says that it is off; it is the page's own background, not a dialog, with
+  its buttons at the bottom.
+  System-bar insets are applied in CameraActivity, which runs edge to edge. The views go
+  straight into the window's own content frame (merge), whose background is the theme's black.
+-->
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:parentTag="android.widget.FrameLayout">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/camera_preview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no" />
+
+    <!-- A brief white flash when the photo is taken. -->
+    <View
+        android:id="@+id/camera_flash_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:background="@color/camera_text"
+        android:importantForAccessibility="no"
+        android:visibility="gone" />
+
+    <FrameLayout
+        android:id="@+id/camera_top_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:padding="12dp">
+
+        <ImageButton
+            android:id="@+id/camera_close"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="start|center_vertical"
+            android:background="@drawable/camera_icon_button"
+            android:contentDescription="@string/camera_close"
+            android:padding="12dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_camera_close" />
+
+        <ImageButton
+            android:id="@+id/camera_flash"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="end|center_vertical"
+            android:background="@drawable/camera_icon_button"
+            android:contentDescription="@string/camera_flash_turn_on"
+            android:padding="12dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_camera_flash_off"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:id="@+id/camera_bottom_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="24dp">
+
+        <TextView
+            android:id="@+id/camera_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:accessibilityLiveRegion="polite"
+            android:background="@drawable/camera_pill"
+            android:gravity="center"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp"
+            android:textColor="@color/camera_text"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <ImageButton
+                android:id="@+id/camera_shutter"
+                android:layout_width="76dp"
+                android:layout_height="76dp"
+                android:layout_gravity="center"
+                android:background="@drawable/camera_shutter"
+                android:contentDescription="@string/camera_shutter" />
+
+            <ImageButton
+                android:id="@+id/camera_switch"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="end|center_vertical"
+                android:background="@drawable/camera_icon_button"
+                android:contentDescription="@string/camera_switch_front"
+                android:padding="12dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_camera_switch"
+                android:visibility="gone" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <!-- The permission explanation, or the note that camera access is off. -->
+    <ScrollView
+        android:id="@+id/camera_panel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/page_background"
+        android:fillViewport="true"
+        android:visibility="gone">
+
+        <!-- fillViewport stretches this to the screen's height; the Space below then takes
+             the room left over, so the buttons sit at the bottom, within reach of a thumb.
+             With large text the Space shrinks to its minimum and the panel scrolls. -->
+        <LinearLayout
+            android:id="@+id/camera_panel_content"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="24dp"
+            android:paddingTop="32dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="32dp">
+
+            <TextView
+                android:id="@+id/camera_panel_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/camera_text"
+                android:textSize="24sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/camera_panel_body"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:lineSpacingMultiplier="1.3"
+                android:textColor="@color/camera_text_secondary"
+                android:textSize="16sp" />
+
+            <Space
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:minHeight="32dp" />
+
+            <Button
+                android:id="@+id/camera_panel_primary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/camera_button_primary"
+                android:minHeight="48dp"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/camera_on_accent"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/camera_panel_secondary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/camera_button_secondary"
+                android:minHeight="48dp"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:stateListAnimator="@null"
+                android:textAllCaps="false"
+                android:textColor="@color/camera_text"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </ScrollView>
+</merge>

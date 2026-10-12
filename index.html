@@ -39,7 +39,7 @@
 
   <!-- Local Fonts: Inter -->
   <link rel="stylesheet" href="fonts/inter/inter.css?v=868d674e" />
-  <link rel="stylesheet" href="style.css?v=9a3ffffe" />
+  <link rel="stylesheet" href="style.css?v=06124b82" />
   <link rel="stylesheet" href="gate.css?v=9f2087d3" />
   <script src="gate.js?v=d516d809" defer></script>
 </head>
@@ -54,14 +54,21 @@
     </section>
 
     <!-- Step 1: pick or drop files. The file input is hidden and opened by the
-         button, so there is one tab stop and one clear label. -->
+         button, so there is one tab stop and one clear label. On phones and tablets,
+         and in the Android app, app.js adds "Take a photo" after the button: on the
+         website it opens the device's camera app through the hidden capture input below;
+         in the app it opens the app's own camera instead, and the capture input is never
+         used. -->
     <section class="card ms-card" id="pick-card" aria-labelledby="pick-title">
       <h2 class="ms-card-title" id="pick-title">Choose pictures</h2>
       <div class="ms-drop" id="drop-zone">
         <svg class="ms-drop-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/></svg>
         <p class="ms-drop-title">Drop pictures here</p>
-        <button type="button" class="btn btn-primary" id="choose-btn">Choose pictures</button>
+        <div class="ms-drop-actions" id="pick-actions">
+          <button type="button" class="btn btn-primary" id="choose-btn">Choose pictures</button>
+        </div>
         <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.jpe,.png,.webp,.heic,.heif" multiple hidden />
+        <input type="file" id="camera-input" accept="image/*" capture="environment" hidden />
         <p class="ms-drop-hint">JPEG, PNG, WebP or HEIC. You can choose several at once. Nothing is uploaded: this page reads the files on your device.</p>
       </div>
       <div class="ms-notice" id="pick-errors" data-tier="red" role="alert" hidden></div>
@@ -243,7 +250,7 @@
          the Android app loads hides this section inside the app. Do not name that script's
          file here: the APK build refuses an index.html that already mentions it. -->
     <section class="android-app" id="android-app" aria-labelledby="android-app-title" data-web-only>
-      <p><strong id="android-app-title">Android app</strong>: the same tool on your phone, with no permissions and no internet. Share a photo into it straight from your gallery.</p>
+      <p><strong id="android-app-title">Android app</strong>: the same tool on your phone, with no internet. Share a photo into it straight from your gallery, or take one with its camera.</p>
       <a class="btn btn-secondary" href="https://zapstore.dev/apps/no.stormberry.metadatascrubber" target="_blank" rel="noopener">Get the Android app on Zapstore<span class="visually-hidden"> (opens in a new tab)</span></a>
     </section>
   </main>
@@ -473,6 +480,6 @@
     </div>
   </footer>
 
-  <script type="module" src="app.js?v=e42827a7"></script>
+  <script type="module" src="app.js?v=0ef993fc"></script>
 </body>
 </html>

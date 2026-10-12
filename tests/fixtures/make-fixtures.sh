@@ -816,6 +816,15 @@ EOF
 kit xmp-payload "$W/ix.xml" "$W/ix-xmp.bin"
 kit jpeg-insert "$W/ix.jpg" "$OUT/$F" after:e0 "e1:$W/ix-xmp.bin"
 
+# 16. camera-clean.jpg ########################################################
+# A photo as the Android app's own camera makes it (1.1.0): a JPEG with no application
+# segment at all, not even JFIF, and no comment, so the engine finds nothing in it. The
+# app-mode tests hand it to the page as a photo taken in the app. Nothing is planted.
+F=camera-clean.jpg
+scene "$W/cam.png" 640 480 171 '#9fc3e6' '#4d7243'
+jpg "$W/cam.png" "$W/cam.jpg" 90
+kit jpeg-pixels-only "$W/cam.jpg" "$OUT/$F"
+
 # Checks and reports ##########################################################
 rm -rf "$W"
 kit verify "$REG" "$OUT"

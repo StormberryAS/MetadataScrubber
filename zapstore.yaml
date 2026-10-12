@@ -18,16 +18,17 @@ description: |
   what is left: GPS position, camera serial numbers, owner names, dates, a
   built-in preview image and more.
 
-  It declares no Android permissions at all. There is no internet permission,
-  so it cannot send your photos anywhere, and no storage permission either:
-  pictures come in through the system file picker or a share from your
-  gallery, and go out through the system save screen, a share or the
-  clipboard. Check it
-  yourself before installing:
+  It asks for one Android permission, the camera, and only when you tap
+  Take a photo. There is no internet permission, so it cannot send your
+  photos anywhere, and no storage permission either: pictures come in
+  through the system file picker, a share from your gallery or the app's
+  own camera, and go out through the system save screen, a share or the
+  clipboard. Check it yourself before installing:
 
       aapt dump permissions <the APK you downloaded>
 
-  The only line you should see is the package name.
+  The only lines you should see are the package name and
+  android.permission.CAMERA.
 
   - Shows every detail with its value before it removes, grouped in a Red,
     an Amber and a Green section.
@@ -55,6 +56,10 @@ description: |
   - Crop, resize and convert JPEG, PNG and WebP when you need to.
   - Reads the result back, so you see what remains before you share.
   - Neutral file names such as image.public.jpg.
+  - Take a photo in the app: a shutter, a front or back switch, a flash
+    button where the camera has a flash, and pinch to zoom, nothing more.
+    The photo is made without a location or device details, is not added
+    to your gallery, and goes straight to Save, Copy or Share.
   - Share a photo in from your gallery, then Save, Copy image or Share the
     clean copy, as on the website. Copy image puts a fresh copy without
     file details on the clipboard, where it can be pasted for 2 minutes
@@ -71,7 +76,7 @@ description: |
   The app runs the same files as metadata.stormberry.as, bundled and offline.
   The build checks that every one is byte for byte identical to the website's
   copy, apart from one added line in index.html that loads a small Android
-  bridge for saving and sharing.
+  bridge for saving, sharing and the camera.
 
   Privacy page: https://metadata.stormberry.as/privacy.html (also inside
   the app).
@@ -86,6 +91,13 @@ tags:
 license: MIT
 website: https://metadata.stormberry.as
 
+# The release text Zapstore shows for this version. Without this line zsp takes the
+# GitHub release body, which the workflow leaves to GitHub's generated notes: a bare
+# compare link, and all Zapstore showed for 1.0.0 and 1.0.1. A plain text file is used
+# whole. Point it at the changelog of the versionCode being released, and change the
+# number at every release.
+release_notes: ./fastlane/metadata/android/en-US/changelogs/6.txt
+
 # The APK ships no raster icon (the launcher icon is an adaptive-icon XML built
 # from vectors), and a store front-end without a bitmap shows an empty tile. So
 # the icon is supplied here, rendered from favicon.svg by
@@ -95,10 +107,12 @@ icon: ./fastlane/metadata/android/en-US/images/icon.png
 # Phone screenshots of the app, captured on an API 36 emulator at
 # 1080x1920. zsp uploads these to Blossom and references them from the app event.
 images:
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/00-start.png
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/01-loaded.png
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/02-reveals.png
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/03-result.png
   - ./fastlane/metadata/android/en-US/images/phoneScreenshots/04-save-share.png
+  - ./fastlane/metadata/android/en-US/images/phoneScreenshots/05-camera.png
 
 # No release_source: zsp pulls the APK straight from the GitHub release, so the
 # asset URL in the nostr event points at the same signed binary the release page

@@ -702,6 +702,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--accent-soft);
 }
 
+/* Choose pictures and, on phones and in the app, Take a photo (1.1.0). */
+.ms-drop-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-sm);
+}
+/* On a touch screen, where Take a photo shows, the two buttons get the same width when
+   they stack on a narrow phone. Laptops and desktops keep Choose pictures as it was. */
+@media (pointer: coarse) and (hover: none) {
+  .ms-drop-actions .btn { min-width: 11rem; }
+}
+
 .ms-drop-icon { color: var(--accent-primary); }
 
 .ms-drop-title {

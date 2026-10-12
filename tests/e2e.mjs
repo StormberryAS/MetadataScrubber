@@ -43,7 +43,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GROUPS, detectFormat, inspect, privacyWord, scrub } from '../src/scrub-core.js';
-import { SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
+import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -98,7 +98,7 @@ const ZAPSTORE = 'https://zapstore.dev/apps/no.stormberry.metadatascrubber';
 
 const NEED = ['jpeg-everything.jpg', 'jpeg-orientation-6.jpg', 'jpeg-large.jpg', 'png-transparent.png', 'webp-everything.webp',
   'heic-everything.heic', 'png-everything.png', 'jpeg-motion-photo.jpg', 'jpeg-ultrahdr-like.jpg', 'not-an-image.pdf', 'truncated.jpg', 'jpeg-ifd-overflow.jpg', 'canaries.tsv',
-  'jpeg-uhdr-hdrgm-extra.jpg', 'jpeg-uhdr-bare-after-eoi.jpg'];
+  'jpeg-uhdr-hdrgm-extra.jpg', 'jpeg-uhdr-bare-after-eoi.jpg', 'camera-clean.jpg'];
 for (const f of NEED) {
   if (!existsSync(join(FIX, f))) {
     console.error(`Missing fixture ${f}. Build the fixtures first: tests/fixtures/make-fixtures.sh`);
@@ -670,15 +670,16 @@ async function textCheck(page, where) {
   check(`${page.view.label} ${where}: British spelling (no colour, organise, grey, centre written the American way)`, !us.length, us);
 }
 
-// The Android app section at the foot of the page, as the page shows it.
+// The Android app section at the foot of the page, as the page shows it. n counts the
+// website-only parts other than Take a photo, which phones also get (1.1.0).
 async function appSection(p) {
   return p.ev(`(() => {
-    const sec = document.querySelector('[data-web-only]');
+    const sec = document.querySelector('#android-app[data-web-only]');
     if (!sec) return null;
     const a = sec.querySelector('a');
     const r = sec.getBoundingClientRect();
     const main = document.querySelector('main');
-    return { id: sec.id, n: document.querySelectorAll('[data-web-only]').length, hidden: sec.hidden, display: getComputedStyle(sec).display, height: r.height, last: main.lastElementChild === sec,
+    return { id: sec.id, n: document.querySelectorAll('[data-web-only]:not(#camera-btn)').length, hidden: sec.hidden, display: getComputedStyle(sec).display, height: r.height, last: main.lastElementChild === sec,
       href: a && a.getAttribute('href'), target: a && a.getAttribute('target'), rel: a && a.getAttribute('rel'), btn: !!a && a.matches('.btn.btn-secondary'), linkHeight: a ? a.getBoundingClientRect().height : 0,
       text: a && a.textContent, extra: a && a.querySelector('.visually-hidden')?.textContent, line: sec.querySelector('p')?.textContent,
       firstScript: document.scripts[0]?.getAttribute('src') || null };
@@ -691,7 +692,7 @@ async function checkAppSectionShown(p) {
   check(`${v}: the Android app section is the last thing in main, marked data-web-only, and shown on the website`, !!app && app.id === 'android-app' && app.n === 1 && app.last && !app.hidden && app.display !== 'none' && app.height > 0 && app.firstScript !== BRIDGE_FILE, app);
   check(`${v}: it links to ${ZAPSTORE} in a new tab (target _blank, rel noopener)`, !!app && app.href === ZAPSTORE && app.target === '_blank' && app.rel === 'noopener', app);
   check(`${v}: the link is a 44 px button that says where it goes and that it opens a new tab`, !!app && app.btn && app.linkHeight >= 44 && app.text === 'Get the Android app on Zapstore (opens in a new tab)' && app.extra === ' (opens in a new tab)', app);
-  check(`${v}: the line says what the app is`, !!app && app.line === 'Android app: the same tool on your phone, with no permissions and no internet. Share a photo into it straight from your gallery.', app && app.line);
+  check(`${v}: the line says what the app is, camera included, and no longer claims "no permissions"`, !!app && app.line === CAMERA_TEXT.appLine && !/no permissions/.test(app.line), app && app.line);
   await p.shot('0-android-app-bottom', { bottomFrom: '#android-app' });
   await p.ev("scrollTo({ top: 0, behavior: 'instant' })");
 }
@@ -731,6 +732,8 @@ flow('jpeg-default', DESKTOP, async (p) => {
   const refs = await p.ev(`[...document.querySelectorAll('a[href], img[src], link[href], script[src]')].map(e => e.href || e.src).filter(u => u.startsWith(location.origin + '/'))`);
   const broken = [...new Set(refs.filter((u) => !published(u)))];
   check(`every same-origin link and asset in the page exists and is published (${new Set(refs).size} checked)`, !broken.length, broken);
+  const cam = await p.ev(CAMERA_STATE);
+  check('desktop: no Take a photo button (a laptop or desktop has no camera app to open), the capture input stays hidden', !cam.button && !!cam.input && cam.input.hidden, cam);
   await checkAppSectionShown(p);
 
   await p.load(['jpeg-everything.jpg']);
@@ -1985,6 +1988,9 @@ flow('offline', DESKTOP, async (p) => {
 
 flow('phone', PHONE, async (p) => {
   check('the first-run gate appears on a phone and closes with a tap', p.gateSeen);
+  const cam = await p.ev(CAMERA_STATE);
+  check(`phone: "${CAMERA_TEXT.button}" sits after Choose pictures, secondary, marked data-web-only, at least 44 px tall`, cam.button && cam.shown && cam.text === CAMERA_TEXT.button && cam.secondary && cam.webOnly && cam.afterChoose && cam.height >= 44, cam);
+  check('phone: it opens the rear camera through a hidden input (accept image/*, capture environment)', !!cam.input && cam.input.accept === 'image/*' && cam.input.capture === 'environment' && cam.input.hidden, cam.input);
   await textCheck(p, 'empty page');
   await p.layout('empty page');
   await checkAppSectionShown(p);
@@ -2186,6 +2192,8 @@ flow(ANDROID_FLOW, ANDROID, async (p) => {
   check('android: the bridge loads before every other script', !!app && app.firstScript === BRIDGE_FILE, app);
   check('android: no message channel in a plain browser (window.MSBridge is absent)', await p.ev("typeof window.MSBridge === 'undefined'"));
   check('android: the bridge hides the Android app section (hidden, not displayed, takes no space)', !!app && app.hidden && app.display === 'none' && app.height === 0 && app.linkHeight === 0, app);
+  const cam = await p.ev(CAMERA_STATE);
+  check('android: without the channel (a WebView too old for it) Take a photo is the website\'s, and the bridge hides it', cam.button && cam.webOnly && !cam.shown, cam);
   await textCheck(p, 'empty page');
   await p.layout('empty page');
   await p.shot('0-android-app-bottom', { bottomFrom: 'main > .ms-limits' });
@@ -2217,7 +2225,7 @@ flow(ANDROID_FLOW, ANDROID, async (p) => {
 const ANDROID_APP_FLOW = 'android-app-bridge';
 flow(ANDROID_APP_FLOW, ANDROID_APP, async (p) => {
   check('android-app: the page came with the bridge line added, as the APK serves it', p.androidInjected === true);
-  check('android-app: the bridge adds window.MSAndroid (share and copyImage) on top of the channel', await p.ev("!!window.MSAndroid && Object.isFrozen(window.MSAndroid) && Object.keys(window.MSAndroid).sort().join() === 'copyImage,share'"));
+  check('android-app: the bridge adds window.MSAndroid (share, copyImage and takePhoto) on top of the channel', await p.ev("!!window.MSAndroid && Object.isFrozen(window.MSAndroid) && Object.keys(window.MSAndroid).sort().join() === 'copyImage,share,takePhoto'"));
   check('android-app: the Zapstore section is still hidden', await p.ev("document.getElementById('android-app').hidden && document.getElementById('android-app').getBoundingClientRect().height === 0"));
   await p.load(['jpeg-everything.jpg']);
   await p.press();
@@ -2296,6 +2304,36 @@ flow(ANDROID_APP_FLOW, ANDROID_APP, async (p) => {
   await sleep(1500);
   const cleared = await p.ev(`({ lines: document.querySelectorAll('#results-list .ms-share-status').length, results: document.getElementById('results').hidden, expired: document.body.innerText.includes(${J(SHARE_TEXT.copyExpiredApp)}) })`);
   check('android-app: Start again clears the line, and the copy ending later brings nothing back', cleared.lines === 0 && cleared.results && !cleared.expired, cleared);
+
+  // Take a photo (1.1.0), by finger: the stand-in answers as MainActivity does with a photo
+  // made without metadata (camera-clean.jpg), and Save and Share hand back exactly its bytes.
+  const photo = readFileSync(join(FIX, 'camera-clean.jpg'));
+  let cam = await p.ev(CAMERA_STATE);
+  check(`android-app: "${CAMERA_TEXT.button}" sits after Choose pictures, secondary, marked data-app, at least 44 px tall`, cam.button && cam.shown && cam.app && !cam.webOnly && cam.secondary && cam.afterChoose && cam.height >= 44, cam);
+  await p.ev(`window.__ms.camera.mode = 'ok'; window.__ms.camera.b64 = ${J(photo.toString('base64'))}`);
+  const filesBefore = await p.ev('window.__ms.files.length');
+  await p.click('#camera-btn');
+  await p.waitFor("!document.getElementById('results').hidden && document.querySelectorAll('#results-list .ms-result').length === 1", 20000, 'the photo\'s result');
+  await p.waitFor(`document.getElementById('announcer').textContent === ${J(CAMERA_TEXT.done)}`, 5000, 'the photo announcement');
+  await p.settle();
+  cam = await p.ev(CAMERA_STATE);
+  check('android-app: the photo\'s result shows at once, image.clean.jpg, clean, with the camera line once, Share, Copy and the warning', cam.results && cam.name === 'image.clean.jpg' && cam.word === 'clean' && cam.note === CAMERA_TEXT.note && cam.lines === 1 && cam.share && cam.copy && cam.warning && cam.focus === 'results', cam);
+  check('android-app: the page told the app it has the photo, so the app deletes its copy', (await p.ev('window.__ms.camera.done.length')) === 1);
+  await textCheck(p, 'app photo result');
+  await p.layout('app photo result');
+  await p.shot('7-app-photo', { selector: '#results .ms-result-main' });
+  await p.click('#results-list .ms-download');
+  await p.waitFor(`window.__ms.files.length === ${filesBefore + 1}`, 10000, 'the photo save');
+  const savedPhoto = await p.ev(`window.__ms.files[${filesBefore}]`);
+  check('android-app: Save hands the app image.clean.jpg, byte for byte the photo', savedPhoto.action === 'save' && savedPhoto.name === 'image.clean.jpg' && Buffer.compare(appFileBytes(savedPhoto), photo) === 0, { action: savedPhoto.action, name: savedPhoto.name, size: savedPhoto.size });
+  const vp = await verifyDownload(p, { name: 'image.clean.jpg', url: await p.ev("document.querySelector('#results-list .ms-download').href"), bytes: new Uint8Array(appFileBytes(savedPhoto)) }, { fixture: 'camera-clean.jpg', removed: ['red', 'amber', 'green'], lossless: true, word: 'clean' });
+  const groups = Object.keys(vp.ex || {}).filter((k) => /^(IFD\d|ExifIFD|GPS|JFIF|JFXX|ICC|XMP|IPTC|Photoshop|APP\d|MakerNotes)|^File:Comment$/.test(k));
+  check('android-app: exiftool finds no EXIF, JFIF, ICC, XMP, IPTC or comment in the saved photo', !vp.ex?.error && !groups.length, groups);
+  await p.click('#results-list .ms-share-btn');
+  await p.waitFor(`window.__ms.files.length === ${filesBefore + 2}`, 10000, 'the photo share');
+  const sharedPhoto = await p.ev(`window.__ms.files[${filesBefore + 1}]`);
+  check('android-app: Share hands the app the same bytes', sharedPhoto.action === 'share' && sharedPhoto.name === 'image.clean.jpg' && Buffer.compare(appFileBytes(sharedPhoto), photo) === 0, { action: sharedPhoto.action, name: sharedPhoto.name });
+  check('android-app: a photo never makes the browser download anything', (await p.download()).length === 0);
 });
 
 // ---------------------------------------------------------------------------------------

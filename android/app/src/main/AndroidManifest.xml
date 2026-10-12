@@ -3,17 +3,36 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      This app declares NO permissions, on purpose.
+      This app declares ONE permission, CAMERA, used only by the in-app camera screen
+      (CameraActivity, 1.1.0), and asked for only when the user taps Take a photo, after the
+      app's own explanation. Nothing else, on purpose.
 
       Pictures come in through the system file picker (Storage Access Framework) or a share
       from another app; both hand over a one-off read grant for the chosen files, so no
       storage permission is needed. Saving goes through the system "create document"
-      screen, which needs none either. There is no INTERNET permission, so the WebView
-      cannot reach the network at all, whatever the page tried.
+      screen, which needs none either. A photo taken in the app stays in its private cache
+      and never goes to the gallery, so it needs no storage permission either. There is no
+      INTERNET permission, so the WebView cannot reach the network at all, whatever the
+      page tried.
 
-      The entries below are explicit removals: if any dependency ever merges these in, the
-      build strips them back out. Verify with `aapt dump permissions` on the APK.
+      The camera is not required: a device without one still installs the app, and Take a
+      photo then says the device has no camera. Declaring the feature as not required also
+      stops Android and the stores from implying android.hardware.camera and
+      android.hardware.camera.autofocus as requirements from the CAMERA permission.
+
+      CameraX also merges in androidx.camera.core.impl.MetadataHolderService, disabled and
+      not exported: a holder of build-time settings that never runs and that no other app
+      can reach. No CameraX library adds a permission.
+
+      The other entries below are explicit removals: if any dependency ever merges these
+      in, the build strips them back out. Verify with `aapt dump permissions` on the APK:
+      the only lines must be the package name and android.permission.CAMERA.
     -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
@@ -99,6 +118,20 @@
         </activity>
 
         <!--
+          The in-app camera (1.1.0): a shutter, a front or back switch and, where the camera
+          has one, a flash toggle. Not exported, so only MainActivity can start it, and only
+          its own shutter button ever takes a photo. configChanges as for MainActivity, so
+          turning the phone never recreates it in the middle of a photo; it is not locked to
+          portrait, because Android 16 ignores that on large screens at targetSdk 36.
+        -->
+        <activity
+            android:name=".CameraActivity"
+            android:exported="false"
+            android:label="@string/camera_title"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection|fontWeightAdjustment|colorMode|touchscreen"
+            android:theme="@style/Theme.MetadataScrubber.Camera" />
+
+        <!--
           androidx.profileinstaller adds an exported receiver for adb and benchmarking tools.
           It is guarded by the DUMP permission, so no ordinary app could reach it, but it is
           not needed either: the startup initialiser still installs the baseline profile.
@@ -112,9 +145,31 @@
             tools:node="remove" />
 
         <!--
-          Ends a copied picture's 2 minutes while the app is in the background (1.0.1): an
-          inexact AlarmManager alarm, which needs no permission, wakes the app to delete it.
-          Not exported, so only the app's own PendingIntent can reach it.
+          A guard for later (1.1.0): appcompat 1.4 and later bring emoji2, whose start-up
+          initialiser asks Google Play services' font provider for fonts, with no permission
+          needed, so the permission check could not catch it. CameraX's camera-view pulls in
+          appcompat (1.1.0 today, without emoji2). Should a future version bring emoji2, this
+          removes its initialiser from androidx.startup, which profileinstaller already uses.
+          Today it removes nothing. androidx.startup is only on the runtime classpath, so
+          lint's MissingClass check cannot see the provider class from this file and is
+          silenced for this one element, as for the receiver above.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:ignore="MissingClass"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                tools:node="remove" />
+        </provider>
+
+        <!--
+          Ends a copied picture's 2 minutes (1.0.1) and a shared file's 10 minutes (1.1.0)
+          while the app is in the background: an inexact AlarmManager alarm, which needs no
+          permission, wakes the app to delete them. Not exported, so only the app's own
+          PendingIntent can reach it.
         -->
         <receiver
             android:name=".ClipExpiryReceiver"
@@ -125,7 +180,8 @@
           to the app it is pasted into. Not exported: other apps get a one-off read grant for
           one file, and the paths file limits it to cache/outgoing/ and cache/clipboard/.
           OutgoingProvider is androidx's FileProvider plus one rule: a copied picture can be
-          read for 2 minutes after the Copy, never after.
+          read for 2 minutes after the Copy, and a shared file for 10 minutes after the share
+          (1.1.0), never after; nothing else in cache/outgoing/ is served at all.
         -->
         <provider
             android:name=".OutgoingProvider"

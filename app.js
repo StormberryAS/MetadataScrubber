@@ -19,6 +19,13 @@
 // One button makes the new file, and it is neutral ("Prepare picture"): a person may
 // only want to crop or resize. When nothing would change, no identical copy is made;
 // the page says so instead.
+//
+// Take a photo (1.1.0): on phones and tablets the website offers the device's camera app
+// through a file input with capture="environment", and the photo then goes through the
+// normal steps like any picture. In the Android app the same button opens the app's own
+// camera (window.MSAndroid.takePhoto); its photo is made without metadata, and when the
+// page's own read-back agrees (a JPEG with nothing listed and nothing to normalise), the
+// photo itself is the new file and is offered at once, without pressing Prepare picture.
 
 import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=7917c1ca';
 
@@ -77,6 +84,16 @@ const COPY_DONE_APP = 'Copied. You can paste it for the next 2 minutes.';
 // Shown in its place once those 2 minutes are over (Marcos, 2026-10-06: "fix it").
 const COPY_EXPIRED_APP = 'The copy has expired. Tap Copy image again to paste it.';
 const COPY_FAILED = 'The image could not be copied. Save it instead.';
+
+// Take a photo (1.1.0). The line under a photo taken in the app's own camera, and what a
+// screen reader hears when it arrives. "Made without", not "removed": the app never wrote
+// the camera's header anywhere (CameraActivity in the Android app).
+const CAMERA_BUTTON = 'Take a photo';
+const CAMERA_NOTE = 'Taken in MetadataScrubber: made without a location or device details.';
+const CAMERA_DONE = 'Photo taken. No metadata in it. It is ready to save or share.';
+// Above that photo's result, where the page would otherwise say the new file would be the
+// same as the original and offer Prepare picture, which would make nothing.
+const CAMERA_IDLE = 'This photo is already your new file, below. To make another version, crop, resize or change the format first.';
 
 const RATIOS = { free: null, '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9, '1.91:1': 1.91 };
 
@@ -249,7 +266,10 @@ const goLabel = () => (state.entries.length > 1 ? 'Prepare pictures' : 'Prepare 
 // ---------------------------------------------------------------------------------------
 // Loading files
 
-async function loadFiles(fileList) {
+// camera: the file is a photo from the app's own camera (1.1.0). If the page's read-back
+// confirms it holds no metadata, it becomes the result straight away (showCameraResult);
+// otherwise it goes through the normal steps like any other picture.
+async function loadFiles(fileList, { camera = false } = {}) {
   const files = [...fileList].filter((f) => f && typeof f.arrayBuffer === 'function');
   if (!files.length) return;
   resetAll();
@@ -303,6 +323,10 @@ async function loadFiles(fileList) {
   state.selected = defaultIds();
   state.crop = { on: false, ratio: 'free', rect: null };
   renderWorkspace();
+  if (camera && files.length === 1 && !errors.length && cameraClean(entries[0])) {
+    showCameraResult(entries[0]);
+    return;
+  }
   // On a phone the workspace starts below the picker; bring it into view.
   if (matchMedia('(max-width: 879px)').matches) $('workspace').scrollIntoView({ behavior: 'instant', block: 'start' });
 
@@ -319,6 +343,33 @@ async function loadFiles(fileList) {
   announce(found
     ? `${what} ${plural(found, 'metadata detail', 'metadata details')} found. ${tickedText}`
     : `${what} No metadata found.`);
+}
+
+// Fail closed: a photo from the app's camera skips Prepare picture only when this page's
+// own reading of its bytes finds a JPEG with no detail at all, no warning and nothing to
+// put in standard form. The app checked it twice already; this is the third check, and
+// the one the page can see for itself.
+function cameraClean(entry) {
+  const info = entry.info;
+  return entry.format === 'jpeg' && info.format === 'jpeg' && info.items.length === 0 && info.warnings.length === 0 && !info.normalise;
+}
+
+// The photo itself is the new file: run() would refuse to copy a file with nothing to
+// change, so the result is built here from the photo's own bytes, as a lossless result
+// with the read-back the page just made. Crop, resize and format below still work; any
+// change clears this result, as for any other, and Prepare picture then makes a re-saved
+// file without the camera line.
+function showCameraResult(entry) {
+  state.results = [{
+    entry, index: 0, bytes: entry.bytes, format: 'jpeg', width: entry.w, height: entry.h, quality: null, lossless: true,
+    readback: entry.info, word: privacyWord([]), notes: [], warnings: [], camera: true,
+  }];
+  renderResults();
+  refreshDerived();
+  announce(CAMERA_DONE);
+  const section = $('results');
+  section.focus({ preventScroll: true });
+  section.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
 }
 
 // Decodes the picture (when the browser can) to learn its size the right way up, and
@@ -908,6 +959,8 @@ const nothingToDo = (plans) => plans.every((p, i) => changesNothing(state.entrie
 // What the page says, instead of making an identical copy, when the button is pressed
 // and no file would change. It names only the choices this page can actually offer.
 function nothingMessage(plans) {
+  // A photo from the app's camera is its own new file already (showCameraResult).
+  if (state.results[0]?.camera) return CAMERA_IDLE;
   const many = state.entries.length > 1;
   const hasItems = state.rows.length > 0;
   const editable = plans.some((p) => p.decodable);
@@ -988,9 +1041,11 @@ function refreshDerived() {
   // With nothing to change no file is made, so neither lossless nor re-saved applies.
   const idle = nothingToDo(plans);
   if (idle) {
-    line.textContent = single()
-      ? 'With these choices the new file would be the same as the original.'
-      : 'With these choices each new file would be the same as its original.';
+    line.textContent = state.results[0]?.camera
+      ? CAMERA_IDLE
+      : single()
+        ? 'With these choices the new file would be the same as the original.'
+        : 'With these choices each new file would be the same as its original.';
     delete box.dataset.tier;
   }
   if (!plans.some((p) => p.remove.size) && state.rows.length && !idle) items.unshift('Nothing is ticked, so the new file keeps all its metadata.');
@@ -1392,9 +1447,12 @@ function renderResult(r) {
   const keptOnlyGainMap = r.word === 'public' && [...GAIN_MAP_IDS].some(kept) && (!hadDescription || kept('xmp:gainmap'))
     && notGreen.every((it) => it.tier === 'amber' && GAIN_MAP_OWN.has(it.id));
   const facts = [`${FORMAT_NAME[r.format]}, ${fmtDims(r.width, r.height)}, ${fmtBytes(r.bytes.length)}.`];
-  facts.push(r.lossless
-    ? 'Lossless: the picture itself was not re-saved.'
-    : `Re-saved${r.quality ? ` at quality ${Math.round(r.quality * 100)} per cent` : ''}.`);
+  // A photo from the app's camera was never anything else, so "not re-saved" says nothing.
+  if (!r.camera) {
+    facts.push(r.lossless
+      ? 'Lossless: the picture itself was not re-saved.'
+      : `Re-saved${r.quality ? ` at quality ${Math.round(r.quality * 100)} per cent` : ''}.`);
+  }
 
   const link = h('a', { class: 'btn btn-primary ms-download', href: url, download: name, dataset: { result: String(r.index) } },
     h('span', { text: 'Save ' }), h('span', { class: 'ms-download-name', text: name }));
@@ -1429,6 +1487,7 @@ function renderResult(r) {
           h('span', { class: 'ms-word-text', text: info.text })),
         r.word === 'custom' && hasRed ? h('p', { class: 'ms-word-warning', text: CUSTOM_WARNING }) : null,
         keptOnlyGainMap ? h('p', { class: 'ms-word-note', text: GAIN_MAP_KEPT_NOTE }) : null,
+        r.camera ? h('p', { class: 'ms-word-note ms-camera-note', text: CAMERA_NOTE }) : null,
         link,
         renderShare(r, blob))),
     notes.length ? h('ul', { class: 'ms-notes' }, notes.map((n) => h('li', { class: 'ms-note', dataset: n.tier ? { tier: n.tier } : null, text: n.t }))) : null,
@@ -1853,6 +1912,60 @@ function resetAll() {
 }
 
 // ---------------------------------------------------------------------------------------
+// Take a photo (1.1.0)
+//
+// The button is made here, not written in the page, for the same reason as the Share
+// block: in the Android app it is marked data-app and opens the app's own camera through
+// window.MSAndroid.takePhoto; everywhere else it is marked data-web-only, so an app whose
+// WebView is too old for the bridge still hides it. On the website it is offered only on
+// phones and tablets (a coarse pointer and no hover), where the capture input opens the
+// camera app; laptops and desktops, touch screens or not, get no button. Inside the app the
+// capture input is never clicked, so it can never reach a camera from there.
+
+function appCamera() {
+  const a = window.MSAndroid;
+  return a && typeof a.takePhoto === 'function' ? a : null;
+}
+
+function setUpCamera() {
+  const app = appCamera();
+  if (!app && !matchMedia('(pointer: coarse) and (hover: none)').matches) return;
+  const btn = h('button', { type: 'button', class: 'btn btn-secondary', id: 'camera-btn', dataset: app ? { app: '' } : { webOnly: '' } }, CAMERA_BUTTON);
+  $('pick-actions').append(btn);
+
+  if (!app) {
+    const input = $('camera-input');
+    btn.addEventListener('click', () => input.click());
+    input.addEventListener('change', () => {
+      const files = [...input.files];
+      input.value = '';
+      loadFiles(files);
+    });
+    return;
+  }
+
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    let ok = false;
+    try {
+      ok = (await app.takePhoto()) === true;
+    } catch {
+      ok = false;
+    }
+    btn.disabled = false;
+    // Closed, refused or failed: the page is as it was, with the focus back on the button.
+    // A photo on its way moves the focus to its result when it arrives.
+    if (!ok) btn.focus();
+  });
+  window.addEventListener('msandroid:photo', (ev) => {
+    const file = ev.detail && ev.detail.file;
+    if (!(file instanceof File)) return;
+    loadFiles([file], { camera: true });
+  });
+}
+
+// ---------------------------------------------------------------------------------------
 // Wiring
 
 function gateOpen() {
@@ -1970,6 +2083,7 @@ function init() {
     refreshDerived();
   });
   $('go-btn').addEventListener('click', run);
+  setUpCamera();
 
   if (typeof ResizeObserver === 'function') new ResizeObserver(() => layoutStage()).observe($('preview-wrap'));
   window.addEventListener('resize', layoutStage);

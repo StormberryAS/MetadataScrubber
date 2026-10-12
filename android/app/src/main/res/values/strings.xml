@@ -16,4 +16,32 @@
     <string name="read_failed">A shared picture could not be read.</string>
     <string name="webview_too_old">Saving and sharing need a newer Android System WebView. Update it from your app store and try again.</string>
     <string name="page_crashed">The page stopped unexpectedly and was reloaded. Choose your pictures again.</string>
+
+    <!-- The in-app camera (1.1.0). -->
+    <!-- The camera screen's window title, which screen readers announce when it opens. -->
+    <string name="camera_title">Camera</string>
+    <string name="camera_close">Close the camera</string>
+    <string name="camera_shutter">Take the photo</string>
+    <string name="camera_switch_front">Switch to the front camera</string>
+    <string name="camera_switch_back">Switch to the back camera</string>
+    <string name="camera_flash_turn_on">Turn the flash on</string>
+    <string name="camera_flash_turn_off">Turn the flash off</string>
+    <string name="camera_preparing">Preparing the photo</string>
+    <string name="camera_capture_failed">The photo could not be taken. Try again.</string>
+    <string name="camera_prepare_failed">The photo could not be prepared. Try again.</string>
+    <string name="camera_start_failed">The camera could not start. Another app may be using it. Close that app and try again.</string>
+    <!-- When a device policy or Android's own camera switch has turned the camera off. -->
+    <string name="camera_disabled">The camera is turned off on this device, in its settings or by whoever manages it.</string>
+    <string name="camera_none">This device has no camera.</string>
+
+    <!-- Shown when Take a photo is tapped without the permission, before Android's own prompt. -->
+    <string name="camera_rationale_title">Use the camera</string>
+    <string name="camera_rationale_body">To take a photo here, MetadataScrubber needs your permission to use the camera. If Android asks, its question also mentions video: the app only takes photos. The photo is made without a location or device details and stays inside the app until you save, share or copy it. It is not added to your gallery. The app has no internet access, so it cannot send the photo anywhere.</string>
+    <string name="camera_rationale_continue">Continue</string>
+    <string name="camera_rationale_not_now">Not now</string>
+    <!-- When the permission has been refused for good. -->
+    <string name="camera_denied_title">Camera access is off</string>
+    <string name="camera_denied_body">MetadataScrubber is not allowed to use the camera. To take photos in the app, open its settings, tap Permissions, then Camera, and allow it. Choosing pictures and sharing them into the app work without it.</string>
+    <string name="camera_denied_settings">Open app settings</string>
+    <string name="camera_denied_close">Close</string>
 </resources>

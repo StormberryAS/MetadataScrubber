@@ -85,7 +85,7 @@ jobs:
         run: ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease
 
       # Fails the release if signing went wrong, if the certificate is not the pinned
-      # one, or if the APK declares any permission at all.
+      # one, or if the APK declares any permission but CAMERA (1.1.0), or lacks it.
       - name: Verify signature, certificate and permissions
         run: |
           set -euo pipefail
@@ -128,23 +128,62 @@ jobs:
           fi
           echo "Signing certificate matches the pinned fingerprint."
 
-          # FAIL CLOSED. An app that declares nothing gets exactly one line from
-          # `dump permissions`: the package line. The output is compared whole, so any
-          # uses-permission or permission line fails, and so does an aapt that cannot
-          # read the APK (set -e stops on its exit status before the comparison).
+          # FAIL CLOSED. Since 1.1.0 the app declares exactly one permission, CAMERA, for
+          # its own camera screen, so `dump permissions` prints exactly two lines: the
+          # package line and CAMERA. The output is compared whole, so any other
+          # uses-permission or permission line fails, a missing CAMERA (which would break
+          # Take a photo and make the store text untrue) fails just as loudly, and so does
+          # an aapt that cannot read the APK (set -e stops on its exit status first).
           AAPT="$BUILD_TOOLS/aapt2"
           [ -x "$AAPT" ] || AAPT="$BUILD_TOOLS/aapt"
           DUMP=$("$AAPT" dump permissions "$APK")
-          if [ "$DUMP" != "package: no.stormberry.metadatascrubber" ]; then
-            echo "::error::APK permissions are not exactly zero"
+          EXPECTED_DUMP=$(printf '%s\n%s' "package: no.stormberry.metadatascrubber" "uses-permission: name='android.permission.CAMERA'")
+          if [ "$DUMP" != "$EXPECTED_DUMP" ]; then
+            echo "::error::APK permissions are not exactly CAMERA"
             printf '%s\n' "$DUMP"
             exit 1
           fi
-          echo "Verified: zero permissions."
+          echo "Verified: CAMERA is the only permission."
+
+          # The camera must stay optional: a device without one must still be offered the
+          # app, so android.hardware.camera is declared as not required, and no camera
+          # feature may be implied as a requirement by the CAMERA permission.
+          BADGING=$("$AAPT" dump badging "$APK")
+          # Here-strings, not pipes: under pipefail, grep -q leaving early would make the
+          # writer fail with SIGPIPE and turn a match into a miss.
+          if ! grep -qx "  uses-feature-not-required: name='android.hardware.camera'" <<< "$BADGING"; then
+            echo "::error::android.hardware.camera is not declared as not required"
+            grep -i feature <<< "$BADGING" || true
+            exit 1
+          fi
+          if grep -E "uses-(implied-)?feature: name='android\.hardware\.camera" <<< "$BADGING"; then
+            echo "::error::a camera feature is required or implied"
+            exit 1
+          fi
+          echo "Verified: the camera is optional, and no camera feature is implied."
+
+          # No Google Play services code or manifest entry may come in through a library
+          # (1.1.0). The permission check cannot catch it: emoji2's start-up initialiser,
+          # which a newer appcompat would bring, asks the Play services font provider for
+          # fonts without any permission. The release dex and the manifest are searched
+          # for the package name; the files are written out first, because a grep that
+          # stops early would make a pipe's writer fail under pipefail.
+          # It passes on the R8 release APK only. androidx.activity's photo picker contract
+          # (PickVisualMedia) holds com.google.android.gms.provider.action.PICK_IMAGES, and
+          # R8 drops it because the app picks with OpenDocument and OpenMultipleDocuments. An
+          # unshrunk debug APK fails this check, and so would moving to PickVisualMedia.
+          unzip -p "$APK" 'classes*.dex' > "$RUNNER_TEMP/release-dex.bin"
+          "$AAPT" dump xmltree --file AndroidManifest.xml "$APK" > "$RUNNER_TEMP/release-manifest.txt"
+          GMS=$(cat "$RUNNER_TEMP/release-dex.bin" "$RUNNER_TEMP/release-manifest.txt" | grep -a -c 'com\.google\.android\.gms' || true)
+          if [ "$GMS" != "0" ]; then
+            echo "::error::the APK mentions com.google.android.gms ($GMS lines); a library brought in Google Play services code"
+            grep -a -o 'com\.google\.android\.gms[A-Za-z0-9_./$]*' "$RUNNER_TEMP/release-dex.bin" "$RUNNER_TEMP/release-manifest.txt" | sort -u | head -20 || true
+            exit 1
+          fi
+          echo "Verified: no Google Play services code or manifest entry."
 
           # A tag must match the version inside the APK, or the release would publish a
           # misnamed binary that Zapstore and Obtainium cannot offer as an update.
-          BADGING=$("$AAPT" dump badging "$APK")
           VERSION_NAME=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)
           VERSION_CODE=$(printf '%s\n' "$BADGING" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" | head -1)
           echo "APK versionName $VERSION_NAME, versionCode $VERSION_CODE"

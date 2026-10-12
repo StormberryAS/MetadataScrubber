@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Round background for Close, the flash toggle and the camera switch (1.1.0): dark enough
+     to read over a bright scene, with a ripple when tapped. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/camera_border">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="@color/camera_pill" />
+        </shape>
+    </item>
+</ripple>

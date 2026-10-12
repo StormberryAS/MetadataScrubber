@@ -21,7 +21,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspect, privacyWord } from '../src/scrub-core.js';
-import { SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
+import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -41,7 +41,7 @@ const ZONE_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' https://
   + "form-action 'self' https://stormberry-contact-form.marcos-495.workers.dev; object-src 'none'";
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.md': 'text/markdown', '.txt': 'text/plain' };
 
-for (const f of ['jpeg-everything.jpg', 'jpeg-orientation-6.jpg', 'png-transparent.png', 'heic-everything.heic', 'jpeg-large.jpg', 'not-an-image.pdf', 'webp-everything.webp']) {
+for (const f of ['jpeg-everything.jpg', 'jpeg-orientation-6.jpg', 'png-transparent.png', 'heic-everything.heic', 'jpeg-large.jpg', 'not-an-image.pdf', 'webp-everything.webp', 'camera-clean.jpg']) {
   if (!existsSync(join(FIX, f))) {
     console.error(`Missing fixture ${f}. Build the fixtures first: tests/fixtures/make-fixtures.sh`);
     process.exit(2);
@@ -157,13 +157,16 @@ function pil(script, ...files) {
 // android: load the page the way the APK does (see androidIndex), with a stand-in for the
 // app's message channel, window.MSBridge, that records what the bridge posts. android:
 // 'app' uses the stand-in of share-stub.mjs instead, which answers as the app does.
+// android: 'bare' loads the bridge with no channel at all, as in an app whose WebView is
+// too old for it.
 // init: extra script run before the page's own, such as the share stand-ins (share-stub.mjs).
-async function openPage(width, height, { android = false, init = null } = {}) {
+// touch: a touch screen, so the page sees a coarse pointer and no hover, as on a phone.
+async function openPage(width, height, { android = false, init = null, touch = false } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext');
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
   const s = (m, p) => send(m, p, sessionId);
-  const log = { errors: [], csp: [], offsite: [] };
+  const log = { errors: [], csp: [], offsite: [], choosers: [] };
   const named = new Map();
   const completed = [];
   const onMsg = (m) => {
@@ -173,6 +176,7 @@ async function openPage(width, height, { android = false, init = null } = {}) {
     if (m.method === 'Runtime.exceptionThrown') log.errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
     if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') log.errors.push(m.params.args.map((a) => a.value ?? a.description).join(' '));
     if (m.method === 'Network.requestWillBeSent' && !m.params.request.url.startsWith(BASE) && !/^(data|blob):/.test(m.params.request.url)) log.offsite.push(m.params.request.url);
+    if (m.method === 'Page.fileChooserOpened') log.choosers.push(m.params);
   };
   listeners.add(onMsg);
   await s('Runtime.enable');
@@ -180,9 +184,12 @@ async function openPage(width, height, { android = false, init = null } = {}) {
   await s('Page.enable');
   await send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: downloads, eventsEnabled: true, browserContextId });
   await s('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 });
+  if (touch) await s('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
   await s('Page.addScriptToEvaluateOnNewDocument', { source: "window.__csp=[];document.addEventListener('securitypolicyviolation',e=>window.__csp.push(e.violatedDirective+' '+e.blockedURI),true);" });
   if (android === 'app') {
     await s('Page.addScriptToEvaluateOnNewDocument', { source: appBridgeStub() });
+  } else if (android === 'bare') {
+    // No channel: the bridge loads, hides the website-only parts, and adds no MSAndroid.
   } else if (android) {
     await s('Page.addScriptToEvaluateOnNewDocument', { source: "window.__msPosted=[];window.MSBridge={postMessage:function(m){window.__msPosted.push(JSON.parse(m));},addEventListener:function(t,fn){window.__msListen=fn;}};" });
   }
@@ -264,7 +271,7 @@ async function openPage(width, height, { android = false, init = null } = {}) {
     await send('Target.closeTarget', { targetId });
     await send('Target.disposeBrowserContext', { browserContextId });
   };
-  return { s, ev, load, press, pressIdle, download, shot, shotOf, close, log, waitFor, tick, completed };
+  return { s, ev, load, press, pressIdle, download, shot, shotOf, close, log, waitFor, tick, completed, root };
 }
 
 const LOSSLESS_PY = `
@@ -323,7 +330,7 @@ try {
 
     // The Android app section at the foot of the page, on the website.
     const app = await p.ev(`(() => {
-      const sec = document.querySelector('[data-web-only]');
+      const sec = document.querySelector('#android-app[data-web-only]');
       if (!sec) return null;
       const a = sec.querySelector('a');
       const main = document.querySelector('main');
@@ -336,7 +343,10 @@ try {
     check(`${tag} the Android app section is the last thing in main, marked data-web-only, and shown on the website`, !!app && app.id === 'android-app' && app.n === 1 && app.last && !app.hidden && app.shown && !app.bridge, app);
     check(`${tag} it links to the Zapstore listing in a new tab`, !!app && app.href === ZAPSTORE && app.target === '_blank' && app.rel === 'noopener', app);
     check(`${tag} the link is a button, says where it goes, and that it opens a new tab`, !!app && app.btn && app.height >= 44 && app.text === 'Get the Android app on Zapstore (opens in a new tab)' && app.extra === ' (opens in a new tab)', app);
-    check(`${tag} the line says what the app is`, !!app && app.line === 'Android app: the same tool on your phone, with no permissions and no internet. Share a photo into it straight from your gallery.', app && app.line);
+    check(`${tag} the line says what the app is, camera included, and no longer claims "no permissions"`, !!app && app.line === CAMERA_TEXT.appLine && !/no permissions/.test(app.line), app && app.line);
+    // Without a touch screen (a laptop or desktop, at either width) there is no Take a photo.
+    const cam = await p.ev(CAMERA_STATE);
+    check(`${tag} no touch screen: no Take a photo button, and the capture input stays hidden`, !cam.button && !!cam.input && cam.input.hidden, cam);
     await p.shotOf(`${tag}-0-android-app`, '#android-app');
     await p.load(['jpeg-everything.jpg']);
     const meta = await p.ev(`(() => {
@@ -870,7 +880,7 @@ try {
     const p = await openPage(360, 780, { android: true, init: shareStub({ share: true, clipboard: true }) });
     const tag = 'android';
     const st = await p.ev(`(() => {
-      const sec = document.querySelector('[data-web-only]');
+      const sec = document.querySelector('#android-app[data-web-only]');
       const r = sec ? sec.getBoundingClientRect() : null;
       return { first: document.scripts[0]?.getAttribute('src'), sec: !!sec, hidden: !!sec && sec.hidden, gone: !!sec && r.height === 0 && getComputedStyle(sec).display === 'none', link: !!sec && sec.querySelector('a').getBoundingClientRect().height, hello: (window.__msPosted || []).map((m) => m.t) };
     })()`);
@@ -924,7 +934,7 @@ try {
       swapped = window.MSAndroid !== a;
       return { has: !!a, frozen: !!a && Object.isFrozen(a), keys: a ? Object.keys(a).sort().join() : '', swapped };
     })()`);
-    check(`${tag} the bridge adds window.MSAndroid with share and copyImage only, frozen and not replaceable`, api.has && api.frozen && api.keys === 'copyImage,share' && !api.swapped, api);
+    check(`${tag} the bridge adds window.MSAndroid with share, copyImage and takePhoto only, frozen and not replaceable`, api.has && api.frozen && api.keys === 'copyImage,share,takePhoto' && !api.swapped, api);
     const junk = await p.ev(`(async () => {
       const before = window.__ms.posted.length;
       const r = [
@@ -1034,6 +1044,151 @@ try {
     await p.close();
   }
 
+  // Take a photo in the app (1.1.0). The stand-in channel answers 'camera-open' as
+  // MainActivity does once the camera screen closes: with no photo (closed, refused), or with
+  // a photo announced as a camera batch and pulled in chunks. camera-clean.jpg is a JPEG as
+  // the app's camera makes it (no application segment at all); jpeg-everything.jpg stands in
+  // for a photo that, against every check in the app, still carried metadata.
+  {
+    const tag = 'camera-app';
+    const p = await openPage(360, 780, { android: 'app', init: shareStub({ share: false, clipboard: false }) });
+    const cleanBytes = readFileSync(join(FIX, 'camera-clean.jpg'));
+    const cleanInfo = await inspect(new Uint8Array(cleanBytes));
+    check(`${tag} the fixture is what the app's camera makes: a JPEG the engine finds nothing in`, cleanInfo.format === 'jpeg' && cleanInfo.items.length === 0 && cleanInfo.warnings.length === 0 && !cleanInfo.normalise, cleanInfo);
+    let cam = await p.ev(CAMERA_STATE);
+    check(`${tag} "${CAMERA_TEXT.button}" sits right after Choose pictures in the same row, a secondary button marked data-app, shown`, cam.button && cam.shown && cam.text === CAMERA_TEXT.button && cam.secondary && cam.app && !cam.webOnly && cam.afterChoose && cam.row === 'pick-actions' && cam.height >= 44, cam);
+    const api = await p.ev("({ keys: Object.keys(window.MSAndroid).sort().join(), takes: window.MSAndroid.takePhoto.length })");
+    check(`${tag} MSAndroid's keys are copyImage, share and takePhoto, and takePhoto takes no arguments`, api.keys === 'copyImage,share,takePhoto' && api.takes === 0, api);
+
+    // Closed without a photo: nothing changes, the focus is back on the button.
+    const opens = () => p.ev("window.__ms.posted.filter((m) => m.t === 'camera-open').length");
+    await p.ev("window.__ms.camera.mode = 'hold'; document.getElementById('camera-btn').click()");
+    await p.waitFor('window.__ms.camera.opens === 1', 5000);
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} a tap asks the app to open its camera once, and the button waits (disabled) meanwhile`, (await opens()) === 1 && cam.disabled, cam);
+    await p.ev("document.getElementById('camera-btn').click(); window.MSAndroid.takePhoto(); true");
+    await sleep(200);
+    check(`${tag} a second tap or call while the camera is open asks nothing more`, (await opens()) === 1, await opens());
+    await p.ev('window.__ms.camera.answer(false)');
+    await p.waitFor("!document.getElementById('camera-btn').disabled", 5000);
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} closed without a photo: the page is unchanged and the focus is back on Take a photo`, !cam.workspace && !cam.results && cam.focus === 'camera-btn' && !cam.disabled, cam);
+    const same = await p.ev(`(async () => {
+      window.__ms.camera.mode = 'cancel';
+      const a = MSAndroid.takePhoto();
+      const b = MSAndroid.takePhoto();
+      return { same: a === b, a: await a, b: await b, opens: window.__ms.posted.filter((m) => m.t === 'camera-open').length };
+    })()`);
+    check(`${tag} takePhoto() twice at once gives the same promise, one request, and false when no photo comes`, same.same && same.a === false && same.b === false && same.opens === 2, same);
+
+    // A photo the app made without metadata: the result straight away.
+    await p.ev(`window.__ms.camera.mode = 'ok'; window.__ms.camera.b64 = ${JSON.stringify(cleanBytes.toString('base64'))}; document.getElementById('camera-btn').click()`);
+    const arrived = await p.waitFor("!document.getElementById('results').hidden && document.querySelectorAll('#results-list .ms-result').length === 1", 20000);
+    await p.waitFor(`document.getElementById('announcer').textContent === ${JSON.stringify(CAMERA_TEXT.done)}`, 3000);
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} the photo arrives and its result shows at once, without pressing Prepare picture`, arrived && cam.results && cam.resultCount === 1 && cam.workspace, cam);
+    check(`${tag} the result is image.clean.jpg with the word clean`, cam.name === 'image.clean.jpg' && cam.word === 'clean' && cam.save === 'image.clean.jpg', cam);
+    check(`${tag} the line "${CAMERA_TEXT.note}" sits under the word, exactly once on the page`, cam.note === CAMERA_TEXT.note && cam.noteAfterWord && cam.lines === 1, cam);
+    check(`${tag} the facts give type, size and bytes, without the lossless sentence`, new RegExp(`^JPEG, ${cleanInfo.width} × ${cleanInfo.height} pixels, [\\d.,]+ KB\\.$`).test(cam.facts || ''), cam.facts);
+    check(`${tag} Save, Copy image, Share and the warning are offered, and "No metadata remains."`, cam.share && cam.copy && cam.warning && cam.readback === 'No metadata remains.', cam);
+    check(`${tag} the focus is on the result, and the page says "${CAMERA_TEXT.done}"`, cam.focus === 'results' && cam.said === CAMERA_TEXT.done, cam);
+    const pulled = await p.ev("({ done: window.__ms.camera.done.length, pulls: window.__ms.camera.pulls, inDone: window.__ms.posted.filter((m) => m.t === 'in-done').length })");
+    check(`${tag} the page tells the app it has the photo (in-done), so the app can delete its copy`, pulled.done === 1 && pulled.pulls >= 1 && pulled.inDone === 1, pulled);
+    check(`${tag} the photo never went through the file input`, (await p.ev("document.getElementById('file-input').files.length")) === 0);
+    const workspace = await p.ev("({ empty: document.getElementById('meta-empty').textContent, shown: !document.getElementById('meta-empty').hidden })");
+    check(`${tag} the workspace above says the file has no metadata`, workspace.shown && workspace.empty === 'This file has no metadata. There is nothing hidden to remove.', workspace);
+    const idleLine = await p.ev("document.getElementById('mode-line').textContent");
+    check(`${tag} the step above says the photo is already the new file, not that it would be the same as the original`, idleLine === CAMERA_TEXT.idle, idleLine);
+    await p.ev("document.getElementById('go-btn').click()");
+    await sleep(200);
+    const idleGo = await p.ev("({ text: document.getElementById('go-nothing').textContent, shown: !document.getElementById('go-nothing').hidden, results: !document.getElementById('results').hidden && document.querySelectorAll('#results-list .ms-result').length })");
+    check(`${tag} Prepare picture with nothing changed says the same and keeps the photo's result`, idleGo.shown && idleGo.text === CAMERA_TEXT.idle && idleGo.results === 1, idleGo);
+
+    // Save and Share hand the app exactly the photo's bytes.
+    await p.ev("document.querySelector('#results-list .ms-download').click()");
+    await p.waitFor('window.__ms.files.length === 1', 10000);
+    const saved = await p.ev('window.__ms.files[0]');
+    check(`${tag} Save hands the app image.clean.jpg, byte for byte the photo`, saved.action === 'save' && saved.name === 'image.clean.jpg' && Buffer.compare(appFileBytes(saved), cleanBytes) === 0, { action: saved.action, name: saved.name, size: saved.size });
+    await p.ev("document.querySelector('#results-list .ms-share-btn').click()");
+    await p.waitFor('window.__ms.files.length === 2', 10000);
+    const shared = await p.ev('window.__ms.files[1]');
+    check(`${tag} Share hands the app the same bytes`, shared.action === 'share' && shared.name === 'image.clean.jpg' && Buffer.compare(appFileBytes(shared), cleanBytes) === 0, { action: shared.action, name: shared.name });
+    await p.shot(`${tag}-1-result`);
+
+    // Any change clears the photo's result; Prepare picture then makes a re-saved file without the line.
+    await p.ev("(() => { const t = document.getElementById('crop-toggle'); t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); document.querySelector('#crop-ratios [data-ratio=\"1:1\"]').click(); })()");
+    await sleep(200);
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} a crop clears the result, as for any picture`, !cam.results && cam.stale, cam);
+    await p.press();
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} Prepare picture then makes a re-saved file, with no camera line`, cam.results && cam.note === 0 && cam.lines === 0 && /Re-saved/.test(cam.facts || ''), cam);
+
+    // A "camera" photo that carries metadata after all: the normal steps, red ticked, no line.
+    await p.ev(`window.__ms.camera.b64 = ${JSON.stringify(readFileSync(join(FIX, 'jpeg-everything.jpg')).toString('base64'))}; document.getElementById('camera-btn').click()`);
+    await p.waitFor("document.querySelectorAll('#meta-groups .ms-check').length > 0", 20000);
+    await sleep(300);
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} a photo with metadata goes through the normal steps: details listed, red ticked, no result yet, no line`, cam.workspace && !cam.results && cam.detailCount > 0 && cam.ticked.length > 0 && cam.ticked.every((t) => t === 'red') && cam.lines === 0, cam);
+    await p.press();
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} and its result has no camera line`, cam.results && cam.note === 0 && cam.lines === 0 && cam.word === 'public', cam);
+
+    const csp = await p.ev('window.__csp');
+    check(`${tag} no policy violations`, csp.length === 0, csp);
+    check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
+    await p.close();
+  }
+
+  // An app whose WebView is too old for the channel: the bridge loads, there is no
+  // MSAndroid, so the page's button is the website's (data-web-only) and the bridge hides it.
+  {
+    const tag = 'camera-old-webview';
+    const p = await openPage(390, 844, { android: 'bare', touch: true });
+    const cam = await p.ev(CAMERA_STATE);
+    const has = await p.ev("({ api: typeof window.MSAndroid, first: document.scripts[0]?.getAttribute('src') })");
+    check(`${tag} the bridge is loaded without a channel (no MSAndroid)`, has.api === 'undefined' && has.first === BRIDGE_FILE, has);
+    check(`${tag} Take a photo is the website's (data-web-only) and the bridge hides it`, cam.button && cam.webOnly && !cam.shown, cam);
+    check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    await p.close();
+  }
+
+  // Take a photo on the website, on a phone: the capture input opens the camera app, and
+  // the photo it returns goes through the normal steps like any picture.
+  {
+    const tag = 'camera-web';
+    const p = await openPage(390, 844, { touch: true });
+    let cam = await p.ev(CAMERA_STATE);
+    check(`${tag} a phone (touch, no hover) gets "${CAMERA_TEXT.button}" after Choose pictures, secondary, marked data-web-only`, cam.button && cam.shown && cam.text === CAMERA_TEXT.button && cam.secondary && cam.webOnly && !cam.app && cam.afterChoose && cam.height >= 44, cam);
+    check(`${tag} the capture input asks for any picture from the rear camera, one at a time, and stays hidden`, !!cam.input && cam.input.accept === 'image/*' && cam.input.capture === 'environment' && cam.input.hidden && !cam.input.multiple, cam.input);
+    await p.s('Page.setInterceptFileChooserDialog', { enabled: true });
+    await p.s('Runtime.evaluate', { expression: "document.getElementById('camera-btn').click()", userGesture: true });
+    const end = Date.now() + 5000;
+    while (!p.log.choosers.length && Date.now() < end) await sleep(50);
+    const chooser = p.log.choosers[0];
+    let node = null;
+    if (chooser) node = (await p.s('DOM.describeNode', { backendNodeId: chooser.backendNodeId })).node;
+    const attrs = node ? Object.fromEntries(node.attributes.reduce((a, v, i, arr) => (i % 2 ? a : [...a, [v, arr[i + 1]]]), [])) : {};
+    check(`${tag} a tap opens a file chooser for the capture input (accept image/*, capture environment), one file`, !!chooser && chooser.mode === 'selectSingle' && attrs.id === 'camera-input' && attrs.accept === 'image/*' && attrs.capture === 'environment', { chooser, attrs });
+    if (chooser) await p.s('DOM.setFileInputFiles', { backendNodeId: chooser.backendNodeId, files: [join(FIX, 'jpeg-everything.jpg')] });
+    await p.waitFor("document.querySelectorAll('#meta-groups .ms-check').length > 0", 20000);
+    await sleep(300);
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} the photo from the camera app goes through the normal steps: details listed, red ticked, no result yet`, cam.workspace && !cam.results && cam.detailCount > 0 && cam.ticked.every((t) => t === 'red') && cam.lines === 0, cam);
+    await p.press();
+    cam = await p.ev(CAMERA_STATE);
+    check(`${tag} its result is a normal one, with no camera line`, cam.results && cam.word === 'public' && cam.note === 0 && cam.lines === 0, cam);
+    const reset = await p.ev("(() => { document.getElementById('reset-btn').click(); return document.getElementById('camera-btn')?.textContent; })()");
+    check(`${tag} the button keeps its words after Start again`, reset === CAMERA_TEXT.button, reset);
+    await p.shot(`${tag}-1-result`);
+    const csp = await p.ev('window.__csp');
+    check(`${tag} no policy violations`, csp.length === 0, csp);
+    check(`${tag} no errors in the console`, p.log.errors.length === 0, p.log.errors);
+    check(`${tag} nothing fetched from elsewhere`, p.log.offsite.length === 0, p.log.offsite);
+    await p.close();
+  }
+
   // The privacy page, reached the way a person reaches it: the footer's Privacy link. It
   // must load with the app's own policy, no errors, nothing from elsewhere, and lead back.
   {
@@ -1075,7 +1230,7 @@ try {
         updated: document.querySelector('.pp-updated')?.textContent, current: cur && cur.getAttribute('href'), disclaimer: !!document.querySelector('.site-footer a[href="disclaimer.html"]'),
         overflow: document.documentElement.scrollWidth - innerWidth, back: document.querySelector('.pp-back')?.getAttribute('href'), gate: !!document.querySelector('.sb-gate-overlay') };
     })()`);
-    check(`${tag} title, heading and date`, st.title === 'Privacy · MetadataScrubber · Stormberry AS' && st.h1 === 'Privacy' && st.updated === 'Last updated: 5 October 2026', st);
+    check(`${tag} title, heading and date`, st.title === 'Privacy · MetadataScrubber · Stormberry AS' && st.h1 === 'Privacy' && st.updated === 'Last updated: 11 October 2026', st);
     check(`${tag} the policy is the first element in head, and the page runs no scripts`, st.firstMeta === 'Content-Security-Policy' && st.scripts === 0, st);
     check(`${tag} the app's own stylesheets apply: dark page, Inter, the card`, st.sheets === 2 && st.bg === 'rgb(12, 10, 18)' && /Inter/.test(st.font) && st.card, st);
     check(`${tag} the sections a reader looks for are there`, ['Who is responsible', 'Your photos stay on your device', 'What we receive', 'Sharing and copying', 'Where you got the app', 'Your rights', 'Changes to this page'].join() === st.sections.join(), st.sections);
