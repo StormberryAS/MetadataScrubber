@@ -1,0 +1,26 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- CheckLink, "A closer look" (ICON-1 A, chosen 12 October 2026): a magnifier held over a link.
+       The link's arms and bar sit on a 2-unit grid, so at 32 px each gap is one whole pixel.
+       android/tools/make_icons.py translates this drawing into the launcher icon, and
+       android/tools/build-store-icon.py renders the store icon from it. -->
+  <!-- Handle -->
+  <path d="M43 43 L56 56" stroke="url(#handleGrad)" stroke-width="8" stroke-linecap="round"/>
+  <!-- Lens -->
+  <circle cx="28" cy="28" r="19.5" fill="#1b1226" stroke="url(#lensGrad)" stroke-width="5"/>
+  <!-- The link under the glass -->
+  <path d="M24 22 H20 A6 6 0 0 0 20 34 H24 M32 22 H36 A6 6 0 0 1 36 34 H32 M24 28 H32" stroke="url(#linkGrad)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs>
+    <linearGradient id="lensGrad" x1="8" y1="8" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#f0abfc"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+    <linearGradient id="handleGrad" x1="42" y1="42" x2="59" y2="59" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#e879f9"/>
+      <stop offset="100%" stop-color="#9333ea"/>
+    </linearGradient>
+    <linearGradient id="linkGrad" x1="12" y1="20" x2="44" y2="36" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f0abfc"/>
+    </linearGradient>
+  </defs>
+</svg>
