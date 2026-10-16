@@ -2913,3 +2913,62 @@ print(json.dumps(out))`, F.path(file)]));
     assert.equal(tierOf(await core.inspect(F.read('depth-tail-bad.heic')), 'heic:aux-image'), 'red', 'a byte more than the description is red');
   });
 });
+
+// Found by the type check of 16 October 2026: names read from a file were looked up in plain
+// objects, so a name such as `constructor` or `__proto__` found what every object inherits.
+describe('type check 2026-10-16: names from a file never find inherited properties', () => {
+  const xmpJpeg = (ns, body) => F.jpegInsert(F.read(F.jpegProgressive()), F.jpegSeg(0xe1, Buffer.concat([
+    Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1'),
+    Buffer.from(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" ${ns}${body}</rdf:RDF></x:xmpmeta>`, 'utf8'),
+  ])));
+  const NAME = 'Ola Nordmann, Askoy';
+  const redScrub = async (bytes) => core.scrub(bytes, reds(await core.inspect(bytes)));
+
+  test('PNG: a text keyword such as constructor or __proto__ is a red detail that goes', async () => {
+    for (const kw of ['constructor', 'Constructor', '__proto__']) {
+      const png = F.pngInsertBefore(F.read(F.pngFull()), 'IDAT', F.pngChunk('tEXt', `${kw}\0${NAME}`));
+      const info = await core.inspect(png);
+      assert.ok(info.items.every((i) => i.id && i.tier && i.label), `${kw}: every item has an id, a tier and a label`);
+      const item = info.items.find((i) => i.value === NAME);
+      assert.ok(item && item.tier === 'red' && item.id.startsWith('png:text:'), `${kw}: ${JSON.stringify(item)}`);
+      assert.ok(!contains((await redScrub(png)).bytes, NAME), `${kw}: red only removes it`);
+    }
+  });
+
+  test('PNG: an exif:__proto__ text copy shows its text like any other name', async () => {
+    const png = F.pngInsertBefore(F.read(F.pngFull()), 'IDAT', F.pngChunk('tEXt', `exif:__proto__\0${NAME}`));
+    const item = (await core.inspect(png)).items.find((i) => i.id === 'png:exif-text:private');
+    assert.ok(item && item.value.includes(NAME), JSON.stringify(item));
+  });
+
+  test('XMP: a GPano field named constructor or __proto__ is not a technical detail, and goes with red', async () => {
+    for (const local of ['constructor', 'toString', '__proto__']) {
+      const jpg = xmpJpeg('xmlns:GPano="http://ns.google.com/photos/1.0/panorama/" ', `GPano:${local}="${NAME}"/>`);
+      const info = await core.inspect(jpg);
+      assert.ok(!info.items.some((i) => i.id === 'xmp:technical'), `${local}: ${JSON.stringify(info.items.filter((i) => i.id.startsWith('xmp:')))}`);
+      assert.ok(!contains((await redScrub(jpg)).bytes, NAME), `${local}: red only removes it`);
+    }
+  });
+
+  test('XMP: an entity named like an inherited property stays as written', async () => {
+    const jpg = xmpJpeg('xmlns:tiff="http://ns.adobe.com/tiff/1.0/" ', '><tiff:Make>Canon&valueOf;</tiff:Make></rdf:Description>');
+    const info = await core.inspect(jpg);
+    const make = info.items.find((i) => i.id === 'xmp:camera');
+    assert.equal(make && make.value, 'Canon&valueOf;');
+    const out = await redScrub(jpg);
+    assert.ok(!contains(out.bytes, 'native code'), 'no function text is written into the file');
+  });
+
+  test('XMP: a namespace named constructor or toString is read, not refused as unreadable', async () => {
+    for (const uri of ['constructor', 'toString']) {
+      for (const body of [`foo:keys="${NAME}"/>`, `><foo:Zzz>${NAME}</foo:Zzz></rdf:Description>`]) {
+        const jpg = xmpJpeg(`xmlns:foo="${uri}" `, body);
+        const info = await core.inspect(jpg);
+        assert.ok(!ids(info).includes('xmp:packet'), `${uri}: ${ids(info).join(' ')}`);
+        const item = info.items.find((i) => i.value.includes(NAME));
+        assert.ok(item && item.tier === 'red', `${uri}: ${JSON.stringify(item)}`);
+        assert.ok(!contains((await redScrub(jpg)).bytes, NAME), `${uri}: red only removes it`);
+      }
+    }
+  });
+});

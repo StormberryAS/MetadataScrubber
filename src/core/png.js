@@ -8,17 +8,99 @@
 import {
   Assembler, clip, concat, crc32, encodeLatin1, encodeUtf8, formatBytes, hexDecode, hexEncodeLines, inflate, latin1,
   startsWith, u16be, u32be, utf8, w32be, zlibStored,
-} from './bytes.js?v=4d7df4d3';
-import { describeC2pa } from './c2pa.js?v=fcdff418';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=15403b52';
+} from './bytes.js?v=e01e89d1';
+import { describeC2pa } from './c2pa.js?v=7e2f4ee2';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=50f98571';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc,
-} from './iptc.js?v=a3bcfb3f';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=93d7f069';
+} from './iptc.js?v=8de9a6f5';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=c7ed327c';
 import {
   TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation,
-} from './tiff.js?v=1288a27c';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=d8284a86';
+} from './tiff.js?v=f4348940';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=e0e75fec';
+
+/** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
+/** @typedef {import('./taxonomy.js').ItemSpec} ItemSpec */
+/** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */
+/** @typedef {import('./taxonomy.js').Tier} Tier */
+/** @typedef {import('./iptc.js').ParsedIptc} ParsedIptc */
+/** @typedef {import('./iptc.js').ParsedIrb} ParsedIrb */
+/** @typedef {import('./iptc.js').IrbResource} IrbResource */
+/** @typedef {NonNullable<ReturnType<typeof parseTiff>>} TiffModel */
+/**
+ * One chunk. `bad` marks a damaged type name, `resynced` a chunk cut short where an
+ * intact chunk was found inside it.
+ * @typedef {object} PngChunk
+ * @property {string} type
+ * @property {number} start
+ * @property {number} dataStart
+ * @property {number} dataEnd
+ * @property {number} end
+ * @property {boolean} bad
+ * @property {boolean} [crcOk]
+ * @property {boolean} [resynced]
+ */
+/**
+ * @typedef {object} PngWalk
+ * @property {PngChunk[]} chunks
+ * @property {number} iendEnd
+ * @property {number} tailStart
+ * @property {number} damagedStart
+ * @property {string} damagedType
+ * @property {string[]} warnings
+ */
+/** An ImageMagick raw profile. @typedef {{ type: string, bytes: Uint8Array }} RawProfile */
+/**
+ * A decoded text chunk; raw is null when it could not be read.
+ * @typedef {object} PngText
+ * @property {string} keyword
+ * @property {Uint8Array | null} raw
+ * @property {string} text
+ * @property {boolean} [compressed]
+ * @property {string} [chunkType]
+ * @property {RawProfile} [rawProfile]
+ */
+/** An EXIF block: an eXIf chunk, or a raw profile (with info and prof). @typedef {{ chunk: PngChunk, off: number, info?: PngText, prof?: RawProfile }} PngExifEntry */
+/** @typedef {{ chunk: PngChunk, parsed: ReturnType<typeof parseXmp>, info: PngText, items: ReturnType<typeof addXmpItems> }} PngXmpEntry */
+/**
+ * Photoshop data (irb set) or a bare IPTC block (irb unset) in a raw profile.
+ * @typedef {object} PngIrbEntry
+ * @property {PngChunk} chunk
+ * @property {PngText} info
+ * @property {string} keyword
+ * @property {RawProfile} prof
+ * @property {string[]} items
+ * @property {ParsedIrb} [irb]
+ * @property {Uint8Array} [bytes]
+ * @property {ParsedIptc} [iptc]
+ * @property {IrbResource} [iptcRes]
+ */
+/**
+ * @typedef {object} PngModel
+ * @property {PngWalk} w
+ * @property {PngChunk[]} chunks
+ * @property {PngExifEntry[]} exif
+ * @property {PngXmpEntry[]} xmp
+ * @property {PngIrbEntry[]} irb
+ * @property {Map<PngChunk, Uint8Array>} canon chunks written in their canonical form when they stay
+ * @property {number} width
+ * @property {number} height
+ * @property {number | undefined} orientation
+ * @property {boolean} [c2pa]
+ */
+/** A detail chunks are grouped under. @typedef {{ id: string, group: string, tier: Tier, label: string, note?: string, source?: string }} PngDef */
+/** Where a colour profile came from: an iCCP chunk (name) or a raw profile (raw). @typedef {{ name?: string | null, raw?: { info: PngText, type: string } }} ProfileWhere */
+/**
+ * The removal data this module stores with each item.
+ * @typedef {{ kind: 'chunks', chunks: PngChunk[] }
+ *   | { kind: 'trailing' | 'damaged' | 'iend' }
+ *   | ({ kind: 'icctext', chunk: PngChunk, prof: Uint8Array } & ProfileWhere)
+ *   | { kind: 'exif' | 'rawexif', entry: PngExifEntry, key: string }
+ *   | { kind: 'irb', entry: PngIrbEntry, part: string, key?: string }
+ *   | { kind: 'iptc', entry: PngIrbEntry, key: string }
+ *   | { kind: 'xmp', entry: PngXmpEntry }} PngInternal
+ */
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const STRUCTURAL = new Set(['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS', 'acTL', 'fcTL', 'fdAT']);
@@ -29,6 +111,7 @@ const DISPLAY = new Set(['bKGD', 'sBIT', 'hIST', 'sPLT', 'oFFs', 'pCAL', 'sCAL']
 // and pCAL hold a free-text name (and pCAL a unit), so they are never green.
 const GREEN_TECH_KEYS = new Set(['orientation', 'resolution', 'colour', 'dimensions', 'exposure', 'format']);
 const NUM_TEXT = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+/** @param {Uint8Array} b @param {PngChunk} c @returns {boolean} */
 function greenChunkOk(b, c) {
   const n = c.dataEnd - c.dataStart;
   const d = c.dataStart;
@@ -52,6 +135,7 @@ function greenChunkOk(b, c) {
   }
 }
 
+/** @param {Uint8Array} b @returns {boolean} */
 export function isPng(b) {
   return b.length >= 8 && SIGNATURE.every((v, i) => b[i] === v);
 }
@@ -59,8 +143,11 @@ export function isPng(b) {
 // Walks the chunks. A chunk with a damaged type name is still stepped over by its length
 // (and offered for removal), so the chunks after it are read too. Where the file stops in
 // the middle of a chunk, damagedStart marks the place.
+/** @param {Uint8Array} b @returns {PngWalk} */
 export function walkPng(b) {
+  /** @type {PngChunk[]} */
   const chunks = [];
+  /** @type {string[]} */
   const warnings = [];
   let p = 8;
   let iendEnd = -1;
@@ -72,6 +159,7 @@ export function walkPng(b) {
     const n = u32be(b, p);
     const type = latin1(b, p + 4, p + 8);
     if (p + 12 + n > b.length) { damagedStart = p; damagedType = type; break; }
+    /** @type {PngChunk} */
     let c = { type, start: p, dataStart: p + 8, dataEnd: p + 8 + n, end: p + 12 + n, bad: !/^[A-Za-z]{4}$/.test(type) };
     c.crcOk = !c.bad && crc32(b, p + 4, p + 8 + n) === u32be(b, p + 8 + n);
     if (!c.bad && !c.crcOk) {
@@ -96,15 +184,19 @@ export function walkPng(b) {
 
 const IEND = new Uint8Array([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
 
+/** @param {number} x */
 const isLetter = (x) => (x >= 0x41 && x <= 0x5a) || (x >= 0x61 && x <= 0x7a);
 
 // The first position in [from, to) where a complete chunk starts that is either intact
 // itself or followed by an intact chunk (so one damaged chunk cannot hide the next), or
 // -1. Bounded, so a crafted file cannot make it slow.
+/** @param {Uint8Array} b @param {number} from @param {number} to @returns {number} */
 function resync(b, from, to) {
   let checks = 0;
   let budget = 32 * 1024 * 1024;
+  /** @param {number} q */
   const header = (q) => q + 12 <= b.length && isLetter(b[q + 4]) && isLetter(b[q + 5]) && isLetter(b[q + 6]) && isLetter(b[q + 7]) && q + 12 + u32be(b, q) <= b.length;
+  /** @param {number} q */
   const intact = (q) => {
     const n = u32be(b, q);
     budget -= n + 4;
@@ -122,6 +214,7 @@ function resync(b, from, to) {
   return -1;
 }
 
+/** @param {string} type @param {Uint8Array} data @returns {Uint8Array} */
 export function makeChunk(type, data) {
   const out = new Uint8Array(12 + data.length);
   w32be(out, 0, data.length);
@@ -132,6 +225,7 @@ export function makeChunk(type, data) {
 }
 
 // Decodes one text chunk: { keyword, text (string), bytes (raw text bytes), compressed, chunkType }.
+/** @param {Uint8Array} b @param {PngChunk} c @returns {Promise<PngText>} */
 async function readText(b, c) {
   const d = b.subarray(c.dataStart, c.dataEnd);
   let z = d.indexOf(0);
@@ -157,6 +251,7 @@ async function readText(b, c) {
   return raw ? { keyword, raw, text: utf8(raw), compressed: !!flag } : { keyword, raw: null, text: '', compressed: !!flag };
 }
 
+/** @param {string} type @param {string} keyword @param {Uint8Array} raw @returns {Uint8Array} */
 function textChunk(type, keyword, raw) {
   const key = encodeLatin1(keyword);
   if (type === 'tEXt') return makeChunk('tEXt', concat([key, new Uint8Array([0]), raw]));
@@ -164,12 +259,14 @@ function textChunk(type, keyword, raw) {
   return makeChunk('iTXt', concat([key, new Uint8Array([0, 0, 0, 0, 0]), raw]));
 }
 
+/** @type {(x: Uint8Array, y: Uint8Array) => boolean} */
 const sameBytes = (x, y) => x.length === y.length && x.every((v, i) => v === y[i]);
 
 // ImageMagick's raw profiles, written in one canonical form whatever the file used: a zTXt
 // chunk (stored, so nothing in how it was compressed survives) under the keyword
 // "Raw profile type <kind>", holding the header lines and the hexadecimal data as
 // encodeRawProfile writes them.
+/** @param {string} kind @param {Uint8Array} bytes @returns {Uint8Array} */
 function rawProfileChunk(kind, bytes) {
   return textChunk('zTXt', `Raw profile type ${kind}`, encodeRawProfile(kind, bytes));
 }
@@ -177,6 +274,7 @@ const EXIF_HEAD = encodeLatin1('Exif\0\0');
 
 // The chunk an XMP packet is written to: an uncompressed iTXt with no language and its
 // fixed keyword, or, for ImageMagick's raw profile, a canonical raw profile.
+/** @param {PngText} info @param {string} text @returns {Uint8Array} */
 function xmpChunk(info, text) {
   const raw = encodeUtf8(text);
   return info.rawProfile ? rawProfileChunk('xmp', raw) : textChunk('iTXt', 'XML:com.adobe.xmp', raw);
@@ -191,8 +289,11 @@ function xmpChunk(info, text) {
 const ISO_DATE = /^\d{4}-\d\d-\d\d(?:[T ]\d\d:\d\d(?::\d\d(?:\.\d{1,9})?)?(?:Z|[+-]\d\d:?\d\d)?)?$/;
 const EXIF_STYLE_DATE = /^\d{4}:\d\d:\d\d \d\d:\d\d:\d\d$/;
 const RFC1123_DATE = /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), )?\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d\d:\d\d(?::\d\d)? (?:GMT|UTC|UT|Z|[+-]\d{4})$/;
+/** @param {string} v */
 const pngDateOk = (v) => ISO_DATE.test(v) || EXIF_STYLE_DATE.test(v) || RFC1123_DATE.test(v);
+/** @param {string} v */
 const latin1Line = (v) => v.length <= 64 && /^[\x20-\x7e\xa0-\xff]*$/.test(v);
+/** @type {Record<'creation time' | 'date:create' | 'date:modify' | 'date:timestamp' | 'software' | 'source', [string, (v: string) => boolean]>} */
 const AMBER_TEXT = {
   'creation time': ['Creation Time', pngDateOk],
   'date:create': ['date:create', pngDateOk],
@@ -201,10 +302,13 @@ const AMBER_TEXT = {
   software: ['Software', deviceNameOk],
   source: ['Source', deviceNameOk],
 };
+/** @type {(keyword: string, value: string) => Uint8Array} */
 const textOnly = (keyword, value) => makeChunk('tEXt', concat([encodeLatin1(keyword), new Uint8Array([0]), encodeLatin1(value)]));
+/** @type {PngDef} */
 const DEVICE_TEXT = { id: 'png:device-text', ...TIFF_ITEMS['device-text'], source: 'PNG text' };
 
 // ImageMagick raw profile: "\n<type>\n<length>\n<hex>\n".
+/** @param {string} text @returns {RawProfile | null} */
 function decodeRawProfile(text) {
   const m = /^\s*([^\n]*)\n\s*(\d+)\n([\s\S]*)$/.exec(text);
   if (!m) return null;
@@ -213,10 +317,12 @@ function decodeRawProfile(text) {
   return { type: m[1].trim(), bytes: bytes.subarray(0, +m[2]) };
 }
 
+/** @param {string} type @param {Uint8Array} bytes @returns {Uint8Array} */
 function encodeRawProfile(type, bytes) {
   return encodeLatin1(`\n${type}\n${String(bytes.length).padStart(8, ' ')}\n${hexEncodeLines(bytes)}\n`);
 }
 
+/** @satisfies {Record<string, PngDef>} */
 const TEXT_KEYS = {
   author: { id: 'png:author', group: 'who', tier: 'red', label: 'Author name' },
   artist: { id: 'png:author', group: 'who', tier: 'red', label: 'Author name' },
@@ -237,8 +343,10 @@ const TEXT_KEYS = {
 
 // Text chunks with other keywords are judged by the keyword, so "Location" or "GPSLatitude"
 // written by some tool is still recognised as a place.
+/** @param {string} lower @returns {PngDef | null} */
 function textKeyDef(lower) {
-  if (TEXT_KEYS[lower]) return TEXT_KEYS[lower];
+  // Own keys only: a keyword such as `constructor` must not find what every object inherits.
+  if (Object.hasOwn(TEXT_KEYS, lower)) return TEXT_KEYS[/** @type {keyof typeof TEXT_KEYS} */ (lower)];
   if (/gps|latitude|longitude|altitude|geotag|coordinat/.test(lower)) return { id: 'png:gps', group: 'where', tier: 'red', label: 'GPS position' };
   if (/location|address|place|city|country|street|postal|province|landmark/.test(lower)) return { id: 'png:place', group: 'where', tier: 'red', label: 'Place names' };
   if (/serial/.test(lower)) return { id: 'png:serial', group: 'who', tier: 'red', label: 'Serial number' };
@@ -248,8 +356,11 @@ function textKeyDef(lower) {
   return null;
 }
 
+/** @param {Record<string, string>} values @returns {string} */
 function gpsFromText(values) {
+  /** @param {string | undefined} v */
   const num = (v) => (v || '').split(',').map((x) => { const [a, c] = x.split('/').map(Number); return c ? a / c : a; });
+  /** @param {string | undefined} v */
   const dms = (v) => { const n = num(v); return n.length >= 1 && n.every(Number.isFinite) ? (n[0] || 0) + (n[1] || 0) / 60 + (n[2] || 0) / 3600 : null; };
   if (!values.GPSLatitude || !values.GPSLongitude) return '';
   const lat = dms(values.GPSLatitude);
@@ -258,11 +369,18 @@ function gpsFromText(values) {
   return `${lat.toFixed(4)} ${(values.GPSLatitudeRef || 'N').charAt(0)}, ${lon.toFixed(4)} ${(values.GPSLongitudeRef || 'E').charAt(0)}`;
 }
 
+/**
+ * @param {Uint8Array} b
+ * @param {ItemSet} set
+ * @returns {Promise<PngModel & { orientation: number }>}
+ */
 export async function analysePng(b, set) {
   const w = walkPng(b);
   for (const x of w.warnings) set.warn(x);
   // canon: chunks that, when they stay, are written in their canonical form instead.
+  /** @type {PngModel} */
   const model = { w, chunks: w.chunks, exif: [], xmp: [], irb: [], canon: new Map(), width: 0, height: 0, orientation: undefined };
+  /** @param {PngChunk} c @param {Uint8Array} bytes */
   const canonical = (c, bytes) => {
     model.canon.set(c, bytes);
     if (!sameBytes(bytes, b.subarray(c.start, c.end))) set.normalise = true;
@@ -270,26 +388,33 @@ export async function analysePng(b, set) {
   const ihdr = w.chunks.find((c) => c.type === 'IHDR');
   if (ihdr) { model.width = u32be(b, ihdr.dataStart); model.height = u32be(b, ihdr.dataStart + 4); }
 
+  /** @type {Map<string, { def: PngDef, chunks: PngChunk[], values: string[] }>} */
   const groups = new Map();
+  /** @param {PngDef} def @param {PngChunk} chunk @param {string | null | undefined} value */
   const group = (def, chunk, value) => {
     if (!groups.has(def.id)) groups.set(def.id, { def, chunks: [], values: [] });
-    const g = groups.get(def.id);
+    const g = /** @type {{ def: PngDef, chunks: PngChunk[], values: string[] }} */ (groups.get(def.id));
     g.chunks.push(chunk);
     if (value) g.values.push(value);
   };
+  /** @type {Map<string, { chunks: PngChunk[], values: Record<string, string> }>} */
   const exifText = new Map();
 
+  /** @param {TiffModel} m @param {{ kind: 'exif' | 'rawexif', entry: PngExifEntry }} internal */
   const addTiff = (m, internal) => {
     for (const x of m.warnings) set.warn(x);
     if (model.orientation === undefined) model.orientation = tiffOrientation(m);
     for (const it of tiffItems(m)) {
+      /** @type {ItemSpec} */
       const pub = { id: `exif:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'EXIF' };
       if (it.note) pub.note = it.note;
       set.add(pub, { ...internal, key: it.key });
     }
   };
+  /** @param {Uint8Array} bytes @param {PngChunk} chunk @param {PngText} info @param {string} keyword @param {RawProfile} prof */
   const addIrb = (bytes, chunk, info, keyword, prof) => {
     const irb = parseIrb(bytes);
+    /** @type {PngIrbEntry} */
     const entry = { chunk, info, keyword, irb, bytes, prof, items: [] };
     model.irb.push(entry);
     const iptcRes = irb.res.find((r) => r.id === IRB_IPTC);
@@ -297,6 +422,7 @@ export async function analysePng(b, set) {
       entry.iptc = parseIptc(bytes.subarray(iptcRes.dataStart, iptcRes.dataEnd));
       entry.iptcRes = iptcRes;
       for (const it of iptcItems(entry.iptc)) {
+        /** @type {ItemSpec} */
         const pub = { id: `iptc:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'IPTC' };
         if (it.note) pub.note = it.note;
         entry.items.push(set.add(pub, { kind: 'irb', entry, part: 'iptc', key: it.key }));
@@ -313,8 +439,10 @@ export async function analysePng(b, set) {
     const canon = canonicalIrb(irb, entry.iptc, entry.iptcRes);
     if (!canon.length || !sameBytes(rawProfileChunk('8bim', canon), b.subarray(chunk.start, chunk.end))) set.normalise = true;
   };
+  /** @param {string} text @param {PngChunk} chunk @param {PngText} info */
   const addXmp = (text, chunk, info) => {
     const parsed = parseXmp(text);
+    /** @type {PngXmpEntry} */
     const entry = { chunk, parsed, info, items: [] };
     model.xmp.push(entry);
     // The packet stays only in the canonical form, in a chunk written as xmpChunk writes
@@ -328,13 +456,15 @@ export async function analysePng(b, set) {
 
   // A colour profile: false when it cannot be read (then it is offered whole, as red),
   // else true, after offering any unlisted text in it, or an unlisted iCCP name.
+  /** @param {PngChunk} c @param {Uint8Array | null} prof @param {ProfileWhere} where @returns {boolean} */
   const colourProfile = (c, prof, where) => {
-    const info = prof ? inspectIcc(prof) : { ok: false };
+    const info = /** @type {ReturnType<typeof inspectIcc>} */ (prof ? inspectIcc(prof) : { ok: false });
     if (!info.ok) {
       set.add({ ...ICC_UNREADABLE_ITEM, value: formatBytes(c.dataEnd - c.dataStart) }, { kind: 'chunks', chunks: [c] });
       return false;
     }
-    const badName = where.name !== undefined && !iccNameAllowed(where.name);
+    // A readable iCCP profile always has its name read (see the iCCP branch below).
+    const badName = where.name !== undefined && !iccNameAllowed(/** @type {string} */ (where.name));
     if (!info.clean || badName) {
       const value = [badName ? `profile name: ${where.name}` : '', info.clean ? '' : iccFreeText(info)].filter(Boolean).join('; ');
       set.add({ ...ICC_TEXT_ITEM, value: clip(value) }, { kind: 'icctext', chunk: c, prof, ...where });
@@ -342,7 +472,9 @@ export async function analysePng(b, set) {
     return true;
   };
 
+  /** @type {Set<string>} */
   const seenUnknown = new Set();
+  /** @param {PngChunk} c @param {string} label */
   const unknownChunk = (c, label) => {
     const slug = c.bad ? `x${Array.from(c.type, (ch) => ch.charCodeAt(0).toString(16).padStart(2, '0')).join('')}` : c.type.toLowerCase();
     const id = cappedId(seenUnknown, `png:chunk:${slug}`, 'png:chunk:other');
@@ -357,6 +489,7 @@ export async function analysePng(b, set) {
       continue;
     }
     if (COLOUR.has(t)) {
+      /** @type {Record<string, string>} */
       const names = { sRGB: 'sRGB', gAMA: 'Gamma', cHRM: 'Colour primaries', cICP: 'Colour code points', mDCV: 'HDR display data', cLLI: 'HDR brightness data', mDCv: 'HDR display data', cLLi: 'HDR brightness data' };
       let value = names[t];
       if (t === 'iCCP') {
@@ -366,7 +499,7 @@ export async function analysePng(b, set) {
         // The profile and its name are checked like any colour profile: unreadable is red
         // as a whole, and text that is not a known name is a red detail of its own.
         if (!colourProfile(c, prof, { name })) continue;
-        value = iccDescription(prof);
+        value = iccDescription(/** @type {Uint8Array} */ (prof));
       }
       group({ id: 'png:colour', group: 'technical', tier: 'green', label: 'Colour profile', note: 'Keeps colours accurate on different screens.' }, c, value);
       continue;
@@ -396,6 +529,7 @@ export async function analysePng(b, set) {
       const off = findTiffStart(data, 8);
       const m = off >= 0 ? parseTiff(data.subarray(off)) : null;
       if (!m || m.damaged) { group({ id: 'png:exif-unreadable', group: 'hidden', tier: 'red', label: 'EXIF data that could not be read', note: 'It may hold anything, so removing it is the safe choice.' }, c, formatBytes(data.length)); continue; }
+      /** @type {PngExifEntry} */
       const entry = { chunk: c, off };
       model.exif.push(entry);
       addTiff(m, { kind: 'exif', entry });
@@ -427,6 +561,7 @@ export async function analysePng(b, set) {
           const off = findTiffStart(prof.bytes, 16);
           const m = off >= 0 ? parseTiff(prof.bytes.subarray(off)) : null;
           if (m && !m.damaged) {
+            /** @type {PngExifEntry} */
             const entry = { chunk: c, info, prof, off };
             model.exif.push(entry);
             addTiff(m, { kind: 'rawexif', entry });
@@ -438,9 +573,11 @@ export async function analysePng(b, set) {
           if (startsWith(prof.bytes, 0, '8BIM')) { addIrb(prof.bytes, c, info, kw, prof); continue; }
           const iptc = parseIptc(prof.bytes);
           if (iptc.sets.length) {
+            /** @type {PngIrbEntry} */
             const entry = { chunk: c, info, keyword: kw, prof, iptc, items: [] };
             model.irb.push(entry);
             for (const it of iptcItems(iptc)) {
+              /** @type {ItemSpec} */
               const pub = { id: `iptc:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'IPTC' };
               if (it.note) pub.note = it.note;
               entry.items.push(set.add(pub, { kind: 'iptc', entry, key: it.key }));
@@ -468,16 +605,19 @@ export async function analysePng(b, set) {
         let key = base;
         if (GREEN_TECH_KEYS.has(base) && !(technicalTextOk(info.text, name) && latin1Line(info.text))) key = 'technical-text';
         else if (isAmberTextKey(base) && !(amberTextOk(base, name, info.text) && latin1Line(info.text))) key = 'device-text';
-        if (!exifText.has(key)) exifText.set(key, { chunks: [], values: {} });
-        exifText.get(key).chunks.push(c);
-        exifText.get(key).values[name] = info.text;
+        // No prototype, so a keyword such as exif:__proto__ is stored like any other name.
+        if (!exifText.has(key)) exifText.set(key, { chunks: [], values: Object.create(null) });
+        // Set on the line above when missing.
+        /** @type {{ chunks: PngChunk[], values: Record<string, string> }} */ (exifText.get(key)).chunks.push(c);
+        /** @type {{ chunks: PngChunk[], values: Record<string, string> }} */ (exifText.get(key)).values[name] = info.text;
         // A copy that stays by default is written as a fresh tEXt chunk (see AMBER_TEXT).
         if (GREEN_TECH_KEYS.has(key) || isAmberTextKey(key)) canonical(c, textOnly(`exif:${tagNameOf(name)}`, info.text));
         continue;
       }
       const def = textKeyDef(lower);
       if (def && def.tier === 'amber') {
-        const [keyword, ok] = AMBER_TEXT[lower] || [];
+        // Only TEXT_KEYS entries are amber, and each of them is a key of AMBER_TEXT.
+        const [keyword, ok] = AMBER_TEXT[/** @type {keyof typeof AMBER_TEXT} */ (lower)] || [];
         if (keyword && latin1Line(info.text) && ok(info.text)) {
           group(def, c, info.text);
           canonical(c, textOnly(keyword, info.text));
@@ -500,6 +640,7 @@ export async function analysePng(b, set) {
     const def = TIFF_ITEMS[key] || TIFF_ITEMS.other;
     let value = key === 'gps' ? gpsFromText(g.values) : '';
     if (!value) value = clip(Object.entries(g.values).map(([k, v]) => `${k} ${v}`).join(', '));
+    /** @type {ItemSpec} */
     const pub = { id: `png:exif-text:${key}`, group: def.group, tier: def.tier, label: def.label, value, source: 'PNG text' };
     if (def.note) pub.note = def.note;
     set.add(pub, { kind: 'chunks', chunks: g.chunks });
@@ -507,6 +648,7 @@ export async function analysePng(b, set) {
   for (const [id, g] of groups) {
     const def = g.def;
     const values = [...new Set(g.values.filter(Boolean))];
+    /** @type {ItemSpec} */
     const pub = { id, group: def.group, tier: def.tier, label: def.label, value: clip(values.join(', ') || def.label), source: def.source || (id === 'png:colour' && g.chunks.some((c) => c.type === 'iCCP') ? 'ICC profile' : 'PNG') };
     if (def.note) pub.note = def.note;
     if (def.source === undefined && /^png:(author|copyright|computer|dates|software|source|comment|description|title|notes|gps|place|serial|ids)$/.test(id)) pub.source = 'PNG text';
@@ -524,23 +666,36 @@ export async function analysePng(b, set) {
     set.add({ id: 'png:trailing', group: 'hidden', tier: 'red', label: 'Unknown data after the image', value: formatBytes(b.length - w.iendEnd), source: 'After the image' }, { kind: 'trailing' });
   }
   model.orientation = model.orientation || 1;
-  return model;
+  return /** @type {PngModel & { orientation: number }} */ (model);
 }
 
+/**
+ * @param {Uint8Array} b
+ * @param {PngModel} model
+ * @param {ItemSet} set
+ * @param {Set<string>} remove
+ * @returns {Promise<{ bytes: Uint8Array, warnings: string[] }>}
+ */
 export async function scrubPng(b, model, set, remove) {
+  /** @type {string[]} */
   const warnings = [];
   const out = b.slice();
+  /** @type {Set<PngChunk>} */
   const drop = new Set();
+  /** @type {Map<PngChunk, Uint8Array>} */
   const replace = new Map();
   let cutTrailing = false;
   let cutDamaged = false;
   let cleanIend = false;
 
+  /** @type {Map<PngExifEntry, { kind: 'exif' | 'rawexif', keys: Set<string> }>} */
   const exifKeys = new Map();
+  /** @type {Map<PngIrbEntry, string[]>} */
   const irbRemovals = new Map();
+  /** @type {({ kind: 'icctext', chunk: PngChunk, prof: Uint8Array } & ProfileWhere)[]} */
   const iccTexts = [];
   for (const id of remove) {
-    const it = set.get(id);
+    const it = /** @type {PngInternal | undefined} */ (set.get(id));
     if (!it) continue;
     if (it.kind === 'chunks') for (const c of it.chunks) drop.add(c);
     else if (it.kind === 'trailing') cutTrailing = true;
@@ -549,10 +704,10 @@ export async function scrubPng(b, model, set, remove) {
     else if (it.kind === 'icctext') iccTexts.push(it);
     else if (it.kind === 'exif' || it.kind === 'rawexif') {
       if (!exifKeys.has(it.entry)) exifKeys.set(it.entry, { kind: it.kind, keys: new Set() });
-      exifKeys.get(it.entry).keys.add(it.key);
+      /** @type {{ keys: Set<string> }} */ (exifKeys.get(it.entry)).keys.add(it.key);
     } else if (it.kind === 'irb' || it.kind === 'iptc') {
       if (!irbRemovals.has(it.entry)) irbRemovals.set(it.entry, []);
-      irbRemovals.get(it.entry).push(id);
+      /** @type {string[]} */ (irbRemovals.get(it.entry)).push(id);
     }
   }
 
@@ -560,13 +715,15 @@ export async function scrubPng(b, model, set, remove) {
     const c = entry.chunk;
     if (kind === 'exif') {
       const data = out.subarray(c.dataStart, c.dataEnd);
-      const m = parseTiff(data.subarray(entry.off));
+      // These bytes parsed as whole EXIF in analysePng, so they parse again here.
+      const m = /** @type {TiffModel} */ (parseTiff(data.subarray(entry.off)));
       const res = removeTiffKeys(m, keys);
       if (res.empty) drop.add(c);
       else replace.set(c, makeChunk('eXIf', out.slice(c.dataStart + entry.off, c.dataEnd)));
     } else {
-      const bytes = entry.prof.bytes.slice();
-      const m = parseTiff(bytes.subarray(entry.off));
+      // A rawexif entry always holds its raw profile.
+      const bytes = /** @type {RawProfile} */ (entry.prof).bytes.slice();
+      const m = /** @type {TiffModel} */ (parseTiff(bytes.subarray(entry.off)));
       const res = removeTiffKeys(m, keys);
       if (res.empty) drop.add(c);
       else replace.set(c, rawProfileChunk('exif', concat([EXIF_HEAD, bytes.subarray(entry.off)])));
@@ -591,7 +748,8 @@ export async function scrubPng(b, model, set, remove) {
     }
     if (it.raw) replace.set(c, rawProfileChunk('icc', cleaned));
     else {
-      const name = iccNameAllowed(it.name) ? it.name : 'ICC profile';
+      // Without raw, the text came from an iCCP chunk whose name was read (see colourProfile).
+      const name = iccNameAllowed(/** @type {string} */ (it.name)) ? /** @type {string} */ (it.name) : 'ICC profile';
       replace.set(c, makeChunk('iCCP', concat([encodeLatin1(name), new Uint8Array([0, 0]), zlibStored(cleaned)])));
     }
   }
@@ -609,13 +767,16 @@ export async function scrubPng(b, model, set, remove) {
     const ids = irbRemovals.get(entry) || [];
     if (ids.length === entry.items.length) { drop.add(entry.chunk); continue; }
     let bytes;
+    // Every id here is in the set: remove only holds ids the set has, and entry.items are
+    // the ids set.add gave back.
     if (entry.irb) {
-      const parts = new Set(ids.map((id) => set.get(id).part));
-      const removeIptc = new Set(ids.filter((id) => set.get(id).part === 'iptc').map((id) => set.get(id).key));
-      if (entry.items.some((id) => set.get(id).part === 'rest' && !ids.includes(id))) warnings.push('Photoshop data that could not be read was removed although it was not ticked: Photoshop data is always written again in a standard form, which only holds what can be read.');
+      const parts = new Set(ids.map((id) => /** @type {ItemInternal} */ (set.get(id)).part));
+      const removeIptc = new Set(ids.filter((id) => /** @type {ItemInternal} */ (set.get(id)).part === 'iptc').map((id) => /** @type {ItemInternal} */ (set.get(id)).key));
+      if (entry.items.some((id) => /** @type {ItemInternal} */ (set.get(id)).part === 'rest' && !ids.includes(id))) warnings.push('Photoshop data that could not be read was removed although it was not ticked: Photoshop data is always written again in a standard form, which only holds what can be read.');
       bytes = canonicalIrb(entry.irb, entry.iptc, entry.iptcRes, { parts, removeIptc });
     } else {
-      bytes = rebuildIptc(entry.iptc, new Set(ids.map((id) => set.get(id).key)));
+      // An entry without irb is a bare IPTC block, which always holds its parsed data.
+      bytes = rebuildIptc(/** @type {ParsedIptc} */ (entry.iptc), new Set(ids.map((id) => /** @type {ItemInternal} */ (set.get(id)).key)));
     }
     if (!bytes || !bytes.length) { drop.add(entry.chunk); continue; }
     replace.set(entry.chunk, rawProfileChunk(entry.irb ? '8bim' : 'iptc', bytes));
@@ -630,8 +791,8 @@ export async function scrubPng(b, model, set, remove) {
   for (const c of model.chunks) {
     if (drop.has(c) && (c.bad || !STRUCTURAL.has(c.type))) continue;
     if (c.type === 'IEND' && cleanIend) { asm.add(IEND); continue; }
-    if (replace.has(c)) { asm.add(replace.get(c)); continue; }
-    if (model.canon.has(c)) { asm.add(model.canon.get(c)); continue; }
+    if (replace.has(c)) { asm.add(/** @type {Uint8Array} */ (replace.get(c))); continue; }
+    if (model.canon.has(c)) { asm.add(/** @type {Uint8Array} */ (model.canon.get(c))); continue; }
     asm.copy(c.start, c.end);
   }
   if (model.w.iendEnd > 0) {
@@ -646,6 +807,7 @@ export async function scrubPng(b, model, set, remove) {
   return { bytes: asm.finish(), warnings };
 }
 
+/** @param {Uint8Array} b @param {Uint8Array} tiff @returns {Uint8Array} */
 export function insertPngExif(b, tiff) {
   const w = walkPng(b);
   const asm = new Assembler(b);
@@ -664,6 +826,7 @@ export function insertPngExif(b, tiff) {
 
 // Synchronous lookup of the first EXIF block, for buildExif. Compressed raw profiles need an
 // asynchronous inflate, so only eXIf and uncompressed raw profiles are read here.
+/** @param {Uint8Array} b @returns {Uint8Array | null} */
 export function firstPngTiff(b) {
   const w = walkPng(b);
   for (const c of w.chunks) {

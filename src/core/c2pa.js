@@ -10,7 +10,7 @@
 // Each manifest also carries a unique identifier that links the file to its original, as
 // the XMP document IDs do. What the manifest is seen to repeat is still named in the value.
 
-import { formatBytes, latin1 } from './bytes.js?v=4d7df4d3';
+import { formatBytes, latin1 } from './bytes.js?v=e01e89d1';
 
 const LOCATION = /GPS(?:Latitude|Longitude|Altitude|Position|Coordinates)|"?exif:GPS|LocationCreated|LocationShown/;
 const SERIAL = /SerialNumber|BodySerial|LensSerial|CameraSerial/;
@@ -20,6 +20,10 @@ const FREE_TEXT = /dc:title|dc:description|dc:subject|\btitle\b|\bdescription\b|
 
 // Describes one manifest (all its bytes, any number of parts). Returns
 // { tier, value, note } for the item; tier is always red.
+/**
+ * @param {Uint8Array[]} parts
+ * @returns {{ tier: import('./taxonomy.js').Tier, value: string, note: string }}
+ */
 export function describeC2pa(parts) {
   let total = 0;
   let text = '';
@@ -28,6 +32,7 @@ export function describeC2pa(parts) {
     // Text strings inside JSON and CBOR are plain UTF-8, so a Latin-1 view finds the keys.
     text += latin1(p, 0, Math.min(p.length, 4 * 1024 * 1024));
   }
+  /** @type {string[]} */
   const found = [];
   if (LOCATION.test(text)) found.push('location');
   if (SERIAL.test(text)) found.push('serial number');

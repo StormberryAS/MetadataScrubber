@@ -12,15 +12,123 @@
 // node names, old identifiers and any text between properties do not survive. The new
 // packet is parsed again and checked before it is trusted.
 
-import { clip, encodeUtf8, utf8 } from './bytes.js?v=4d7df4d3';
-import { iccNameAllowed } from './icc.js?v=15403b52';
-import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=1288a27c';
+import { clip, encodeUtf8, utf8 } from './bytes.js?v=e01e89d1';
+import { iccNameAllowed } from './icc.js?v=50f98571';
+import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=f4348940';
+
+/** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
+/** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */
+/** @typedef {import('./taxonomy.js').Tier} Tier */
+
+/** @typedef {{ name: string, value: string, start: number, end: number }} XmlAttr */
+/** A text node; a directory clone's text has no source position. @typedef {{ text: string, start?: number, end?: number, name?: undefined }} XmlText */
+/** @typedef {{ text: string, start: number, end: number }} XmlComment */
+/** @typedef {{ target: string, text: string, start: number, end: number }} XmlPi */
+/**
+ * An element with its source positions. A directory clone (see directoryClone) has none,
+ * and nothing reads them on a clone.
+ * @typedef {object} XmlElement
+ * @property {string} name
+ * @property {XmlAttr[]} attrs
+ * @property {XmlNode[]} children
+ * @property {number} start
+ * @property {number} [openEnd]
+ * @property {number} end
+ * @property {XmlElement | null} parent
+ * @property {number} depth
+ */
+/** @typedef {XmlElement | XmlText} XmlNode */
+/** @typedef {XmlElement & { comments: XmlComment[], pis: XmlPi[] }} XmlRoot */
+/** @typedef {{ prefix: string, local: string, uri: string, raw: string }} QName */
+
+/** @typedef {'Mime' | 'Semantic' | 'Length' | 'Padding'} DirFieldName */
+/** A core field of a directory entry, written as an attribute or as an element. @typedef {{ value: string, attr: XmlAttr, el?: undefined } | { value: string, el: XmlElement, attr?: undefined }} DirField */
+/**
+ * @typedef {object} DirEntry
+ * @property {XmlElement} li
+ * @property {Partial<Record<DirFieldName, DirField>>} fields
+ * @property {string | null} semantic
+ * @property {string | null} mime
+ * @property {number | null} length
+ * @property {number | null} padding
+ */
+/** @typedef {XmlAttr | XmlNode} DirRef */
+/**
+ * Anything in a Container directory that is not one of its core fields.
+ * @typedef {{ ref: DirRef, el: XmlElement, text: true, value: string, name?: undefined, fix?: undefined }
+ *   | { ref: DirRef, el: XmlElement, name: string, value: string, text?: undefined, fix?: string }} DirExtra
+ */
+/** @typedef {{ ok: boolean, entries: DirEntry[], extras: DirExtra[], primary?: boolean }} Directory */
+
+/**
+ * Fields every property has. uri is missing on rdf:about and on hidden text.
+ * @typedef {object} XmpPropBase
+ * @property {string} key
+ * @property {string} prefix
+ * @property {string} local
+ * @property {string} [uri]
+ * @property {string} value
+ * @property {number} start
+ * @property {number} end
+ * @property {Directory} [dir]
+ */
+/** @typedef {XmpPropBase & { kind: 'attr', uri: string, attr: XmlAttr, node: XmlElement }} XmpAttrProp */
+/** @typedef {XmpPropBase & { kind: 'elem', uri: string, node: XmlElement }} XmpElemProp */
+/** @typedef {XmpPropBase & { kind: 'about', attr: XmlAttr, node: XmlElement }} XmpAboutProp */
+/** A field of the Container directory, offered on its own. @typedef {XmpPropBase & { kind: 'sub', uri: string, parent: number, ref: DirRef, fix?: string }} XmpSubProp */
+/** @typedef {XmpPropBase & { kind: 'hidden' }} XmpHiddenProp */
+/** @typedef {XmpAttrProp | XmpElemProp | XmpAboutProp | XmpSubProp | XmpHiddenProp} XmpProp */
+/**
+ * What parseXmp returns.
+ * @typedef {{ ok: true, text: string, props: XmpProp[], hasRdf: boolean, opaque: boolean, error?: undefined }
+ *   | { ok: false, text: string, props: XmpProp[], error: string, hasRdf?: undefined, opaque?: undefined }} ParsedXmp
+ */
+/**
+ * A property as the canonical writer takes it: a parsed one, or an attribute written with a
+ * fixed value (see XmpAdd), which has only a name.
+ * @typedef {{ kind: 'attr', attr: { name: string }, node: XmlElement, value: string, key?: string, uri?: string, local?: string }
+ *   | { kind: 'elem', node: XmlElement, value: string, uri?: string, local?: string }
+ *   | { kind: 'about' | 'sub' | 'hidden', value: string, uri?: string, local?: string }} CanonProp
+ */
+/** An attribute written with a fixed value; node is an element on which the name's prefix resolves. @typedef {{ key: string, name: string, node: XmlElement, value: string }} XmpAdd */
+/** @typedef {{ index: number, local: string, add: XmpAdd }} GainFix */
+/** @typedef {{ index: number, drop?: Set<number> | null, length?: Map<number, number> | null, padding?: Map<number, number> | null }} DirPatch */
+/** @typedef {{ group: string, tier: Tier, label: string, note?: string }} XmpItemDef */
+/** @typedef {XmpItemDef & { key: string, value: string, props: number[] }} XmpItem */
+/**
+ * @typedef {object} XmpCtx
+ * @property {Tier | null} [motionTier]
+ * @property {Tier | null} [gainMapTier]
+ * @property {{ label?: string, value?: string, tier?: Tier, note?: string } | null} [extended]
+ * @property {'photo' | 'gainmap'} [carrier]
+ * @property {boolean} [gainMapCoupled]
+ * @property {boolean} [compact]
+ * @property {boolean} [secondary]
+ */
+/** One item addXmpItems added for a packet. @typedef {{ id: string, key: string, props: number[] }} XmpAdded */
+/**
+ * @typedef {object} PlanOpts
+ * @property {DirPatch | null} [dirPatch]
+ * @property {Set<number> | null} [rescue]
+ * @property {XmpAdd[]} [add]
+ * @property {Iterable<number>} [also]
+ */
+/**
+ * @typedef {{ action: 'drop', warning?: string, text?: undefined, same?: undefined }
+ *   | { action: 'rewrite', text: string, same: boolean, warning?: string }} XmpPlan
+ */
 
 const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
 const META = 'adobe:ns:meta/';
 const MAX_DEPTH = 256;
 
+// A table's own entry for a name read from a file, or undefined. A plain table[name] would
+// also find what every object inherits, such as `constructor` or `__proto__`.
+/** @template T @param {Record<string, T>} table @param {string} name @returns {T | undefined} */
+const own = (table, name) => (Object.hasOwn(table, name) ? table[name] : undefined);
+
 // Namespace URIs to the usual prefixes, so files that pick odd prefixes still map.
+/** @type {Record<string, string>} */
 const NS = {
   [RDF]: 'rdf',
   [META]: 'x',
@@ -59,32 +167,41 @@ const NS = {
 };
 
 // Some writers drop the final '#' or change its case; readers still treat it as RDF.
+/** @type {(u: string) => boolean} */
 const isRdfUri = (u) => !!u && u.replace(/#$/, '').toLowerCase() === RDF.slice(0, -1);
 
+/** @type {Record<string, string>} */
 const ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
+/** @param {string} s @returns {string} */
 function decodeEntities(s) {
-  return s.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (m, e) => {
+  return s.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (/** @type {string} */ m, /** @type {string} */ e) => {
     if (e[0] === '#') {
       const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
       return Number.isFinite(n) && n >= 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
     }
-    return ENTITIES[e] ?? m;
+    return own(ENTITIES, e) ?? m;
   });
 }
 
+/** @type {(c: string) => boolean} */
 const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r';
 // White space between XML nodes: ASCII only. Any other space character (no-break, en,
 // em, ideographic and so on) can spell text, so it is not blank.
+/** @type {(s: string) => boolean} */
 const blank = (s) => /^[ \t\r\n\0]*$/.test(s);
 
 // Builds an element tree with source positions. Throws on malformed input, and on
 // nesting deeper than any real packet needs (a crafted file must not exhaust the stack).
+/** @param {string} s @returns {XmlRoot} */
 export function parseXml(s) {
+  /** @type {XmlRoot} */
   const root = { name: '#root', attrs: [], children: [], start: 0, end: s.length, parent: null, depth: 0, comments: [], pis: [] };
+  /** @type {XmlElement} */
   let cur = root;
   let p = 0;
   // Line ends are read as XML 1.0 reads them (section 2.11): CR LF and a lone CR become LF,
   // before character references, which may still give a CR.
+  /** @type {(a: number, b: number) => void} */
   const addText = (a, b) => { if (b > a) cur.children.push({ text: decodeEntities(s.slice(a, b).replace(/\r\n?/g, '\n')), start: a, end: b }); };
   while (p < s.length) {
     const lt = s.indexOf('<', p);
@@ -125,7 +242,8 @@ export function parseXml(s) {
       const name = s.slice(lt + 2, e).trim();
       if (cur === root || name !== cur.name) throw new Error(`Mismatched end tag ${name}`);
       cur.end = e + 1;
-      cur = cur.parent;
+      // cur is not the root here, so it has a parent.
+      cur = /** @type {XmlElement} */ (cur.parent);
       p = e + 1;
       continue;
     }
@@ -133,6 +251,7 @@ export function parseXml(s) {
     while (q < s.length && !isWs(s[q]) && s[q] !== '/' && s[q] !== '>') q++;
     const name = s.slice(lt + 1, q);
     if (!name) throw new Error('Empty tag name');
+    /** @type {XmlAttr[]} */
     const attrs = [];
     let selfClose = false;
     for (;;) {
@@ -161,6 +280,7 @@ export function parseXml(s) {
       attrs.push({ name: aname, value: decodeEntities(raw.replace(/\r\n|[\r\n\t]/g, ' ')), start: wsStart, end: e + 1 });
       q = e + 1;
     }
+    /** @type {XmlElement} */
     const el = { name, attrs, children: [], start: lt, openEnd: q, end: selfClose ? q : -1, parent: cur, depth: cur.depth + 1 };
     if (el.depth > MAX_DEPTH) throw new Error('Too deeply nested');
     cur.children.push(el);
@@ -171,39 +291,46 @@ export function parseXml(s) {
   return root;
 }
 
+/** @type {(el: XmlElement) => XmlElement[]} */
 const elements = (el) => el.children.filter((c) => c.name !== undefined);
+/** @type {(n: string) => [string, string]} */
 const splitName = (n) => { const i = n.indexOf(':'); return i < 0 ? ['', n] : [n.slice(0, i), n.slice(i + 1)]; };
+/** @type {(a: { name: string }) => boolean} */
 const isNsAttr = (a) => a.name === 'xmlns' || a.name.startsWith('xmlns:');
 
+/** @param {XmlElement} el @param {string} prefix @returns {string} */
 function nsUri(el, prefix) {
   const key = prefix ? `xmlns:${prefix}` : 'xmlns';
-  for (let e = el; e; e = e.parent) {
+  for (let e = /** @type {XmlElement | null} */ (el); e; e = e.parent) {
     const a = e.attrs && e.attrs.find((x) => x.name === key);
     if (a) return isRdfUri(a.value) ? RDF : a.value;
   }
   return prefix === 'xml' ? 'http://www.w3.org/XML/1998/namespace' : '';
 }
 
+/** @param {XmlElement} el @param {string} name @returns {QName} */
 function qualify(el, name) {
   const [prefix, local] = splitName(name);
   const uri = nsUri(el, prefix);
-  return { prefix: NS[uri] || prefix || '?', local, uri, raw: prefix };
+  return { prefix: own(NS, uri) || prefix || '?', local, uri, raw: prefix };
 }
 
 // The name a kept element or attribute is written with: the usual prefix of its namespace
 // when the namespace is a known one, so a prefix chosen to carry text does not survive.
 // Unprefixed attributes have no namespace and keep their name.
+/** @param {XmlElement} el @param {string} name @param {boolean} [attr] @returns {string} */
 function canonName(el, name, attr = false) {
   const [prefix, local] = splitName(name);
   if (prefix === 'xml' || prefix === 'xmlns' || name === 'xmlns' || (attr && !prefix)) return name;
   const uri = nsUri(el, prefix);
   if (uri === RDF) return `rdf:${local}`;
-  return NS[uri] ? `${NS[uri]}:${local}` : name;
+  return own(NS, uri) ? `${own(NS, uri)}:${local}` : name;
 }
 // The attribute that declares a prefix for an element, or null.
+/** @param {XmlElement} el @param {string} prefix @returns {XmlAttr | null} */
 function nsDecl(el, prefix) {
   const key = prefix ? `xmlns:${prefix}` : 'xmlns';
-  for (let e = el; e; e = e.parent) {
+  for (let e = /** @type {XmlElement | null} */ (el); e; e = e.parent) {
     const a = e.attrs && e.attrs.find((x) => x.name === key);
     if (a) return a;
   }
@@ -211,6 +338,7 @@ function nsDecl(el, prefix) {
 }
 // The prefixes Adobe's own early writers used for the XMP namespaces (the format was first
 // called XAP): fixed names, so they carry nothing.
+/** @type {Record<string, string>} */
 const LEGACY_PREFIX = { xmp: 'xap', xmpMM: 'xapMM', xmpRights: 'xapRights', xmpGImg: 'xapGImg' };
 // The packet wrapper as XMP writers give it: a fixed identifier and a fixed end.
 const XPACKET_OK = [
@@ -222,8 +350,10 @@ const XPACKET_OK = [
 // carry bits, so they are listed as hidden text.
 const REF_NEEDED = new Set([9, 10, 13, 34, 38, 39, 60, 62]);
 
+/** @type {(el: XmlElement) => string} */
 const textOf = (el) => el.children.filter((c) => c.name === undefined).map((c) => c.text).join('').trim();
 
+/** @param {XmlElement} el @param {number} [depth] @returns {string} */
 function valueOf(el, depth = 0) {
   if (depth > 6) return '';
   const res = el.attrs.find((a) => qualify(el, a.name).uri === RDF && qualify(el, a.name).local === 'resource');
@@ -247,10 +377,11 @@ function valueOf(el, depth = 0) {
 }
 
 // First element matching a test, searched without recursion.
+/** @param {XmlElement} root @param {(el: XmlElement) => boolean} test @returns {XmlElement | null} */
 function findElement(root, test) {
   const stack = [...elements(root)].reverse();
   while (stack.length) {
-    const el = stack.pop();
+    const el = /** @type {XmlElement} */ (stack.pop());
     if (test(el)) return el;
     const kids = elements(el);
     for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
@@ -258,6 +389,7 @@ function findElement(root, test) {
   return null;
 }
 
+/** @param {string} s @param {number} i @returns {number} */
 function wsBefore(s, i) {
   while (i > 0 && isWs(s[i - 1])) i--;
   return i;
@@ -286,26 +418,34 @@ const ITEM_URI = 'http://ns.google.com/photos/1.0/container/item/';
 // value has at most nine significant digits, or is exactly the double a single-precision
 // value prints as (2.299999952316284 for 2.3); more digits than that are free to carry text.
 const REAL_RE = /^[+-]?(\d{1,20}(\.\d{0,20})?|\.\d{1,20})([eE][+-]?\d{1,3})?$/;
+/** @type {(v: string) => number} */
 const sigDigits = (v) => v.replace(/[eE].*$/, '').replace(/[^0-9]/g, '').replace(/^0+/, '').replace(/0+$/, '').length;
+/** @type {(v: string) => boolean} */
 const realOk = (v) => v.length <= 32 && REAL_RE.test(v) && Number.isFinite(Number(v))
   && (sigDigits(v) <= 9 || String(Math.fround(Number(v))) === String(Number(v)));
 // The range each gain map number can have (Adobe Gain Map 1.0: log2 boosts, a gamma, small
 // offsets, a capacity in stops; Apple: the headroom as a factor). Text written as a number
 // falls outside them.
+/** @type {Record<string, [number, number, boolean?]>} */
 const SPANS = { log2: [-16, 16], gamma: [0, 16, true], offset: [-1, 1], capacity: [0, 16], headroom: [1, 1000] };
+/** @type {(kind: string, v: string) => boolean} */
 const spanOk = (kind, v) => { const [lo, hi, open] = SPANS[kind]; const x = Number(v); return Number.isFinite(x) && x <= hi && (open ? x > lo : x >= lo); };
-const GAIN_RANGES = Object.fromEntries(Object.keys(SPANS).map((k) => [k, (v) => realOk(v) && spanOk(k, v)]));
+const GAIN_RANGES = Object.fromEntries(Object.keys(SPANS).map((k) => [k, (/** @type {string} */ v) => realOk(v) && spanOk(k, v)]));
 // A number in range but with more digits than a single-precision value has (a double such
 // as 2.321928094887362, as some writers print one): the extra digits are free, so the value
 // is not kept as it is, but it is written again rounded to nine significant digits, which
 // is what a reader keeps of it.
+/** @type {(kind: string, v: string) => boolean} */
 const roundable = (kind, v) => v.length <= 32 && REAL_RE.test(v) && Object.hasOwn(SPANS, kind) && spanOk(kind, v) && !realOk(v);
+/** @type {(v: string) => string} */
 const rounded = (v) => String(Number(Number(v).toPrecision(9)));
 // The directory names its parts from fixed lists only, so no free text rides along: the
 // roles Ultra HDR and Motion Photo define, and the file types they use for them.
 const SEMANTICS = new Set(['Primary', 'GainMap', 'MotionPhoto']);
+/** @type {Record<string, string[]>} */
 const MIME_FOR = { Primary: ['image/jpeg'], GainMap: ['image/jpeg'], MotionPhoto: ['video/mp4', 'video/quicktime'] };
 const MIMES = new Set(Object.values(MIME_FOR).flat());
+/** @type {Record<string, (v: string) => boolean>} */
 const VALUE_OK = {
   ...GAIN_RANGES,
   real: realOk,
@@ -320,6 +460,7 @@ const VALUE_OK = {
 };
 // A kind ending in 3 is a number, or an rdf:Seq of one or three numbers (one per colour
 // channel).
+/** @type {Record<string, Record<string, string>>} */
 const GAIN_FIELDS = {
   [HDRGM_URI]: {
     Version: 'version', BaseRenditionIsHDR: 'bool', GainMapMin: 'log23', GainMapMax: 'log23', Gamma: 'gamma3',
@@ -328,17 +469,27 @@ const GAIN_FIELDS = {
   [APPLE_GAIN_URI]: { HDRGainMapVersion: 'appleVersion', HDRGainMapHeadroom: 'headroom' },
 };
 // Allowed in the gain map's own packet only: a photo does not need it.
+/** @type {Record<string, Record<string, string>>} */
 const GAIN_MAP_ONLY_FIELDS = { [APDI_URI]: { AuxiliaryImageType: 'apdi' } };
-const gainFieldsOf = (uri, carrier) => GAIN_FIELDS[uri] || (carrier === 'gainmap' ? GAIN_MAP_ONLY_FIELDS[uri] : null);
+/** @type {(uri: string, carrier: string) => Record<string, string> | null | undefined} */
+const gainFieldsOf = (uri, carrier) => own(GAIN_FIELDS, uri) || (carrier === 'gainmap' ? own(GAIN_MAP_ONLY_FIELDS, uri) : null);
+/** @type {Record<DirFieldName, string>} */
 const ITEM_FIELDS = { Mime: 'mime', Semantic: 'semantic', Length: 'int', Padding: 'int' };
 
+/** @type {(el: XmlElement, local: string) => boolean} */
 const isRdfNode = (el, local) => { const q = qualify(el, el.name); return q.uri === RDF && q.local === local; };
+/** @type {(el: XmlElement) => XmlAttr[]} */
 const fieldAttrsOf = (el) => el.attrs.filter((a) => !isNsAttr(a));
+/** @type {(el: XmlElement) => string} */
 const rawText = (el) => el.children.filter((c) => c.name === undefined).map((c) => c.text).join('');
+/** @type {(el: XmlElement) => boolean} */
 const onlyBlankText = (el) => el.children.every((c) => c.name !== undefined || blank(c.text));
+/** @type {(p: { uri?: string, prefix: string }) => boolean} */
 const isGainNs = (p) => p.uri === HDRGM_URI || p.uri === APPLE_GAIN_URI || p.uri === APDI_URI || p.prefix === 'hdrgm' || p.prefix === 'HDRGainMap' || p.prefix === 'apdi';
+/** @type {(p: { uri?: string, prefix: string }) => boolean} */
 const isContainerNs = (p) => p.uri === CONTAINER_URI || p.uri === ITEM_URI || p.prefix === 'Container' || p.prefix === 'Item';
 
+/** @param {string} kind @param {XmpProp} p @returns {boolean} */
 function gainValueOk(kind, p) {
   const triple = kind.endsWith('3');
   const test = VALUE_OK[triple ? kind.slice(0, -1) : kind];
@@ -359,8 +510,15 @@ function gainValueOk(kind, p) {
 // Indices of the properties a kept gain map may keep: each known gain map field once, with
 // a value of the form its specification gives. carrier is 'photo' (the default) or
 // 'gainmap', the gain map's own packet.
+/**
+ * @param {ParsedXmp} parsed
+ * @param {'photo' | 'gainmap'} [carrier]
+ * @returns {Set<number>}
+ */
 export function gainAllowed(parsed, carrier = 'photo') {
+  /** @type {Set<number>} */
   const ok = new Set();
+  /** @type {Set<string>} */
   const seen = new Set();
   if (!parsed.ok) return ok;
   parsed.props.forEach((p, i) => {
@@ -378,7 +536,13 @@ export function gainAllowed(parsed, carrier = 'photo') {
 // Gain map numbers with more digits than they need, as attributes or simple elements: each
 // written again rounded (see roundable), { index, local, add } for rewriteXmp. Only the
 // first copy of a field counts, and only when no well-formed copy exists.
+/**
+ * @param {ParsedXmp | null | undefined} parsed
+ * @param {'photo' | 'gainmap'} [carrier]
+ * @returns {GainFix[]}
+ */
 export function gainFixes(parsed, carrier = 'photo') {
+  /** @type {GainFix[]} */
   const out = [];
   if (!parsed || !parsed.ok) return out;
   const allowed = gainAllowed(parsed, carrier);
@@ -404,14 +568,17 @@ export function gainFixes(parsed, carrier = 'photo') {
 // and no well-formed copy exists, the attribute that replaces it with the one value Gain
 // Map 1.0 defines: { index, add } for planXmp, or null. Readers need hdrgm:Version in the
 // photo to find the gain map, and a fixed value carries no hidden bits.
+/** @param {ParsedXmp | null | undefined} parsed @returns {{ index: number, add: XmpAdd } | null} */
 export function versionFix(parsed) {
   if (!parsed || !parsed.ok) return null;
   const allowed = gainAllowed(parsed);
+  /** @type {(p: XmpProp) => boolean} */
   const isVersion = (p) => (p.kind === 'attr' || p.kind === 'elem') && p.uri === HDRGM_URI && p.local === 'Version';
   if ([...allowed].some((i) => isVersion(parsed.props[i]))) return null;
   const index = parsed.props.findIndex(isVersion);
   if (index < 0) return null;
-  const p = parsed.props[index];
+  // isVersion holds only for an attribute or an element.
+  const p = /** @type {XmpAttrProp | XmpElemProp} */ (parsed.props[index]);
   const name = p.kind === 'attr' ? p.attr.name : p.node.name;
   return { index, add: { key: p.key, name, node: p.node, value: '1.0' } };
 }
@@ -420,24 +587,34 @@ export function versionFix(parsed) {
 // that is not kept (an attribute on it, an unusual prefix): the label written again in the
 // usual form, { index, add } for rewriteXmp, or null. Readers find an Apple gain map only
 // by this label, and a fixed value carries no hidden bits.
+/** @param {ParsedXmp | null | undefined} parsed @returns {{ index: number, add: XmpAdd } | null} */
 export function appleLabelFix(parsed) {
   if (!parsed || !parsed.ok) return null;
+  /** @type {(p: XmpProp) => boolean} */
   const isLabel = (p) => (p.kind === 'attr' || p.kind === 'elem') && p.uri === APDI_URI && p.local === 'AuxiliaryImageType';
   if ([...gainAllowed(parsed, 'gainmap')].some((i) => isLabel(parsed.props[i]))) return null;
   const index = parsed.props.findIndex((p) => isLabel(p) && p.value === APPLE_GAIN_MAP_TYPE);
   if (index < 0) return null;
-  const p = parsed.props[index];
+  // isLabel holds only for an attribute or an element.
+  const p = /** @type {XmpAttrProp | XmpElemProp} */ (parsed.props[index]);
   return { index, add: { key: p.key, name: p.kind === 'attr' ? p.attr.name : p.node.name, node: p.node, value: APPLE_GAIN_MAP_TYPE } };
 }
 
 // Whether a packet has an hdrgm:Version at all, of any value: what tells a reader of the
 // photo that a gain map follows.
+/** @param {ParsedXmp | null | undefined} parsed @returns {boolean} */
 export function hasGainVersion(parsed) {
   return !!(parsed && parsed.ok && parsed.props.some((p) => (p.kind === 'attr' || p.kind === 'elem') && p.uri === HDRGM_URI && p.local === 'Version'));
 }
 
 // The gain map fields of a packet as name and value, for the plausibility check and tests.
+/**
+ * @param {ParsedXmp} parsed
+ * @param {'photo' | 'gainmap'} [carrier]
+ * @returns {Record<string, string>}
+ */
 export function gainFields(parsed, carrier = 'photo') {
+  /** @type {Record<string, string>} */
   const out = {};
   for (const i of gainAllowed(parsed, carrier)) {
     const p = parsed.props[i];
@@ -451,16 +628,25 @@ export function gainFields(parsed, carrier = 'photo') {
 // { ok, entries, extras }; extras are every other attribute, element and text in it, each
 // with a reference to the node it came from. ok is false when the shape is not that of a
 // directory at all.
+/** @param {XmlElement} dirEl @returns {Directory} */
 function parseDirectory(dirEl) {
+  /** @type {Directory} */
   const fail = { ok: false, entries: [], extras: [] };
+  /** @type {DirExtra[]} */
   const extras = [];
+  /** @type {DirEntry[]} */
   const entries = [];
+  /** @type {(el: XmlElement, a: XmlAttr) => unknown} */
   const extraAttr = (el, a) => extras.push({ ref: a, el, name: a.name, value: a.value });
+  /** @type {(el: XmlElement) => unknown} */
   const extraEl = (el) => extras.push({ ref: el, el, name: el.name, value: valueOf(el) || '' });
+  /** @type {(el: XmlElement) => void} */
   const extraText = (el) => {
     for (const c of el.children) if (c.name === undefined && !blank(c.text)) extras.push({ ref: c, el, text: true, value: c.text.replace(/[\s\0]+/g, ' ').trim() });
   };
+  /** @type {(el: XmlElement, allow?: (a: XmlAttr) => boolean) => void} */
   const attrs = (el, allow = () => false) => { for (const a of fieldAttrsOf(el)) if (!allow(a)) extraAttr(el, a); };
+  /** @type {(el: XmlElement) => (a: XmlAttr) => boolean} */
   const resourceAttr = (el) => (a) => { const q = qualify(el, a.name); return q.uri === RDF && q.local === 'parseType' && a.value === 'Resource'; };
   attrs(dirEl);
   extraText(dirEl);
@@ -487,11 +673,14 @@ function parseDirectory(dirEl) {
     const item = inner.find((k) => { const q = qualify(k, k.name); return q.uri === CONTAINER_URI && q.local === 'Item'; });
     if (!item) return fail;
     for (const k of inner) if (k !== item) extraEl(k);
+    /** @type {Partial<Record<DirFieldName, DirField>>} */
     const fields = {};
-    const fieldKind = (el, name) => { const q = qualify(el, name); return q.uri === ITEM_URI && Object.hasOwn(ITEM_FIELDS, q.local) ? q.local : null; };
+    /** @type {(el: XmlElement, name: string) => DirFieldName | null} */
+    const fieldKind = (el, name) => { const q = qualify(el, name); return q.uri === ITEM_URI && Object.hasOwn(ITEM_FIELDS, q.local) ? /** @type {DirFieldName} */ (q.local) : null; };
     // A Mime that is not one the entry's role uses is not part of the directory. On the
     // photo and the gain map, removing it writes the one value the role allows, so a reader
     // still finds the gain map; it carries no hidden bits.
+    /** @type {DirExtra | null} */
     let badMime = null;
     for (const a of fieldAttrsOf(item)) {
       if (resourceAttr(item)(a)) continue;
@@ -518,26 +707,37 @@ function parseDirectory(dirEl) {
       if (role === 'Primary' || role === 'GainMap') badMime.fix = MIME_FOR[role][0];
       extras.push(badMime);
     }
+    /** @type {(f: DirFieldName) => number | null} */
     const num = (f) => (fields[f] ? Number(fields[f].value) : null);
     entries.push({ li, fields, semantic: fields.Semantic ? fields.Semantic.value : null, mime: fields.Mime ? fields.Mime.value : null, length: num('Length'), padding: num('Padding') });
   }
   return { ok: true, entries, extras };
 }
 
+/** @param {DirExtra} x @returns {{ key: string, prefix: string, local: string, uri: string }} */
 function subKey(x) {
   if (x.text) return { key: 'xml:text', prefix: 'xml', local: 'text', uri: '' };
   const q = qualify(x.el, x.name);
   return { key: `${q.prefix}:${q.local}`, prefix: q.prefix, local: q.local, uri: q.uri };
 }
 
+/** @type {(d: Directory) => string} */
 const dirSig = (d) => JSON.stringify(d.entries.map((e) => [e.semantic, e.mime, e.length, e.padding]));
 
 // A copy of a directory element with some nodes left out (skip) and some values replaced
 // (patch: attribute or element to its new text). The copy keeps the original parent, so
 // its namespace prefixes still resolve.
+/**
+ * @param {XmlElement} node
+ * @param {Set<DirRef>} skip
+ * @param {Map<DirRef, string | number | undefined>} patch
+ * @returns {XmlElement}
+ */
 function directoryClone(node, skip, patch) {
+  /** @type {(el: XmlElement, parent: XmlElement | null) => XmlElement} */
   const clone = (el, parent) => {
-    const c = { name: el.name, attrs: [], children: [], parent };
+    // A clone has no source positions (see XmlElement).
+    const c = /** @type {XmlElement} */ (/** @type {unknown} */ ({ name: el.name, attrs: [], children: [], parent }));
     for (const a of el.attrs) if (!skip.has(a)) c.attrs.push(patch.has(a) ? { ...a, value: String(patch.get(a)) } : a);
     if (patch.has(el)) c.children = [{ text: String(patch.get(el)) }];
     else for (const k of el.children) if (!skip.has(k)) c.children.push(k.name === undefined ? k : clone(k, c));
@@ -547,15 +747,21 @@ function directoryClone(node, skip, patch) {
 }
 
 // The first readable Container directory of a packet: { index, prop, dir }, or null.
+/**
+ * @param {ParsedXmp | null | undefined} parsed
+ * @returns {{ index: number, prop: XmpProp, dir: Directory } | null}
+ */
 export function directoryOf(parsed) {
   if (!parsed || !parsed.ok) return null;
   const index = parsed.props.findIndex((p) => p.dir && p.dir.primary);
-  return index < 0 ? null : { index, prop: parsed.props[index], dir: parsed.props[index].dir };
+  // The test above found a dir on this property.
+  return index < 0 ? null : { index, prop: parsed.props[index], dir: /** @type {Directory} */ (parsed.props[index].dir) };
 }
 
 // Offers whole directory entries as sub-properties of the directory: entries (numbered
 // from 0, the photo) that stand for no part stored after the image. Such an entry is not
 // needed to find anything, and its fields may carry anything, so removing it drops it.
+/** @param {ParsedXmp | null | undefined} parsed @param {Iterable<number>} numbers */
 export function offerDirectoryEntries(parsed, numbers) {
   const d = directoryOf(parsed);
   if (!d) return;
@@ -563,23 +769,28 @@ export function offerDirectoryEntries(parsed, numbers) {
     const e = d.dir.entries[n];
     if (!e || n === 0) continue;
     const value = [e.semantic, e.mime, e.length !== null ? `length ${e.length}` : ''].filter(Boolean).join(', ') || `entry ${n + 1}`;
-    parsed.props.push({ key: 'Container:Item', prefix: 'Container', local: 'Item', uri: CONTAINER_URI, kind: 'sub', value, start: -1, end: -1, parent: d.index, ref: e.li });
+    // directoryOf found a readable directory, so parsed is a readable packet.
+    /** @type {ParsedXmp} */ (parsed).props.push({ key: 'Container:Item', prefix: 'Container', local: 'Item', uri: CONTAINER_URI, kind: 'sub', value, start: -1, end: -1, parent: d.index, ref: e.li });
   }
 }
 
 // Parses an XMP packet. Returns { ok, text, props, hasRdf } where each prop is
 // { key: 'prefix:Local', prefix, local, kind, value, start, end } and kind is 'attr',
 // 'elem', 'about', 'sub' or 'hidden' (comments and stray text).
+/** @param {string | Uint8Array} input @returns {ParsedXmp} */
 export function parseXmp(input) {
   const text = typeof input === 'string' ? input : utf8(input);
   let root;
   try {
     root = parseXml(text);
   } catch (err) {
-    return { ok: false, text, props: [], error: String(err.message || err) };
+    return { ok: false, text, props: [], error: String(/** @type {Error} */ (err).message || err) };
   }
+  /** @type {XmpProp[]} */
   const props = [];
+  /** @type {string[]} */
   const hidden = [];
+  /** @type {(value: string) => void} */
   const hide = (value) => { if (!blank(value)) hidden.push(value.replace(/[\s\0]+/g, ' ').trim()); };
   for (const c of root.comments) hide(c.text);
   for (const pi of root.pis) if (pi.target !== 'xpacket' || !XPACKET_OK.some((re) => re.test(pi.text))) hide(pi.target === 'xpacket' ? `packet wrapper: ${pi.text}` : pi.text);
@@ -589,13 +800,16 @@ export function parseXmp(input) {
     if (/^0/.test(m[2]) || !REF_NEEDED.has(n)) { hide(`character reference ${m[0]}`); break; }
   }
 
+  /** @type {(el: XmlElement, local: string) => boolean} */
   const isRdfEl = (el, local) => { const q = qualify(el, el.name); return q.uri === RDF && q.local === local; };
   const rdf = findElement(root, (el) => isRdfEl(el, 'RDF'));
 
   // Everything around rdf:RDF that is not just whitespace: text, attributes other than the
   // toolkit name, and sibling elements, on every wrapper from the root down.
+  /** @type {(el: XmlElement) => void} */
   const outerText = (el) => { for (const c of el.children) if (c.name === undefined) hide(c.text); };
   if (rdf) {
+    /** @type {XmlElement[]} */
     const chain = [];
     for (let e = rdf.parent; e; e = e.parent) chain.push(e);
     for (const w of chain) {
@@ -655,32 +869,35 @@ export function parseXmp(input) {
   // Namespace prefixes are names the writer chooses: a known namespace must use its usual
   // prefix, and a declaration no name uses is free text, unless it is a known namespace
   // under its usual prefix.
+  /** @type {Set<XmlAttr>} */
   const usedDecl = new Set();
+  /** @type {(el: XmlElement, name: string, attr: boolean) => void} */
   const checkName = (el, name, attr) => {
     const [prefix] = splitName(name);
     if (prefix === 'xml' || (attr && !prefix)) return;
     const decl = nsDecl(el, prefix);
     if (decl) usedDecl.add(decl);
     const uri = nsUri(el, prefix);
-    const want = uri === RDF ? 'rdf' : NS[uri];
+    const want = uri === RDF ? 'rdf' : own(NS, uri);
     if (want && prefix !== want && !(LEGACY_PREFIX[want] === prefix)) hide(`prefix ${prefix || '(none)'} for ${want}`);
   };
   const all = [...elements(root)];
   while (all.length) {
-    const el = all.pop();
+    const el = /** @type {XmlElement} */ (all.pop());
     checkName(el, el.name, false);
     for (const a of el.attrs) if (!isNsAttr(a)) checkName(el, a.name, true);
     all.push(...elements(el));
   }
   const decls = [...elements(root)];
   while (decls.length) {
-    const el = decls.pop();
+    const el = /** @type {XmlElement} */ (decls.pop());
     for (const a of el.attrs) {
       if (!isNsAttr(a) || usedDecl.has(a)) continue;
       const prefix = a.name === 'xmlns' ? '' : a.name.slice(6);
       const uri = isRdfUri(a.value) ? RDF : a.value;
-      const want = uri === RDF ? 'rdf' : NS[uri];
-      if (!prefix || prefix === 'xml' || (want !== prefix && LEGACY_PREFIX[want] !== prefix)) hide(`${a.name}=${a.value}`);
+      const want = uri === RDF ? 'rdf' : own(NS, uri);
+      // An unknown namespace leaves want undefined, read as the key 'undefined', which the table lacks.
+      if (!prefix || prefix === 'xml' || (want !== prefix && LEGACY_PREFIX[/** @type {string} */ (want)] !== prefix)) hide(`${a.name}=${a.value}`);
     }
     decls.push(...elements(el));
   }
@@ -693,6 +910,7 @@ export function parseXmp(input) {
 // ======================================================================================
 // Mapping to items
 
+/** @type {Record<string, XmpItemDef>} */
 export const XMP_ITEMS = {
   gps: { group: 'where', tier: 'red', label: 'GPS position' },
   place: { group: 'where', tier: 'red', label: 'Place names' },
@@ -724,6 +942,7 @@ export const XMP_ITEMS = {
   technical: { group: 'technical', tier: 'green', label: 'Technical details' },
 };
 
+/** @type {Record<string, string[]>} */
 const KEY_LISTS = {
   place: ['photoshop:City', 'photoshop:State', 'photoshop:Country', 'Iptc4xmpCore:Location', 'Iptc4xmpCore:CountryCode',
     'Iptc4xmpExt:LocationCreated', 'Iptc4xmpExt:LocationShown', 'Iptc4xmpCore:SubLocation', 'dc:coverage'],
@@ -757,11 +976,13 @@ const KEY_LISTS = {
   technical: ['photoshop:ColorMode', 'photoshop:ICCProfile', 'xmp:Rating', 'MicrosoftPhoto:Rating', 'dc:format',
     'photoshop:SidecarForExtension', 'GCamera:BurstPrimary'],
 };
+/** @type {Map<string, string>} */
 const KEY_OF = new Map();
 for (const [k, list] of Object.entries(KEY_LISTS)) for (const name of list) KEY_OF.set(name, k);
 
 // Properties nobody listed above are judged by their name, so a vendor's own GPS or
 // serial field is still recognised; anything left is 'other', which is red.
+/** @param {string} local @param {string} [value] @returns {string | null} */
 function byName(local, value) {
   const n = local.toLowerCase();
   if (/gps|latitude|longitude|longtitude|altitude|geotag|coordinat/.test(n)) return 'gps';
@@ -785,12 +1006,18 @@ function byName(local, value) {
 // A number of at most twelve digits (about the precision of the EXIF values these fields
 // copy), or a fraction of two ten-digit integers as EXIF stores them.
 const NUM_RE = /^[+-]?(?=\.?\d)(?:\d{0,12})(?:\.\d{0,12})?$/;
+/** @type {(v: string) => boolean} */
 const numOk = (v) => NUM_RE.test(v) && v.replace(/[^0-9]/g, '').length <= 12;
 const RATIONAL_RE = /^[+-]?\d{1,10}\/[+-]?\d{1,10}$/;
+/** @type {(v: string) => boolean} */
 const isNumber = (v) => numOk(v) || RATIONAL_RE.test(v) || v === 'True' || v === 'False';
+/** @type {(lo: number, hi: number) => (v: string) => boolean} */
 const inRange = (lo, hi) => (v) => numOk(v) && v.length <= 8 && Number(v) >= lo && Number(v) <= hi;
+/** @type {(lo: number, hi: number) => (v: string) => boolean} */
 const intRange = (lo, hi) => (v) => /^-?\d{1,3}$/.test(v) && Number(v) >= lo && Number(v) <= hi;
+/** @type {(v: string) => boolean} */
 const isBool = (v) => v === 'True' || v === 'False';
+/** @type {(list: string[]) => (v: string) => boolean} */
 const oneOf = (list) => (v) => list.includes(v);
 const DC_FORMATS = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/avif', 'image/tiff',
   'image/gif', 'image/bmp', 'image/jxl', 'image/x-adobe-dng', 'image/dng', 'image/x-canon-cr2', 'image/x-canon-cr3', 'image/x-nikon-nef',
@@ -799,6 +1026,7 @@ const DC_FORMATS = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image
 const RAW_EXTS = ['JPG', 'JPEG', 'TIF', 'TIFF', 'DNG', 'CR2', 'CR3', 'CRW', 'NEF', 'NRW', 'ARW', 'SR2', 'SRF', 'RAF', 'ORF', 'RW2', 'PEF',
   'SRW', 'X3F', '3FR', 'IIQ', 'MOS', 'ERF', 'KDC', 'DCR', 'MRW', 'RWL', 'HEIC', 'HEIF', 'PSD', 'PNG'];
 // Rules by field name; exif, exifEX, tiff and aux fields not listed here hold numbers.
+/** @type {Record<string, (v: string) => boolean>} */
 const TECH_RULES = {
   'xmp:Rating': inRange(-1, 5),
   'MicrosoftPhoto:Rating': intRange(0, 100),
@@ -809,6 +1037,7 @@ const TECH_RULES = {
   'GCamera:BurstPrimary': (v) => isBool(v) || /^\d{1,3}$/.test(v),
 };
 // Google's photo sphere fields (GPano), by their specification.
+/** @type {Record<string, (v: string) => boolean>} */
 const GPANO = {
   UsePanoramaViewer: isBool, ExposureLockUsed: isBool, ProjectionType: oneOf(['equirectangular', 'cylindrical', 'rectilinear']),
   PoseHeadingDegrees: numOk, PosePitchDegrees: numOk, PoseRollDegrees: numOk,
@@ -823,14 +1052,24 @@ const GPANO = {
   LargestValidInteriorRectHeight: numOk,
 };
 // The only structures a technical field may have, with their field names.
+/** @type {Record<string, string[]>} */
 const TECH_STRUCTS = { 'exif:Flash': ['Fired', 'Return', 'Mode', 'Function', 'RedEyeMode'], 'exif:CFAPattern': ['Columns', 'Rows', 'Values'] };
 
 // The leaf values of a property, or null when its shape is not a plain value, a list of
 // plain values, or (for a known structure) fields holding those.
+/**
+ * @param {XmlElement} el
+ * @param {string[] | null} fields
+ * @param {string | undefined} uri
+ * @param {number} [depth]
+ * @returns {string[] | null}
+ */
 function plainValues(el, fields, uri, depth = 0) {
   if (depth > 3) return null;
+  /** @type {string[]} */
   const out = [];
   const resource = el.attrs.some((a) => { const q = qualify(el, a.name); return q.uri === RDF && q.local === 'parseType' && a.value === 'Resource'; });
+  /** @type {(node: XmlElement, name: string) => boolean} */
   const isField = (node, name) => { const q = qualify(node, name); return !!fields && q.uri === uri && fields.includes(q.local); };
   for (const a of fieldAttrsOf(el)) {
     const q = qualify(el, a.name);
@@ -869,14 +1108,16 @@ function plainValues(el, fields, uri, depth = 0) {
 // The values are tested as written: white space around a value is not part of any form.
 // An EXIF copy has at most as many values as the EXIF field (Exif 3.0); the versions are
 // four digits.
+/** @param {XmpProp} p @returns {boolean} */
 function technicalOk(p) {
   const exifLike = ['exif', 'exifEX', 'tiff', 'aux'].includes(p.prefix);
   const versions = exifLike && /^(?:ExifVersion|FlashpixVersion|InteroperabilityVersion)$/.test(p.local);
-  const test = TECH_RULES[p.key] || (p.prefix === 'GPano' ? GPANO[p.local] : null)
-    || (versions ? (v) => /^\d{4}$|^\d \d \d \d$/.test(v) : exifLike ? isNumber : null);
+  const test = TECH_RULES[p.key] || (p.prefix === 'GPano' ? own(GPANO, p.local) : null)
+    || (versions ? (/** @type {string} */ v) => /^\d{4}$|^\d \d \d \d$/.test(v) : exifLike ? isNumber : null);
   if (!test) return false;
   const most = TECH_STRUCTS[p.key] ? TECH_STRUCTS[p.key].length : versions ? 1 : exifLike ? technicalCount(p.local) : 1;
   // Some writers put a short list in one value, separated by single spaces.
+  /** @type {(list: string[]) => string[]} */
   const split = (list) => (most > 1 && !TECH_STRUCTS[p.key] ? list.flatMap((v) => v.split(' ')) : list);
   const vals = p.kind === 'attr' ? [p.value] : p.kind === 'elem' ? plainValues(p.node, TECH_STRUCTS[p.key] || null, p.uri) : null;
   if (!vals) return false;
@@ -894,13 +1135,16 @@ function technicalOk(p) {
 // model name: that is shown, as amber.
 const AMBER_XMP_KEYS = new Set(['dates', 'camera', 'software', 'motion']);
 const XMP_DATE = /^\d{4}(?:-\d\d(?:-\d\d(?:T\d\d:\d\d(?::\d\d(?:\.\d{1,9})?)?(?:Z|[+-]\d\d:\d\d)?)?)?)?$/;
+/** @type {Record<string, (v: string) => boolean>} */
 const AMBER_VALUE = {
   dates: (v) => XMP_DATE.test(v) || /^\d{4}:\d\d:\d\d \d\d:\d\d:\d\d$/.test(v) || /^[+-]\d\d:\d\d$/.test(v) || /^\d{1,9}$/.test(v),
   camera: deviceNameOk,
   software: deviceNameOk,
   motion: (v) => /^-?\d{1,20}$/.test(v) || v === 'True' || v === 'False',
 };
+/** @param {XmpProp} p @param {string} key @returns {boolean} */
 function amberXmpOk(p, key) {
+  /** @type {string[] | null} */
   let vals;
   if (p.kind === 'attr') vals = [p.value];
   else if (p.kind === 'elem') {
@@ -914,6 +1158,7 @@ function amberXmpOk(p, key) {
   return vals.every((v) => AMBER_VALUE[key](trimWs(v)));
 }
 
+/** @param {XmpProp} p @returns {string} */
 function rawKey(p) {
   if (p.kind === 'hidden') return 'hidden';
   const named = KEY_OF.get(p.key);
@@ -930,6 +1175,7 @@ function rawKey(p) {
   if (p.prefix === 'aux' && /AlreadyApplied$|^IsMerged|FocusDistance|LensDistort|FlashCompensation/.test(p.local)) return 'technical';
   if (p.prefix === 'exif' || p.prefix === 'exifEX' || p.prefix === 'tiff' || p.prefix === 'aux') {
     const k = keyForTagName(p.local);
+    /** @type {Record<string, string>} */
     const map = {
       orientation: 'technical', resolution: 'technical', colour: 'technical', dimensions: 'technical',
       exposure: 'technical', format: 'technical', datetime: 'dates', timezone: 'dates', camera: 'camera',
@@ -946,21 +1192,26 @@ function rawKey(p) {
   return 'other';
 }
 
+/** @param {string | undefined} v @returns {{ deg: number, dir: string } | null} */
 function xmpCoord(v) {
   const m = /^\s*(\d+(?:\.\d+)?),(\d+(?:\.\d+)?)(?:,(\d+(?:\.\d+)?))?\s*([NSEWnsew])\s*$/.exec(v || '');
   if (!m) {
-    const n = parseFloat(v);
+    const n = parseFloat(/** @type {string} */ (v));
     return Number.isFinite(n) ? { deg: Math.abs(n), dir: n < 0 ? '-' : '' } : null;
   }
   return { deg: +m[1] + +m[2] / 60 + (m[3] ? +m[3] / 3600 : 0), dir: m[4].toUpperCase() };
 }
 
+/** @param {string} key @param {XmpProp[]} props @returns {string} */
 function describe(key, props) {
+  /** @type {(re: RegExp) => string[]} */
   const vals = (re) => props.filter((p) => re.test(p.local)).map((p) => p.value).filter(Boolean);
   if (key === 'gps') {
     const lat = xmpCoord(vals(/^gps ?latitude$|^latitude$/i)[0]);
     const lon = xmpCoord(vals(/^gps ?long(i|ti)tude$|^longitude$/i)[0]);
+    /** @type {string[]} */
     const parts = [];
+    /** @type {(c: { dir: string }, pos: string, neg: string) => string} */
     const dir = (c, pos, neg) => (c.dir === '-' ? neg : c.dir || pos);
     if (lat && lon) parts.push(`${lat.deg.toFixed(4)} ${dir(lat, 'N', 'S')}, ${lon.deg.toFixed(4)} ${dir(lon, 'E', 'W')}`);
     const altRaw = vals(/altitude$/i)[0];
@@ -981,7 +1232,9 @@ function describe(key, props) {
     const first = props.map((p) => p.value.trim()).find(Boolean);
     return clip(`${names.length > 2 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} more` : names.join(', ')}${first ? `: ${first}` : ''}`);
   }
+  /** @type {Set<string>} */
   const seen = new Set();
+  /** @type {string[]} */
   const out = [];
   for (const p of props) {
     const v = p.value.trim();
@@ -995,6 +1248,14 @@ function describe(key, props) {
 // name first (a GPS or serial field is still GPS or a serial), then kept apart as
 // unrecognised, which is red. In a gain map's own packet (carrier 'gainmap') a Container
 // directory is not part of the gain map either.
+/**
+ * @param {XmpProp} p
+ * @param {number} i
+ * @param {Set<number>} allowed
+ * @param {number} dirIndex
+ * @param {string | undefined} carrier
+ * @returns {string}
+ */
 function classify(p, i, allowed, dirIndex, carrier) {
   if (p.kind === 'hidden') return 'hidden';
   if (p.kind === 'sub') return byName(p.local, p.value) || 'container-extra';
@@ -1008,7 +1269,7 @@ function classify(p, i, allowed, dirIndex, carrier) {
   // A property in a namespace this tool does not know is judged by its name only, never
   // by its prefix: a prefix such as "xmp" bound to some other address names nothing, and
   // the address itself is free text.
-  if ((p.kind === 'attr' || p.kind === 'elem') && !NS[p.uri]) return byName(p.local, p.value) || 'other';
+  if ((p.kind === 'attr' || p.kind === 'elem') && !own(NS, p.uri)) return byName(p.local, p.value) || 'other';
   const key = rawKey(p);
   // A technical field kept by default must hold what its specification allows.
   if (key === 'technical' && !technicalOk(p)) return byName(p.local, p.value) || 'technical-text';
@@ -1021,7 +1282,9 @@ function classify(p, i, allowed, dirIndex, carrier) {
 // ctx: { motionTier, gainMapTier, extended: { label, value, tier, note } | null,
 //        carrier: 'photo' (default) | 'gainmap', gainMapCoupled: an HDR gain map follows
 //        that goes with this description }
+/** @param {ParsedXmp} parsed @param {XmpCtx} [ctx] @returns {XmpItem[]} */
 export function xmpItems(parsed, ctx = {}) {
+  /** @type {Map<string, number[]>} */
   const buckets = new Map();
   const allowed = gainAllowed(parsed, ctx.carrier);
   const dir = directoryOf(parsed);
@@ -1035,14 +1298,16 @@ export function xmpItems(parsed, ctx = {}) {
     if (key === 'container') key = hasGain ? 'gainmap' : hasMotion ? 'motion' : 'other';
     if (key === 'extended' && !ctx.extended) key = 'other';
     if (!buckets.has(key)) buckets.set(key, []);
-    buckets.get(key).push(i);
+    /** @type {number[]} */ (buckets.get(key)).push(i);
   });
   if (ctx.extended && !buckets.has('extended')) buckets.set('extended', []);
+  /** @type {XmpItem[]} */
   const items = [];
   for (const [key, def] of Object.entries(XMP_ITEMS)) {
     const idx = buckets.get(key);
     if (!idx) continue;
     const props = idx.map((i) => parsed.props[i]);
+    /** @type {XmpItem} */
     const item = { key, ...def, value: describe(key, props), props: idx };
     if (key === 'motion') item.tier = ctx.motionTier || 'amber';
     if (key === 'gainmap') item.tier = ctx.gainMapTier || 'amber';
@@ -1058,7 +1323,9 @@ export function xmpItems(parsed, ctx = {}) {
 
 // A carriage return is written as a reference, so a reader's line-end handling cannot turn
 // it into a line feed.
+/** @type {(s: string) => string} */
 const escText = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r/g, '&#13;');
+/** @type {(s: string) => string} */
 const escAttr = (s) => escText(s).replace(/"/g, '&quot;').replace(/\r/g, '&#13;').replace(/\n/g, '&#10;').replace(/\t/g, '&#9;');
 
 // ======================================================================================
@@ -1069,13 +1336,17 @@ const escAttr = (s) => escText(s).replace(/"/g, '&quot;').replace(/\r/g, '&#13;'
 // not define) sorted. A value keeps its text, without the white space around it, which no
 // reader shows. The order of list items (rdf:li) is part of the value and stays.
 
+/** @type {(s: string) => string} */
 const trimWs = (s) => s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
 // Whether an element's children keep their order: list items, and mixed text.
+/** @type {(el: XmlElement) => boolean} */
 const ordered = (el) => elements(el).some((k) => isRdfNode(k, 'li')) || el.children.some((c) => c.name === undefined && !blank(c.text));
+/** @type {(el: XmlElement, a: { name: string }) => string} */
 const attrName = (el, a) => `${canonName(el, a.name, true)}|${splitName(a.name)[0] ? nsUri(el, splitName(a.name)[0]) : ''}`;
 
 // Serialises an element subtree in the canonical form: no comments, no processing
 // instructions, no namespace declarations (they are gathered on the new node instead).
+/** @param {XmlElement} el @returns {string} */
 function serialise(el) {
   const name = canonName(el, el.name);
   const attrs = el.attrs.filter((a) => !isNsAttr(a)).map((a) => ` ${canonName(el, a.name, true)}="${escAttr(trimWs(a.value))}"`).sort().join('');
@@ -1083,6 +1354,7 @@ function serialise(el) {
     const t = trimWs(rawText(el));
     return t ? `<${name}${attrs}>${escText(t)}</${name}>` : `<${name}${attrs}/>`;
   }
+  /** @type {string[]} */
   const parts = [];
   for (const c of el.children) {
     if (c.name !== undefined) parts.push(serialise(c));
@@ -1096,11 +1368,13 @@ function serialise(el) {
 // namespaces, attribute values and text without the white space around them, structure
 // fields in any order, list items in order. Two elements with the same model are written
 // the same way, and a rewrite must keep the model of every kept property.
+/** @param {XmlElement} el @param {number} [depth] @returns {string} */
 function modelOf(el, depth = 0) {
   if (depth > MAX_DEPTH) throw new Error('Too deeply nested');
   const name = `${canonName(el, el.name)}|${qualify(el, el.name).uri}`;
   const attrs = el.attrs.filter((a) => !isNsAttr(a)).map((a) => `${attrName(el, a)}=${trimWs(a.value)}`).sort();
   if (!elements(el).length) return JSON.stringify([name, attrs, trimWs(rawText(el))]);
+  /** @type {string[]} */
   const parts = [];
   for (const c of el.children) {
     if (c.name !== undefined) parts.push(modelOf(c, depth + 1));
@@ -1112,8 +1386,11 @@ function modelOf(el, depth = 0) {
 
 // The model of a packet's kept properties, one string per property, sorted; null when the
 // packet holds something the canonical form cannot carry.
+/** @param {CanonProp[]} props @returns {string[] | null} */
 function packetModel(props) {
+  /** @type {string[]} */
   const out = [];
+  /** @type {Set<string>} */
   const about = new Set();
   for (const p of props) {
     if (p.kind === 'about') { about.add(trimWs(p.value)); continue; }
@@ -1131,8 +1408,10 @@ const WRAP_END = '<?xpacket end="w"?>';
 
 // Writes the kept properties in the canonical form, without checking the result. Returns
 // the text, or null when the kept properties cannot share one fresh node.
+/** @param {CanonProp[]} kept @param {boolean} compact @returns {string | null} */
 function writeCanonical(kept, compact) {
   const ns = new Map([['x', META], ['rdf', RDF]]);
+  /** @type {(prefix: string, uri: string) => boolean} */
   const declare = (prefix, uri) => {
     if (prefix === 'xml') return true;
     if (!uri) return !prefix;
@@ -1142,12 +1421,14 @@ function writeCanonical(kept, compact) {
     return true;
   };
   // Declares the prefix a kept name is written with (see canonName).
+  /** @type {(el: XmlElement, name: string, attr: boolean) => boolean} */
   const declareName = (el, name, attr) => {
     const [p] = splitName(name);
     if (attr && !p) return true;
     const [cp] = splitName(canonName(el, name, attr));
     return declare(cp, nsUri(el, p));
   };
+  /** @type {(el: XmlElement) => boolean} */
   const walk = (el) => {
     if (!declareName(el, el.name, false)) return false;
     for (const a of el.attrs) {
@@ -1156,8 +1437,11 @@ function writeCanonical(kept, compact) {
     }
     return elements(el).every(walk);
   };
+  /** @type {string | null} */
   let about = null;
+  /** @type {Map<string, string>} */
   const attrs = new Map();
+  /** @type {string[]} */
   const elems = [];
   for (const p of kept) {
     if (p.kind === 'about') {
@@ -1202,33 +1486,47 @@ function writeCanonical(kept, compact) {
 // the model of the kept properties (and the same directory entries); it must hold nothing
 // hidden; and writing it again must give the same text, so the form carries nothing of
 // the original's layout.
+/**
+ * @param {ParsedXmp} parsed
+ * @param {Iterable<number>} removeIdx
+ * @param {boolean} [compact]
+ * @param {DirPatch | null} [dirPatch]
+ * @param {XmpAdd[]} [add]
+ * @returns {string | null}
+ */
 export function rewriteXmp(parsed, removeIdx, compact = false, dirPatch = null, add = []) {
   if (!parsed.ok) return null;
   const removed = new Set(removeIdx);
   parsed.props.forEach((p, i) => { if (p.kind === 'sub' && removed.has(p.parent)) removed.add(i); });
-  const keptPairs = parsed.props.map((p, i) => [p, i]).filter(([p, i]) => !removed.has(i) && p.kind !== 'hidden');
+  const keptPairs = parsed.props.map((p, i) => /** @type {[XmpProp, number]} */ ([p, i])).filter(([p, i]) => !removed.has(i) && p.kind !== 'hidden');
+  /** @type {Map<number, XmlElement>} */
   const nodeOf = new Map();
   for (const [p, i] of keptPairs) {
     if (!p.dir || !p.dir.primary) continue;
+    /** @type {Set<DirRef>} */
     const skip = new Set();
+    /** @type {Map<DirRef, string | number | undefined>} */
     const patch = new Map();
     // A removed field with a fixed value (a Mime the role does not use) gets that value.
     parsed.props.forEach((x, j) => { if (x.kind === 'sub' && x.parent === i && removed.has(j)) { if (x.fix !== undefined) patch.set(x.ref, x.fix); else skip.add(x.ref); } });
     if (dirPatch && dirPatch.index === i) {
       p.dir.entries.forEach((e, n) => {
         if (dirPatch.drop && dirPatch.drop.has(n)) { skip.add(e.li); return; }
-        for (const [field, map] of [['Length', dirPatch.length], ['Padding', dirPatch.padding]]) {
+        for (const [field, map] of /** @type {[DirFieldName, Map<number, number> | null | undefined][]} */ ([['Length', dirPatch.length], ['Padding', dirPatch.padding]])) {
           const f = e.fields[field];
           if (!f || !map || !map.has(n) || String(map.get(n)) === f.value) continue;
           patch.set(f.attr || f.el, map.get(n));
         }
       });
     }
-    if (skip.size || patch.size) nodeOf.set(i, directoryClone(p.node, skip, patch));
+    // Only an element property has a dir.
+    if (skip.size || patch.size) nodeOf.set(i, directoryClone(/** @type {XmpElemProp} */ (p).node, skip, patch));
   }
+  /** @type {CanonProp[]} */
   const kept = [
-    ...keptPairs.filter(([p]) => p.kind !== 'sub').map(([p, i]) => (nodeOf.has(i) ? { ...p, node: nodeOf.get(i), value: valueOf(nodeOf.get(i)) } : p)),
-    ...add.map((a) => ({ key: a.key, kind: 'attr', attr: { name: a.name }, node: a.node, value: a.value })),
+    // nodeOf only holds clones of directory elements, so p is an element property there.
+    ...keptPairs.filter(([p]) => p.kind !== 'sub').map(([p, i]) => (nodeOf.has(i) ? { .../** @type {XmpElemProp} */ (p), node: /** @type {XmlElement} */ (nodeOf.get(i)), value: valueOf(/** @type {XmlElement} */ (nodeOf.get(i))) } : p)),
+    ...add.map((a) => /** @type {CanonProp} */ ({ key: a.key, kind: 'attr', attr: { name: a.name }, node: a.node, value: a.value })),
   ];
   let out;
   let expected;
@@ -1247,8 +1545,10 @@ export function rewriteXmp(parsed, removeIdx, compact = false, dirPatch = null, 
   try { got = packetModel(check.props); } catch { return null; }
   if (!got || got.length !== expected.length || got.some((v, i) => v !== expected[i])) return null;
   // The same directory entries, read the way a gain map reader reads them.
+  /** @type {(list: CanonProp[]) => string[]} */
   const dirs = (list) => list.filter((p) => p.kind === 'elem' && p.uri === CONTAINER_URI && p.local === 'Directory').map((p) => {
-    const d = parseDirectory(p.node);
+    // The filter above kept element properties only.
+    const d = parseDirectory(/** @type {{ node: XmlElement }} */ (p).node);
     return d.ok ? dirSig(d) : 'unreadable';
   }).sort();
   const wantDirs = dirs(kept);
@@ -1263,6 +1563,7 @@ export function rewriteXmp(parsed, removeIdx, compact = false, dirPatch = null, 
 
 // The canonical form of a whole packet with nothing removed, or null when it cannot be
 // written and verified (the packet is then treated as unreadable).
+/** @param {ParsedXmp | null | undefined} parsed @param {boolean} [compact] @returns {string | null} */
 export function canonicalXmp(parsed, compact = false) {
   if (!parsed || !parsed.ok || parsed.opaque) return null;
   return rewriteXmp(parsed, new Set(), compact);
@@ -1270,6 +1571,7 @@ export function canonicalXmp(parsed, compact = false) {
 
 // Pads a rewritten packet with spaces to an exact byte length, inside the packet wrapper
 // when there is one, so a container whose size cannot change (HEIC) stays valid.
+/** @param {string} text @param {number} byteLength @returns {Uint8Array | null} */
 export function padXmp(text, byteLength) {
   const bytes = encodeUtf8(text);
   if (bytes.length > byteLength) return null;
@@ -1288,7 +1590,16 @@ export function padXmp(text, byteLength) {
 // verified is unreadable here, red, and never kept as it is. ctx.compact: the packet is
 // written without the wrapper. When the canonical form differs from the packet as it is,
 // set.normalise is set: keeping everything still changes the file.
+/**
+ * @param {ItemSet} set
+ * @param {ParsedXmp} parsed
+ * @param {XmpCtx} ctx
+ * @param {ItemInternal} internal
+ * @param {number} byteSize
+ * @returns {XmpAdded[]}
+ */
 export function addXmpItems(set, parsed, ctx, internal, byteSize) {
+  /** @type {XmpAdded[]} */
   const added = [];
   const canon = canonicalXmp(parsed, !!(ctx && ctx.compact));
   if (canon === null) {
@@ -1302,6 +1613,7 @@ export function addXmpItems(set, parsed, ctx, internal, byteSize) {
   }
   if (canon !== parsed.text || encodeUtf8(canon).length !== byteSize) set.normalise = true;
   for (const it of xmpItems(parsed, ctx)) {
+    /** @type {import('./taxonomy.js').ItemSpec} */
     const pub = { id: `xmp:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'XMP' };
     // A second packet's gain map fields are a copy, never the one description a kept gain
     // map keeps, so they get an id of their own and are ticked like any amber detail.
@@ -1321,6 +1633,14 @@ export const XMP_UNREADABLE_KEPT = 'XMP data that could not be read was removed 
 // even when nothing in it goes. opts: { dirPatch (see rewriteXmp), rescue: property
 // indices kept although their item goes, add (see rewriteXmp), also: property indices
 // left out because add writes them again }.
+/**
+ * @param {ParsedXmp} parsed
+ * @param {XmpAdded[]} packetItems
+ * @param {Set<string>} remove
+ * @param {boolean} [compact]
+ * @param {PlanOpts} [opts]
+ * @returns {XmpPlan}
+ */
 export function planXmp(parsed, packetItems, remove, compact = false, opts = {}) {
   const gone = packetItems.filter((i) => remove.has(i.id));
   const patch = opts.dirPatch || null;
@@ -1345,8 +1665,15 @@ export function planXmp(parsed, packetItems, remove, compact = false, opts = {})
 
 // Keeps only the properties a test accepts (for example the gain map's own hdrgm values).
 // Returns the new packet text, or null when nothing is kept or it cannot be verified.
+/**
+ * @param {ParsedXmp} parsed
+ * @param {(p: XmpProp, i: number) => boolean} test
+ * @param {XmpAdd[]} [add]
+ * @returns {string | null}
+ */
 export function keepOnlyXmp(parsed, test, add = []) {
   if (!parsed.ok || parsed.opaque) return null;
+  /** @type {Set<number>} */
   const remove = new Set();
   let keptAny = false;
   parsed.props.forEach((p, i) => { if (p.kind !== 'about' && p.kind !== 'hidden' && p.kind !== 'sub' && test(p, i)) keptAny = true; else remove.add(i); });
@@ -1354,6 +1681,7 @@ export function keepOnlyXmp(parsed, test, add = []) {
 }
 
 // An empty but valid packet of an exact byte length, for containers whose size cannot change.
+/** @param {number} byteLength @returns {Uint8Array | null} */
 export function emptyXmp(byteLength) {
   const head = '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"/>';
   return padXmp(`${head}<?xpacket end="w"?>`, byteLength);
@@ -1361,6 +1689,7 @@ export function emptyXmp(byteLength) {
 
 // Packets found in IRB resources and PNG text are sometimes UTF-16 or carry a BOM; this
 // returns plain text.
+/** @param {Uint8Array} bytes @returns {string} */
 export function xmpText(bytes) {
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes.subarray(2));
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes.subarray(2));

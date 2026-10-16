@@ -20,7 +20,42 @@
 // recomputed when the old one was right, and cleared to zero, which means "not computed",
 // otherwise.
 
-import { clip, latin1, startsWith, u16be, u32be } from './bytes.js?v=4d7df4d3';
+import { clip, latin1, startsWith, u16be, u32be } from './bytes.js?v=e01e89d1';
+
+/** @typedef {import('./bytes.js').Range} Range */
+/** @typedef {import('./taxonomy.js').Tier} Tier */
+/**
+ * One tag of the profile's tag table. kind says what happens to it: kept as colour data,
+ * checked as text, or stripped. used (colour tags) holds the ranges a colour engine reads;
+ * allowed and strings (text tags) what the text check found.
+ * @typedef {object} IccTag
+ * @property {number} index
+ * @property {string} sig
+ * @property {number} off
+ * @property {number} len
+ * @property {string} type
+ * @property {'strip' | 'text' | 'keep'} kind
+ * @property {Range[] | null} [used]
+ * @property {boolean} [allowed]
+ * @property {string[]} [strings]
+ */
+/** One free header field and how to make it neutral in a copy. @typedef {{ field: string, fix: (o: Uint8Array) => void }} IccHeaderFix */
+/**
+ * What inspectIcc finds in a profile it can read.
+ * @typedef {object} IccInfo
+ * @property {true} ok
+ * @property {number} size
+ * @property {number} count
+ * @property {IccTag[]} tags
+ * @property {{ sig: string, text: string }[]} free text that is not on the list
+ * @property {string[]} extra what else no colour engine reads
+ * @property {IccHeaderFix[]} head
+ * @property {boolean} sizeFix
+ * @property {boolean} idSet
+ * @property {boolean} idOk
+ * @property {boolean} clean
+ */
+/** A text tag that was read. @typedef {{ ok: true, strings: string[], dirty: boolean, unreadable?: boolean, allowed?: boolean }} IccTextRead */
 
 // ======================================================================================
 // The allowlist: profile names and vendor lines that ship in cameras, phones, operating
@@ -77,13 +112,16 @@ const PROFILE_NAMES = new Set(['ICC Profile', 'icc', 'ICC', 'Photoshop ICC profi
 // Only trailing NULs and trailing ASCII spaces (some profiles pad their copyright line
 // with them; their number carries a few bits at most) are dropped. Any other character,
 // tabs and other white space included, is part of the text and must match exactly.
+/** @type {(s: string) => string} */
 const norm = (s) => s.replace(/\0+$/, '').replace(/ +$/, '');
 // Whether one string from a text tag is a well-known value. Empty text is allowed.
+/** @param {string} s @returns {boolean} */
 export function iccTextAllowed(s) {
   const t = norm(s);
   return !t || ICC_TEXTS.has(t) || ICC_PATTERNS.some((re) => re.test(t));
 }
 // Whether a profile's name (PNG iCCP, XMP photoshop:ICCProfile) is a well-known one.
+/** @param {string} s @returns {boolean} */
 export function iccNameAllowed(s) {
   const t = norm(s);
   return !!t && (ICC_TEXTS.has(t) || PROFILE_NAMES.has(t) || ICC_PATTERNS.some((re) => re.test(t)));
@@ -100,6 +138,7 @@ const TEXT_TYPES = new Set(['desc', 'text', 'mluc', 'dict', 'utf8', 'ut16', 'zut
 // numbers. Every other signature, and these signatures with any other type, hold nothing a
 // colour engine needs (targets, calibration dates, private tags), so they go with the text.
 const LUT_TYPES = ['mft1', 'mft2', 'mAB ', 'mBA '];
+/** @type {Record<string, string[]>} */
 const TAG_TYPES = {
   rXYZ: ['XYZ '], gXYZ: ['XYZ '], bXYZ: ['XYZ '], wtpt: ['XYZ '], bkpt: ['XYZ '], lumi: ['XYZ '],
   rTRC: ['curv', 'para'], gTRC: ['curv', 'para'], bTRC: ['curv', 'para'], kTRC: ['curv', 'para'],
@@ -110,6 +149,7 @@ const TAG_TYPES = {
   tech: ['sig '], ciis: ['sig '], rig0: ['sig '], rig2: ['sig '],
 };
 // Signature-type tags hold one of a few registered values.
+/** @type {Record<string, string[]>} */
 const SIG_VALUES = {
   tech: ['fscn', 'dcam', 'rscn', 'ijet', 'twax', 'epho', 'esta', 'dsub', 'rpho', 'fprn', 'vidm', 'vidc', 'pjtv', 'CRT ',
     'PMD ', 'AMD ', 'KPCD', 'imgs', 'grav', 'offs', 'silk', 'flex', 'mpfs', 'mpfr', 'dmpc', 'dcpj'],
@@ -117,8 +157,11 @@ const SIG_VALUES = {
   rig0: ['prmg'],
   rig2: ['prmg', 'vrmg'],
 };
+/** @type {Record<string, string>} */
 const TAG_LABEL = { desc: 'description', cprt: 'copyright', dmnd: 'device maker', dmdd: 'device model', vued: 'viewing conditions', meta: 'metadata', targ: 'target', scrd: 'screening' };
+/** @type {(sig: string) => string} */
 const sigText = (sig) => sig.replace(/[^\x20-\x7e]/g, '?').trim() || '?';
+/** @type {(sig: string) => string} */
 const labelOf = (sig) => TAG_LABEL[sig] || `tag ${sigText(sig)}`;
 
 const MAX_TAGS = 1024;
@@ -127,13 +170,16 @@ const MAX_RECORDS = 1024;
 // English, and the codes of any other record are free letters that could spell anything.
 const MLUC_CODES = new Set(['enUS', 'enGB', 'en\0\0']);
 
+/** @param {Uint8Array} b @param {number} s @param {number} e @returns {string} */
 function utf16(b, s, e) {
   let out = '';
   for (let j = s; j + 1 < e; j += 2) out += String.fromCharCode((b[j] << 8) | b[j + 1]);
   return out;
 }
+/** @type {(b: Uint8Array, s: number, e: number) => boolean} */
 const allZero = (b, s, e) => { for (let i = s; i < e; i++) if (b[i]) return false; return true; };
 // A string up to its first NUL; dirty when anything after that NUL is not zero.
+/** @param {string} str @returns {{ text: string, dirty: boolean }} */
 function cut(str) {
   const z = str.indexOf('\0');
   if (z < 0) return { text: str, dirty: false };
@@ -143,11 +189,21 @@ function cut(str) {
 // Reads one text tag. Returns { ok, strings, dirty } where dirty means bytes the
 // structure does not account for are not zero; ok is false when the structure does not
 // fit in the tag.
+/**
+ * @param {Uint8Array} b
+ * @param {number} off
+ * @param {number} len
+ * @param {string} type
+ * @returns {{ ok: false } | IccTextRead}
+ */
 function readTextTag(b, off, len, type) {
   const end = off + len;
+  /** @type {string[]} */
   const strings = [];
   let dirty = false;
+  /** @param {string} str */
   const take = (str) => { const c = cut(str); strings.push(c.text); if (c.dirty) dirty = true; };
+  /** @param {number} p */
   const restZero = (p) => { if (p < end && !allZero(b, p, end)) dirty = true; };
   if (len < 8) return { ok: false };
   if (!allZero(b, off + 4, off + 8)) dirty = true;
@@ -189,6 +245,7 @@ function readTextTag(b, off, len, type) {
     const n = u32be(b, off + 8);
     const rs = u32be(b, off + 12);
     if (n > MAX_RECORDS || (n && rs !== 12) || 16 + n * 12 > len) return { ok: false };
+    /** @type {Range[]} */
     const used = [[off, off + 16 + n * 12]];
     const codes = new Set();
     for (let i = 0; i < n; i++) {
@@ -246,9 +303,11 @@ function readTextTag(b, off, len, type) {
 // be zero. These return the used ranges (absolute positions) of one colour tag, or null when
 // its structure does not fit inside the tag.
 
+/** @type {(n: number) => number} */
 const align4 = (n) => (n + 3) & ~3;
 
 // One curve element (curv or para) at p, ending by end: { ranges, len } or null.
+/** @param {Uint8Array} b @param {number} p @param {number} end @returns {{ ranges: Range[], len: number } | null} */
 function curveElement(b, p, end) {
   if (p + 12 > end) return null;
   const type = latin1(b, p, p + 4);
@@ -267,6 +326,7 @@ function curveElement(b, p, end) {
 }
 
 // A sequence of n curve elements, each starting on a four-byte boundary from the tag start.
+/** @param {Uint8Array} b @param {number} tagOff @param {number} p @param {number} n @param {number} end @param {Range[]} out @returns {boolean} */
 function curveSet(b, tagOff, p, n, end, out) {
   for (let i = 0; i < n; i++) {
     const c = curveElement(b, p, end);
@@ -278,14 +338,20 @@ function curveSet(b, tagOff, p, n, end, out) {
 }
 
 // s15Fixed16 numbers from p on, each with |value| below lim.
+/** @type {(b: Uint8Array, p: number) => number} */
 const s15 = (b, p) => (u32be(b, p) | 0) / 65536;
+/** @type {(b: Uint8Array, p: number, n: number, lo: number, hi: number) => boolean} */
 const numbersIn = (b, p, n, lo, hi) => { for (let i = 0; i < n; i++) { const v = s15(b, p + 4 * i); if (v < lo || v >= hi) return false; } return true; };
+/** @type {(b: Uint8Array, p: number, max: number) => boolean} */
 const enumIn = (b, p, max) => u32be(b, p) <= max;
 const HP_MEAS = [0x6d, 0x65, 0x61, 0x73, ...new Array(23).fill(0), 2, ...new Array(11).fill(0), 2];
 
+/** @param {Uint8Array} b @param {number} off @param {number} len @param {string} type @param {string} sig @returns {Range[] | null} */
 function colourUsed(b, off, len, type, sig) {
   const end = off + len;
+  /** @type {Range} */
   const head = [off, off + 4];
+  /** @param {number} n */
   const fits = (n) => off + n <= end;
   switch (type) {
     // Colour tristimulus values lie well within -4..4; luminance is in candelas per square
@@ -328,7 +394,9 @@ function colourUsed(b, off, len, type, sig) {
       const inp = b[off + 8];
       const outp = b[off + 9];
       if (!inp || !outp || inp > 15 || outp > 15) return null;
+      /** @type {Range[]} */
       const ranges = [head, [off + 8, off + 10], [off + 12, off + 32]];
+      /** @param {number} k */
       const at = (k) => u32be(b, off + 12 + 4 * k);
       const [bOff, mtxOff, mOff, clutOff, aOff] = [0, 1, 2, 3, 4].map(at);
       // mAB: A curves (inputs), CLUT, M curves, matrix, B curves (outputs); mBA the reverse.
@@ -353,6 +421,7 @@ function colourUsed(b, off, len, type, sig) {
       if (!fits(16)) return null;
       const n = u32be(b, off + 12);
       if (n > 256 || !fits(16 + 8 * n)) return null;
+      /** @type {Range[]} */
       const ranges = [head, [off + 8, off + 16 + 8 * n]];
       // The processing elements themselves are taken whole: their own layouts are not read.
       for (let i = 0; i < n; i++) {
@@ -390,11 +459,17 @@ const D50 = [0xf6d6, 0x10000, 0xd32d];
 
 // What in the header is free and not zero or registered: [{ text, fix }] where fix writes
 // the neutral value into a copy.
+/** @param {Uint8Array} b @returns {IccHeaderFix[]} */
 function headerFree(b) {
+  /** @type {IccHeaderFix[]} */
   const out = [];
+  /** @param {number} p */
   const sig = (p) => latin1(b, p, p + 4);
+  /** @param {number} p @param {number} n */
   const zero = (p, n) => allZero(b, p, p + n);
+  /** @param {number} p @param {Set<string>} set */
   const listed = (p, set) => zero(p, 4) || set.has(sig(p));
+  /** @type {(p: number, n: number) => (o: Uint8Array) => void} */
   const clear = (p, n) => (o) => o.fill(0, p, p + n);
   if (!listed(4, CMMS)) out.push({ field: 'CMM', fix: clear(4, 4) });
   if (!zero(10, 2)) out.push({ field: 'version', fix: clear(10, 2) });
@@ -422,6 +497,7 @@ function headerFree(b) {
 
 const MD5_S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
 const MD5_K = Array.from({ length: 64 }, (_, i) => Math.floor(Math.abs(Math.sin(i + 1)) * 2 ** 32) >>> 0);
+/** @param {Uint8Array} data @returns {Uint8Array} */
 export function md5(data) {
   const n = data.length;
   const total = ((n + 8) >> 6) * 64 + 64;
@@ -456,6 +532,7 @@ export function md5(data) {
 
 // The profile ID as the specification computes it: MD5 of the profile with the flags,
 // the rendering intent and the ID itself set to zero.
+/** @param {Uint8Array} b @param {number} size @returns {Uint8Array} */
 function profileId(b, size) {
   const c = b.slice(0, size);
   c.fill(0, 44, 48);
@@ -471,7 +548,12 @@ function profileId(b, size) {
 // { ok: true, size, tags, free: [{ sig, text }], extra: [text], clean } where free lists the
 // text that is not on the list, extra what else no colour engine reads, and clean is true
 // when there is neither.
+/**
+ * @param {Uint8Array | null | undefined} b
+ * @returns {{ ok: false } | IccInfo}
+ */
 export function inspectIcc(b) {
+  /** @type {{ ok: false }} */
   const bad = { ok: false };
   if (!b || b.length < 132 || !startsWith(b, 36, 'acsp')) return bad;
   // What says how to read the profile must be registered; a named-colour profile is a list
@@ -487,6 +569,7 @@ export function inspectIcc(b) {
   // every tag fits in the data; the size is then written again.
   let sizeFix = false;
   if (size > b.length) { sizeFix = true; size = b.length; }
+  /** @type {IccTag[]} */
   const tags = [];
   for (let i = 0; i < count; i++) {
     const e = 132 + i * 12;
@@ -495,6 +578,7 @@ export function inspectIcc(b) {
     const len = u32be(b, e + 8);
     if (off < tableEnd || len < 8 || off + len > size) return bad;
     const type = latin1(b, off, off + 4);
+    /** @type {IccTag['kind']} */
     let kind = 'strip';
     if (TEXT_TYPES.has(type)) kind = 'text';
     else if (TAG_TYPES[sig] && TAG_TYPES[sig].includes(type)) {
@@ -517,6 +601,7 @@ export function inspectIcc(b) {
     }
   }
   // The bytes each colour tag's structure uses; a structure that does not fit is not read.
+  /** @type {Map<string, Range[] | null>} */
   const used = new Map();
   for (const t of tags) {
     if (t.kind !== 'keep') continue;
@@ -530,12 +615,16 @@ export function inspectIcc(b) {
     if (t.sig !== 'meas' && t.sig !== 'view') return bad;
     t.kind = 'strip';
   }
+  /** @type {{ sig: string, text: string }[]} */
   const free = [];
+  /** @type {string[]} */
   const extra = [];
+  /** @type {Map<string, IccTextRead>} */
   const seen = new Map();
   for (const t of tags) {
     if (t.kind !== 'text') continue;
     const key = `${t.off}:${t.len}`;
+    /** @type {{ ok: false } | IccTextRead | undefined} */
     let r = seen.get(key);
     if (!r) {
       r = readTextTag(b, t.off, t.len, t.type);
@@ -559,7 +648,7 @@ export function inspectIcc(b) {
   }
   // Bytes nothing uses: between the table and the tags, between tags, after the size; and
   // inside colour tags, the reserved fields and whatever follows the structure.
-  const whole = maskOf(b.length, [[0, tableEnd], ...tags.map((t) => [t.off, t.off + t.len])]);
+  const whole = maskOf(b.length, [[0, tableEnd], ...tags.map((t) => /** @type {Range} */ ([t.off, t.off + t.len]))]);
   const kept = maskOf(b.length, tags.filter((t) => t.kind === 'keep').map((t) => [t.off, t.off + t.len]));
   const live = maskOf(b.length, liveOf(tags));
   let gaps = false;
@@ -583,15 +672,19 @@ export function inspectIcc(b) {
 }
 
 // The ranges a colour engine reads in the kept tags, plus the whole of every text tag.
+/** @param {IccTag[]} tags @returns {Range[]} */
 function liveOf(tags) {
+  /** @type {Range[]} */
   const live = [];
   for (const t of tags) {
-    if (t.kind === 'keep') live.push(...t.used);
+    // A kept tag always has its used ranges: inspectIcc rejects or strips one without them.
+    if (t.kind === 'keep') live.push(.../** @type {Range[]} */ (t.used));
     else if (t.kind === 'text') live.push([t.off, t.off + t.len]);
   }
   return live;
 }
 // A mask with 1 at every position inside one of the ranges.
+/** @param {number} n @param {Range[]} ranges @returns {Uint8Array} */
 function maskOf(n, ranges) {
   const m = new Uint8Array(n);
   for (const [s, e] of ranges) m.fill(1, Math.max(0, s), Math.min(n, e));
@@ -603,10 +696,13 @@ function maskOf(n, ranges) {
 
 const NEUTRAL_DESC = 'ICC profile';
 
+/** @param {Uint8Array} out @param {number} p @param {string} s */
 function writeAscii(out, p, s) { for (let i = 0; i < s.length; i++) out[p + i] = s.charCodeAt(i); }
+/** @param {Uint8Array} out @param {number} p @param {number} v */
 function w32(out, p, v) { out[p] = v >>> 24; out[p + 1] = (v >>> 16) & 255; out[p + 2] = (v >>> 8) & 255; out[p + 3] = v & 255; }
 
 // Overwrites one text tag with a neutral value of the same type, in its own space.
+/** @param {Uint8Array} out @param {IccTag} t */
 function neutralTag(out, t) {
   const { off, len, type } = t;
   out.fill(0, off + 4, off + len);
@@ -639,6 +735,7 @@ function neutralTag(out, t) {
 // engine reads removed, same length as the input, or null when that cannot be done
 // safely. Colour tags keep their offsets and the bytes a colour engine reads; the result
 // is checked.
+/** @param {Uint8Array} b @returns {Uint8Array | null} */
 export function cleanIcc(b) {
   const info = inspectIcc(b);
   if (!info.ok) return null;
@@ -647,6 +744,7 @@ export function cleanIcc(b) {
   const { size, tags } = info;
   const keep = tags.filter((t) => t.kind !== 'strip');
   // Text tags that fail, each shared range once.
+  /** @type {Set<string>} */
   const done = new Set();
   for (const t of tags) {
     if (t.kind !== 'text' || t.allowed) continue;
@@ -667,7 +765,7 @@ export function cleanIcc(b) {
   // Zero every byte past the header that is neither the table, a text tag, nor a byte a
   // colour engine reads in a kept colour tag: dropped tags, gaps, reserved fields and
   // whatever follows a colour tag's structure, and anything after the size.
-  const live = [[0, 132 + keep.length * 12], ...liveOf(keep)].sort((x, y) => x[0] - y[0]);
+  const live = /** @type {Range[]} */ ([[0, 132 + keep.length * 12], ...liveOf(keep)]).sort((x, y) => x[0] - y[0]);
   let p = 128;
   for (const [s, e] of live) { if (s > p) out.fill(0, p, s); p = Math.max(p, e); }
   if (p < out.length) out.fill(0, p, out.length);
@@ -683,7 +781,7 @@ export function cleanIcc(b) {
   if (!again.ok || !again.clean) return null;
   for (const t of keep) {
     if (t.kind !== 'keep') continue;
-    for (const [s, e] of t.used) for (let i = s; i < e; i++) if (out[i] !== b[i]) return null;
+    for (const [s, e] of /** @type {Range[]} */ (t.used)) for (let i = s; i < e; i++) if (out[i] !== b[i]) return null;
   }
   return out;
 }
@@ -693,16 +791,20 @@ export function cleanIcc(b) {
 
 // The profile's own name, for the green detail: the first string of its description that
 // is a well-known name (other strings, such as translations, show in the red detail).
+/** @param {Uint8Array} b @returns {string} */
 export function iccDescription(b) {
   const info = inspectIcc(b);
   if (!info.ok) return 'Colour profile';
   const desc = info.tags.find((t) => t.sig === 'desc' && t.kind === 'text');
-  const name = desc ? (desc.strings.map(norm).find((x) => x && iccTextAllowed(x)) || '') : '';
+  // Every text tag has its strings once inspectIcc has read it.
+  const name = desc ? (/** @type {string[]} */ (desc.strings).map(norm).find((x) => x && iccTextAllowed(x)) || '') : '';
   return clip(name) || 'Colour profile';
 }
 
 // What the red detail shows: the unlisted text first, then what else would go.
+/** @param {IccInfo} info @returns {string} */
 export function iccFreeText(info) {
+  /** @param {{ sig: string }} t */
   const order = (t) => (t.sig === 'desc' ? 0 : t.sig === 'cprt' ? 1 : 2);
   const parts = [...info.free].sort((x, y) => order(x) - order(y)).map((f) => `${labelOf(f.sig)}: ${f.text}`);
   return clip([...parts, ...info.extra].join('; '));
@@ -710,10 +812,12 @@ export function iccFreeText(info) {
 
 // The red details for one profile: { id, item } to add, or null when it is clean. The
 // caller supplies the private removal data.
+/** @type {{ id: string, group: string, tier: Tier, label: string, source: string, note: string }} */
 export const ICC_TEXT_ITEM = {
   id: 'icc:text', group: 'hidden', tier: 'red', label: 'Text inside the colour profile', source: 'ICC profile',
   note: 'Text in the colour profile that is not a known profile name or copyright line, or data no colour engine reads. It can hold names or notes. Removing it rewrites only that text, so the colours stay the same.',
 };
+/** @type {{ id: string, group: string, tier: Tier, label: string, source: string, note: string }} */
 export const ICC_UNREADABLE_ITEM = {
   id: 'icc:unreadable', group: 'hidden', tier: 'red', label: 'Colour profile that could not be read', source: 'ICC profile',
   note: 'It may hold anything, so removing it is the safe choice. Colours may look slightly different without it.',

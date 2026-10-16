@@ -4,12 +4,54 @@
 // and "XMP " (announced by flags in VP8X) and sometimes in C2PA or private chunks. After
 // removal the VP8X flags are brought in line and the RIFF size is rewritten.
 
-import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=4d7df4d3';
-import { describeC2pa } from './c2pa.js?v=fcdff418';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=15403b52';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=93d7f069';
-import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=1288a27c';
-import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=d8284a86';
+import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=e01e89d1';
+import { describeC2pa } from './c2pa.js?v=7e2f4ee2';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=50f98571';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=c7ed327c';
+import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=f4348940';
+import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=e0e75fec';
+
+/** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
+/** @typedef {import('./taxonomy.js').ItemSpec} ItemSpec */
+/**
+ * One RIFF chunk. `broken` marks a chunk whose stated size runs past the file.
+ * @typedef {object} WebpChunk
+ * @property {string} type
+ * @property {number} start
+ * @property {number} dataStart
+ * @property {number} dataEnd
+ * @property {number} end
+ * @property {boolean} [broken]
+ */
+/**
+ * @typedef {object} WebpWalk
+ * @property {WebpChunk[]} chunks
+ * @property {number} riffEnd
+ * @property {number} tailStart
+ * @property {string[]} warnings
+ */
+/** @typedef {{ chunk: WebpChunk, off: number }} WebpExifEntry */
+/** @typedef {{ chunk: WebpChunk, parsed: ReturnType<typeof parseXmp>, items: ReturnType<typeof addXmpItems> }} WebpXmpEntry */
+/**
+ * @typedef {object} WebpModel
+ * @property {WebpWalk} w
+ * @property {WebpChunk[]} chunks
+ * @property {number} width
+ * @property {number} height
+ * @property {number} orientation
+ * @property {WebpExifEntry[]} exif
+ * @property {WebpXmpEntry[]} xmp
+ * @property {boolean} [c2pa]
+ */
+/** @typedef {{ width: number, height: number, alpha?: boolean }} WebpSize */
+/**
+ * The removal data this module stores with each item.
+ * @typedef {{ kind: 'chunks', chunks: WebpChunk[] }
+ *   | { kind: 'trailing' }
+ *   | { kind: 'icctext', chunk: WebpChunk }
+ *   | { kind: 'exif', entry: WebpExifEntry, key: string }
+ *   | { kind: 'xmp', entry: WebpXmpEntry }} WebpInternal
+ */
 
 const STRUCTURAL = new Set(['VP8 ', 'VP8L', 'VP8X', 'ALPH', 'ANIM', 'ANMF']);
 const FLAG_ICC = 0x20;
@@ -17,6 +59,7 @@ const FLAG_ALPHA = 0x10;
 const FLAG_EXIF = 0x08;
 const FLAG_XMP = 0x04;
 
+/** @param {Uint8Array} b @returns {boolean} */
 export function isWebp(b) {
   return b.length >= 12 && latin1(b, 0, 4) === 'RIFF' && latin1(b, 8, 12) === 'WEBP';
 }
@@ -25,6 +68,7 @@ const KNOWN = new Set(['VP8 ', 'VP8L', 'VP8X', 'ALPH', 'ANIM', 'ANMF', 'ICCP', '
 
 // The first position in [from, end) where known chunks follow each other exactly up to
 // `end`, or -1. Bounded, so a crafted file cannot make it slow.
+/** @param {Uint8Array} b @param {number} from @param {number} end @returns {number} */
 function resync(b, from, end) {
   let tries = 0;
   const stop = Math.min(end - 8, from + 16 * 1024 * 1024);
@@ -45,10 +89,13 @@ function resync(b, from, end) {
   return -1;
 }
 
+/** @param {Uint8Array} b @returns {WebpWalk} */
 export function walkWebp(b) {
+  /** @type {string[]} */
   const warnings = [];
   const riffEnd = Math.min(b.length, 8 + u32le(b, 4));
   if (8 + u32le(b, 4) > b.length) warnings.push('The WebP file is shorter than its header says.');
+  /** @type {WebpChunk[]} */
   const chunks = [];
   let p = 12;
   while (p + 8 <= riffEnd) {
@@ -78,6 +125,7 @@ export function walkWebp(b) {
   return { chunks, riffEnd, tailStart: Math.max(p, riffEnd), warnings };
 }
 
+/** @param {string} type @param {Uint8Array} data @returns {Uint8Array} */
 function makeChunk(type, data) {
   const out = new Uint8Array(8 + data.length + (data.length & 1));
   out.set(encodeLatin1(type), 0);
@@ -86,6 +134,7 @@ function makeChunk(type, data) {
   return out;
 }
 
+/** @param {Uint8Array} b @param {WebpChunk[]} chunks @returns {WebpSize} */
 export function frameSize(b, chunks) {
   const vp8x = chunks.find((c) => c.type === 'VP8X');
   if (vp8x) return { width: 1 + (b[vp8x.dataStart + 4] | (b[vp8x.dataStart + 5] << 8) | (b[vp8x.dataStart + 6] << 16)), height: 1 + (b[vp8x.dataStart + 7] | (b[vp8x.dataStart + 8] << 8) | (b[vp8x.dataStart + 9] << 16)) };
@@ -99,12 +148,16 @@ export function frameSize(b, chunks) {
   return { width: 0, height: 0 };
 }
 
+/** @param {Uint8Array} b @param {ItemSet} set @returns {WebpModel} */
 export function analyseWebp(b, set) {
   const w = walkWebp(b);
   for (const x of w.warnings) set.warn(x);
   const size = frameSize(b, w.chunks);
+  /** @type {WebpModel} */
   const model = { w, chunks: w.chunks, width: size.width, height: size.height, orientation: 1, exif: [], xmp: [] };
+  /** @type {Map<string, { type: string, chunks: WebpChunk[] }>} */
   const unknown = new Map();
+  /** @type {Set<string>} */
   const seenUnknown = new Set();
   const broken = w.chunks.filter((c) => c.broken && !STRUCTURAL.has(c.type));
   if (broken.length) {
@@ -131,12 +184,14 @@ export function analyseWebp(b, set) {
       }
       for (const x of m.warnings) set.warn(x);
       if (!model.exif.length) model.orientation = tiffOrientation(m);
+      /** @type {WebpExifEntry} */
       const entry = { chunk: c, off };
       model.exif.push(entry);
       // The chunk holds the TIFF data from its first byte (WebP container specification);
       // bytes before the TIFF header are free, so a chunk that stays loses them.
       if (off > 0) set.normalise = true;
       for (const it of tiffItems(m)) {
+        /** @type {ItemSpec} */
         const pub = { id: `exif:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'EXIF' };
         if (it.note) pub.note = it.note;
         set.add(pub, { kind: 'exif', entry, key: it.key });
@@ -146,6 +201,7 @@ export function analyseWebp(b, set) {
     if (c.type === 'XMP ') {
       const text = new TextDecoder('utf-8').decode(b.subarray(c.dataStart, c.dataEnd));
       const parsed = parseXmp(text);
+      /** @type {WebpXmpEntry} */
       const entry = { chunk: c, parsed, items: [] };
       model.xmp.push(entry);
       entry.items = addXmpItems(set, parsed, {}, { kind: 'xmp', entry }, c.dataEnd - c.dataStart);
@@ -159,7 +215,7 @@ export function analyseWebp(b, set) {
     }
     const key = cappedId(seenUnknown, `webp:chunk:${c.type.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'data'}`, 'webp:chunk:other');
     if (!unknown.has(key)) unknown.set(key, { type: key === 'webp:chunk:other' ? 'Several kinds of' : c.type, chunks: [] });
-    unknown.get(key).chunks.push(c);
+    /** @type {{ chunks: WebpChunk[] }} */ (unknown.get(key)).chunks.push(c);
   }
   for (const [id, u] of unknown) {
     const total = u.chunks.reduce((n, c) => n + c.end - c.start, 0);
@@ -171,16 +227,19 @@ export function analyseWebp(b, set) {
   return model;
 }
 
+/** @param {Uint8Array} out @returns {Uint8Array} */
 function finishRiff(out) {
   w32le(out, 4, out.length - 8);
   return out;
 }
 
 // Rewrites VP8X flags so they match the chunks actually present.
+/** @param {Uint8Array} out @returns {Uint8Array} */
 function fixFlags(out) {
   const w = walkWebp(out);
   const vp8x = w.chunks.find((c) => c.type === 'VP8X');
   if (!vp8x) return out;
+  /** @param {string} t */
   const has = (t) => w.chunks.some((c) => c.type === t);
   let f = out[vp8x.dataStart];
   f = has('ICCP') ? f | FLAG_ICC : f & ~FLAG_ICC;
@@ -190,28 +249,41 @@ function fixFlags(out) {
   return out;
 }
 
+/**
+ * @param {Uint8Array} b
+ * @param {WebpModel} model
+ * @param {ItemSet} set
+ * @param {Set<string>} remove
+ * @returns {{ bytes: Uint8Array, warnings: string[] }}
+ */
 export function scrubWebp(b, model, set, remove) {
+  /** @type {string[]} */
   const warnings = [];
   const out = b.slice();
+  /** @type {Set<WebpChunk>} */
   const drop = new Set();
+  /** @type {Map<WebpChunk, Uint8Array>} */
   const replace = new Map();
   let cutTrailing = false;
+  /** @type {Map<WebpExifEntry, Set<string>>} */
   const exifKeys = new Map();
+  /** @type {WebpChunk[]} */
   const iccTexts = [];
   for (const id of remove) {
-    const it = set.get(id);
+    const it = /** @type {WebpInternal | undefined} */ (set.get(id));
     if (!it) continue;
     if (it.kind === 'chunks') for (const c of it.chunks) drop.add(c);
     else if (it.kind === 'trailing') cutTrailing = true;
     else if (it.kind === 'icctext') iccTexts.push(it.chunk);
     else if (it.kind === 'exif') {
       if (!exifKeys.has(it.entry)) exifKeys.set(it.entry, new Set());
-      exifKeys.get(it.entry).add(it.key);
+      /** @type {Set<string>} */ (exifKeys.get(it.entry)).add(it.key);
     }
   }
   for (const [entry, keys] of exifKeys) {
     const c = entry.chunk;
-    const m = parseTiff(out.subarray(c.dataStart + entry.off, c.dataEnd));
+    // These bytes parsed as whole EXIF in analyseWebp and are unchanged so far.
+    const m = /** @type {NonNullable<ReturnType<typeof parseTiff>>} */ (parseTiff(out.subarray(c.dataStart + entry.off, c.dataEnd)));
     if (removeTiffKeys(m, keys).empty) drop.add(c);
   }
   for (const entry of model.exif) {
@@ -242,7 +314,7 @@ export function scrubWebp(b, model, set, remove) {
   asm.copy(0, 12);
   for (const c of model.chunks) {
     if (drop.has(c) && !STRUCTURAL.has(c.type)) continue;
-    if (replace.has(c)) { asm.add(replace.get(c)); continue; }
+    if (replace.has(c)) { asm.add(/** @type {Uint8Array} */ (replace.get(c))); continue; }
     asm.copy(c.start, c.end);
   }
   const riff = asm.finish();
@@ -252,6 +324,7 @@ export function scrubWebp(b, model, set, remove) {
   return { bytes: tail ? concat([riff, tail]) : riff, warnings };
 }
 
+/** @param {Uint8Array} b @param {Uint8Array} tiff @returns {Uint8Array} */
 export function insertWebpExif(b, tiff) {
   const w = walkWebp(b);
   const parts = [encodeLatin1('RIFF'), new Uint8Array(4), encodeLatin1('WEBP')];

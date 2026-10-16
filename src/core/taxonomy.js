@@ -1,5 +1,35 @@
 // Groups, tiers and the item bookkeeping every format module shares.
 
+/** @typedef {'red' | 'amber' | 'green'} Tier */
+/** @typedef {'where' | 'who' | 'when' | 'device' | 'hidden' | 'technical'} GroupId */
+/**
+ * What a format module hands to ItemSet.add. Only id, group, tier and label are always set.
+ * @typedef {object} ItemSpec
+ * @property {string} id
+ * @property {string} group
+ * @property {Tier} tier
+ * @property {string} label
+ * @property {unknown} [value]
+ * @property {string} [source]
+ * @property {string} [note]
+ */
+/**
+ * The public description of one detail, as inspect() returns it to the page.
+ * @typedef {object} Item
+ * @property {string} id
+ * @property {string} group
+ * @property {Tier} tier
+ * @property {string} label
+ * @property {string} value
+ * @property {string | undefined} source
+ * @property {string} [note]
+ */
+/**
+ * The private removal data a format module keeps for one item. Its shape depends on the
+ * module and on the item's kind, and only the module that stored it reads it back.
+ * @typedef {Record<string, any>} ItemInternal
+ */
+
 export const GROUPS = [
   { id: 'where', label: 'Where', description: 'Where the picture was taken: GPS position, altitude, direction and place names.' },
   { id: 'who', label: 'Who', description: 'Who took or owns it: names, contact details, copyright, camera and lens serial numbers, and the name of the computer that saved it.' },
@@ -25,6 +55,7 @@ export const SOURCES = {
   after: 'After the image',
 };
 
+/** @type {Record<Tier, number>} */
 export const TIER_ORDER = { red: 0, amber: 1, green: 2 };
 
 // Text a person or an app writes freely (captions, titles, descriptions, keywords,
@@ -33,13 +64,19 @@ export const TIER_ORDER = { red: 0, amber: 1, green: 2 };
 // Each format module says so in the note of such a detail.
 
 // The strictest of several tiers: red beats amber beats green.
+/**
+ * @param {Iterable<Tier | null | undefined>} tiers
+ * @returns {Tier | null}
+ */
 export function strictest(tiers) {
+  /** @type {Tier | null} */
   let best = null;
   for (const t of tiers) if (t && (best === null || TIER_ORDER[t] < TIER_ORDER[best])) best = t;
   return best;
 }
 
 // Shared wording for data a format module cannot read or place.
+/** @type {{ damaged: { group: string, tier: Tier, label: string, note: string }, unknown: { group: string, tier: Tier, label: string, note?: string } }} */
 export const UNREADABLE = {
   damaged: {
     group: 'hidden', tier: 'red', label: 'Damaged data at the end of the file',
@@ -60,15 +97,32 @@ const MAX_WARNINGS = 40;
 // make the page freeze.
 export class ItemSet {
   constructor() {
+    /** @type {Item[]} */
     this.items = [];
+    /** @type {Map<string, ItemInternal>} */
     this.internal = new Map();
+    /** @type {Map<string, Item>} */
     this.byId = new Map();
+    /** @type {Map<string, number>} */
     this.nextSuffix = new Map();
+    /** @type {string[]} */
     this.warnings = [];
+    /** @type {Set<string>} */
     this.warningSet = new Set();
     this.extraWarnings = 0;
+    /**
+     * Set by a format module when a scrub must write the file again even if nothing is
+     * removed (its XMP is not yet in the one canonical form). Not set here, deliberately.
+     * @type {boolean | undefined}
+     */
+    this.normalise;
   }
 
+  /**
+   * @param {ItemSpec} item
+   * @param {ItemInternal} [internal]
+   * @returns {string} the id given to the item
+   */
   add(item, internal = {}) {
     let id = item.id;
     if (this.internal.has(id)) {
@@ -77,6 +131,7 @@ export class ItemSet {
       id = `${item.id}:${n}`;
       this.nextSuffix.set(item.id, n + 1);
     }
+    /** @type {Item} */
     const pub = {
       id,
       group: item.group,
@@ -92,10 +147,14 @@ export class ItemSet {
     return id;
   }
 
+  /** @param {string} id */
   has(id) { return this.internal.has(id); }
+  /** @param {string} id */
   get(id) { return this.internal.get(id); }
+  /** @param {string} id */
   item(id) { return this.byId.get(id); }
 
+  /** @param {string} text */
   warn(text) {
     if (this.warningSet.has(text)) return;
     if (this.warnings.length >= MAX_WARNINGS) {
@@ -112,6 +171,13 @@ export class ItemSet {
 
 // Keeps the number of separate items for unidentified parts manageable: up to `limit`
 // distinct ids, then everything else is folded into one item. Returns the id to use.
+/**
+ * @param {Set<string>} seen
+ * @param {string} id
+ * @param {string} overflowId
+ * @param {number} [limit]
+ * @returns {string}
+ */
 export function cappedId(seen, id, overflowId, limit = 24) {
   if (seen.has(id) || seen.size < limit) { seen.add(id); return id; }
   return overflowId;

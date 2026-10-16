@@ -7,13 +7,32 @@
 // checked. Resource names, padding, the character set marker, record versions and the
 // digest of the old IPTC data cannot carry anything along.
 
-import { clip, concat, encodeLatin1, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=4d7df4d3';
-import { md5 } from './icc.js?v=15403b52';
-import { deviceNameOk } from './tiff.js?v=1288a27c';
+import { clip, concat, encodeLatin1, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=e01e89d1';
+import { md5 } from './icc.js?v=50f98571';
+import { deviceNameOk } from './tiff.js?v=f4348940';
+
+/** @typedef {import('./taxonomy.js').Tier} Tier */
+/** @typedef {import('./bytes.js').Range} Range */
+/**
+ * One IPTC dataset: record and number, and where it and its data lie.
+ * @typedef {{ rec: number, ds: number, id: string, start: number, end: number, dataStart: number, dataEnd: number }} IptcDataset
+ */
+/**
+ * Parsed IPTC data: the bytes, the datasets and the unreadable ranges between them.
+ * @typedef {{ b: Uint8Array, sets: IptcDataset[], junk: Range[] }} ParsedIptc
+ */
+/** @typedef {{ group: string, tier: Tier, label: string, note?: string }} IptcItemDef */
+/**
+ * One IPTC detail as iptcItems lists it; key is a key of IPTC_ITEMS.
+ * @typedef {IptcItemDef & { key: string, value: string }} IptcItem
+ */
+/** One Photoshop image resource. @typedef {{ id: number, start: number, end: number, dataStart: number, dataEnd: number }} IrbResource */
+/** A parsed Photoshop image resource block; rest is where the resources stop. @typedef {{ b: Uint8Array, res: IrbResource[], rest: number }} ParsedIrb */
 
 // ======================================================================================
 // IPTC-IIM
 
+/** @type {Record<'place' | 'byline' | 'contact' | 'credit' | 'copyright' | 'dates' | 'software' | 'caption' | 'keywords' | 'instructions' | 'other' | 'unreadable', IptcItemDef>} */
 export const IPTC_ITEMS = {
   place: { group: 'where', tier: 'red', label: 'Place names' },
   byline: { group: 'who', tier: 'red', label: 'Author name' },
@@ -30,6 +49,7 @@ export const IPTC_ITEMS = {
   unreadable: { group: 'hidden', tier: 'red', label: 'IPTC data that could not be read', note: 'Bytes between the IPTC fields that no reader uses. They may hold anything.' },
 };
 
+/** @type {Record<string, string>} */
 const DATASET_KEY = {
   '2:80': 'byline', '2:85': 'byline', '2:122': 'byline',
   '2:118': 'contact',
@@ -48,10 +68,14 @@ const STRUCTURAL = new Set(['2:0', '1:0', '1:90']);
 // Reads IPTC datasets. Bytes that are not part of a dataset (padding apart) are kept in
 // `junk`, and reading resumes at the next byte that starts a plausible dataset, so a stray
 // byte cannot hide the fields after it.
+/** @param {Uint8Array} b @returns {ParsedIptc} */
 export function parseIptc(b) {
+  /** @type {IptcDataset[]} */
   const sets = [];
+  /** @type {Range[]} */
   const junk = [];
   let p = 0;
+  /** @param {number} q */
   const plausible = (q) => q + 5 <= b.length && b[q] === 0x1c && b[q + 1] >= 1 && b[q + 1] <= 9;
   while (p + 5 <= b.length) {
     if (b[p] !== 0x1c) {
@@ -81,6 +105,7 @@ export function parseIptc(b) {
   return { b, sets, junk };
 }
 
+/** @type {(b: Uint8Array, s: IptcDataset) => string} */
 const textOf = (b, s) => {
   const raw = b.subarray(s.dataStart, s.dataEnd);
   try { return new TextDecoder('utf-8', { fatal: true }).decode(raw).trim(); } catch { return latin1(raw).trim(); }
@@ -92,10 +117,12 @@ const textOf = (b, s) => {
 // IPTC fields, which are red.
 const DATE_FORM = /^\d{8}$/;
 const TIME_FORM = /^\d{6}(?:[+-]\d{4})?$/;
+/** @type {Record<string, RegExp>} */
 const AMBER_FORM = {
   '2:55': DATE_FORM, '2:62': DATE_FORM, '2:30': DATE_FORM,
   '2:60': TIME_FORM, '2:63': TIME_FORM, '2:35': TIME_FORM,
 };
+/** @param {Uint8Array} b @param {IptcDataset} s @returns {boolean} */
 function amberOk(b, s) {
   const raw = b.subarray(s.dataStart, s.dataEnd);
   let v;
@@ -106,22 +133,26 @@ function amberOk(b, s) {
   return false;
 }
 
+/** @type {(s: IptcDataset, b?: Uint8Array) => string | null} */
 const datasetKey = (s, b) => {
   if (STRUCTURAL.has(s.id)) return null;
   const k = DATASET_KEY[s.id] || 'other';
   return (k === 'dates' || k === 'software') && b && !amberOk(b, s) ? 'other' : k;
 };
 
+/** @param {ParsedIptc} parsed @returns {IptcItem[]} */
 export function iptcItems(parsed) {
+  /** @type {Map<string, IptcDataset[]>} */
   const buckets = new Map();
   for (const s of parsed.sets) {
     const k = datasetKey(s, parsed.b);
     if (!k) continue;
     if (!buckets.has(k)) buckets.set(k, []);
-    buckets.get(k).push(s);
+    /** @type {IptcDataset[]} */ (buckets.get(k)).push(s);
   }
   const junkBytes = (parsed.junk || []).reduce((n, [a, c]) => n + c - a, 0);
   if (junkBytes) buckets.set('unreadable', []);
+  /** @type {IptcItem[]} */
   const items = [];
   for (const [key, def] of Object.entries(IPTC_ITEMS)) {
     const list = buckets.get(key);
@@ -147,17 +178,24 @@ export function iptcItems(parsed) {
 // only as the one marker for UTF-8. Unreadable bytes never survive. Returns null when
 // nothing meaningful is left.
 const UTF8_MARK = [0x1b, 0x25, 0x47];
+/** @param {number} rec @param {number} ds @param {Uint8Array} data @returns {Uint8Array} */
 function dataset(rec, ds, data) {
   const n = data.length;
   const head = n < 0x8000 ? [0x1c, rec, ds, n >> 8, n & 255] : [0x1c, rec, ds, 0x80, 4, n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255];
   return concat([new Uint8Array(head), data]);
 }
+/**
+ * @param {ParsedIptc} parsed
+ * @param {Set<string>} [removeKeys] keys of IPTC_ITEMS whose datasets go
+ * @returns {Uint8Array | null}
+ */
 export function rebuildIptc(parsed, removeKeys = new Set()) {
   const b = parsed.b;
   const kept = parsed.sets.filter((s) => { const k = datasetKey(s, b); return k && !removeKeys.has(k); });
   if (!kept.length) return null;
   const recs = new Set(kept.map((s) => s.rec));
   const utf8 = parsed.sets.some((s) => s.id === '1:90' && s.dataEnd - s.dataStart === 3 && UTF8_MARK.every((x, i) => b[s.dataStart + i] === x));
+  /** @type {Uint8Array[]} */
   const out = [];
   if (recs.has(1) || utf8) out.push(dataset(1, 0, new Uint8Array([0, 4])));
   if (utf8) out.push(dataset(1, 90, new Uint8Array(UTF8_MARK)));
@@ -173,7 +211,9 @@ export function rebuildIptc(parsed, removeKeys = new Set()) {
 // ======================================================================================
 // Photoshop image resource block
 
+/** @param {Uint8Array} b @returns {ParsedIrb} */
 export function parseIrb(b) {
+  /** @type {IrbResource[]} */
   const res = [];
   let p = 0;
   while (p + 12 <= b.length && (startsWith(b, p, '8BIM') || startsWith(b, p, 'MeSa') || startsWith(b, p, 'PHUT') || startsWith(b, p, 'AgHg') || startsWith(b, p, 'DCSR'))) {
@@ -202,6 +242,7 @@ export const IRB_EXIF = new Set([0x0422, 0x0423]);
 // free text (a caption, a web address, slice, layer and channel names), so they are red.
 export const IRB_OTHER_NOTE = 'Photoshop settings that can include a caption, a web address or names given to layers and channels. They can hold names or notes.';
 
+/** @param {IrbResource[]} list @returns {string} */
 export function irbOtherValue(list) {
   const total = list.reduce((s, r) => s + (r.dataEnd - r.dataStart), 0);
   return `${list.length} block${list.length === 1 ? '' : 's'}, ${formatBytes(total)}`;
@@ -209,6 +250,7 @@ export function irbOtherValue(list) {
 
 // One resource in the canonical form: its signature, its number, an empty name, its
 // length and its data, padded with a zero to an even length.
+/** @param {string} sig @param {number} id @param {Uint8Array} data @returns {Uint8Array} */
 function resource(sig, id, data) {
   const head = new Uint8Array(12);
   head.set(encodeLatin1(sig));
@@ -223,10 +265,18 @@ function resource(sig, id, data) {
 // IPTC data and, when the block had one, followed by the digest Photoshop keeps of that
 // data, computed again. Any further IPTC or digest resource and anything after the last
 // resource never stay. Returns the new block (empty when nothing is left).
+/**
+ * @param {ParsedIrb} irb
+ * @param {ParsedIptc | null | undefined} iptc the parsed data of iptcRes
+ * @param {IrbResource | null | undefined} iptcRes the IPTC resource that is kept
+ * @param {{ parts?: Set<string>, removeIptc?: Set<string> }} [options]
+ * @returns {Uint8Array}
+ */
 export function canonicalIrb(irb, iptc, iptcRes, { parts = new Set(), removeIptc = new Set() } = {}) {
   const b = irb.b;
   const newIptc = iptc && iptcRes ? rebuildIptc(iptc, removeIptc) : null;
   const hadDigest = irb.res.some((r) => r.id === IRB_IPTC_DIGEST);
+  /** @type {Uint8Array[]} */
   const out = [];
   for (const r of irb.res) {
     if (r.id === IRB_IPTC) {

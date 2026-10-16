@@ -364,6 +364,8 @@ object WebAssets {
         "README*", "LICENSE", "NOTICE", "bump_assets.py", "node_modules/**",
         "**/__pycache__/**", "**/*.pyc", "**/*.bak*", "**/.DS_Store", "package.json",
         "package-lock.json", "Gemfile", "Gemfile.lock",
+        // Type-checking tooling (2026-10-16): read by the TypeScript checker, never by the app.
+        "jsconfig.json", "types/**",
     )
 
     /** The `exclude:` list from Jekyll's _config.yml, as Ant patterns. */

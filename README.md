@@ -146,6 +146,16 @@ python3 bump_assets.py          # stamp pages and module imports
 python3 bump_assets.py --check  # exits 1 if any page or module is stale
 ```
 
+### Type checking
+
+The browser runs the plain JavaScript in this repository, with no build step. The TypeScript compiler only checks it: the types live in JSDoc comments in `app.js` and `src/`, and `tsc` writes nothing (`noEmit`, `strict`). The tooling is for development only and is never published: `package.json` (one dev dependency, TypeScript 6.0.3, pinned in `package-lock.json`), `jsconfig.json` and `types/` are excluded from the website in `_config.yml` and from the APK in `android/app/build.gradle.kts`.
+
+```bash
+npm ci --ignore-scripts && npm run typecheck
+```
+
+`npm run typecheck` first runs `node types/stamped-imports.mjs`, then `tsc -p jsconfig.json`. The checker cannot follow an import such as `./bytes.js?v=4d7df4d3`, so that script declares each stamped import as the real module; run it again (or use `npm run typecheck`) after `bump_assets.py` changes a stamp. `types/globals.d.ts` describes what the Android bridge adds to the page and `types/node.d.ts` the little of Node the engine uses under the tests. `gate.js` is left out, because the shared gate generator writes it.
+
 ## Android app
 
 The Android app (package `no.stormberry.metadatascrubber`) runs **the same files as the website**. There is no second engine: at build time Gradle copies the files GitHub Pages publishes from this repository root into the APK, and the app shows them in a WebView, offline. Each `android-v*` tag runs the release workflow, which publishes `MetadataScrubber-v<version>.apk` on GitHub Releases with a `.sha256` file and a build provenance attestation; the release is then listed on Zapstore with `zsp publish zapstore.yaml`.

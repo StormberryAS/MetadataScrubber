@@ -1,0 +1,21 @@
+// Type checking only (npm run typecheck): tsc reads the plain JavaScript the site and the
+// app serve and writes nothing. Never published: see _config.yml and the APK excludes.
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "strict": true,
+    // app.js and src/ are ES modules, loaded by <script type="module">.
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // No @types packages: the few Node and Android bridge globals are in types/.
+    "types": [],
+    // Lets types/stamped-imports.d.ts point each ?v= stamped import at its real file.
+    "paths": { "ms-src/*": ["./src/*"] }
+  },
+  // gate.js is left out: the estate's shared gate generator writes it.
+  "include": ["app.js", "src/**/*.js", "types/**/*.d.ts"]
+}

@@ -13,15 +13,115 @@
 
 import {
   Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, u16be, u16le, u32be, u32le, u64be, w16be,
-} from './bytes.js?v=4d7df4d3';
-import { describeC2pa } from './c2pa.js?v=fcdff418';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=15403b52';
+} from './bytes.js?v=e01e89d1';
+import { describeC2pa } from './c2pa.js?v=7e2f4ee2';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=50f98571';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb,
-} from './iptc.js?v=a3bcfb3f';
-import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=93d7f069';
-import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=1288a27c';
-import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=d8284a86';
+} from './iptc.js?v=8de9a6f5';
+import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=c7ed327c';
+import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=f4348940';
+import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=e0e75fec';
+
+/** @typedef {import('./bytes.js').Range} Range */
+/** @typedef {import('./taxonomy.js').Tier} Tier */
+/** @typedef {import('./taxonomy.js').Item} Item */
+/** @typedef {import('./tiff.js').TiffModel} TiffModel */
+/** @typedef {import('./iptc.js').ParsedIrb} ParsedIrb */
+/** @typedef {import('./iptc.js').ParsedIptc} ParsedIptc */
+/** @typedef {import('./iptc.js').IrbResource} IrbResource */
+/** @typedef {ReturnType<typeof parseXmp>} ParsedXmp */
+/** @typedef {ReturnType<typeof addXmpItems>} XmpPacketItems */
+/** @typedef {NonNullable<ReturnType<typeof directoryOf>>} XmpDirectory */
+/** @typedef {import('./xmp.js').XmpAdd} XmpAdd */
+/** @typedef {import('./xmp.js').XmpAttrProp | import('./xmp.js').XmpElemProp} XmpFieldProp */
+
+/**
+ * What appKind finds a marker segment to be.
+ * @typedef {'jfif' | 'jfxx' | 'exif' | 'xmp' | 'xmpext' | 'icc' | 'mpf' | 'isogain' | 'c2pa' | 'jumbf' | 'irb' | 'adobe' | 'com' | 'unknown' | 'structural' | 'marker'} JpegAppKind
+ */
+/**
+ * A segment with a length field: kind 'seg', or 'sos' for a scan header.
+ * @typedef {object} JpegMarkerSegment
+ * @property {number} marker
+ * @property {number} start
+ * @property {number} dataStart where the payload starts, after the length field
+ * @property {number} end
+ * @property {'seg' | 'sos'} kind
+ * @property {JpegAppKind} [kindApp] set by analyseJpeg and cleanEmbedded
+ */
+/**
+ * Any other part of the file: start marker, scan data, standalone marker, end marker, stray
+ * bytes (junk) or a part the file stops in the middle of (cut).
+ * @typedef {object} JpegBareSegment
+ * @property {number} marker -1 for junk, entropy data and a cut part with no marker
+ * @property {number} start
+ * @property {number} end
+ * @property {'soi' | 'entropy' | 'standalone' | 'eoi' | 'junk' | 'cut'} kind
+ * @property {undefined} [dataStart]
+ * @property {undefined} [kindApp]
+ */
+/** @typedef {JpegMarkerSegment | JpegBareSegment} JpegSegment */
+/** @typedef {{ marker: number, height: number, width: number, components: number, ids: number[] }} JpegSof */
+/** @typedef {{ segs: JpegSegment[], eoiEnd: number, sof: JpegSof | null, warnings: string[] }} JpegWalk */
+/**
+ * One image of the MPF index; sizePos and offsetPos are absolute positions in the file.
+ * @typedef {{ index: number, attr: number, size: number, offset: number, dep1: number, dep2: number, sizePos: number, offsetPos: number, le: boolean }} MpfEntry
+ */
+/** @typedef {{ base: number, entries: MpfEntry[], le?: boolean }} MpfIndex */
+/** @typedef {{ tag: number, type: number, count: number, size: number, at: number }} MpfFieldBase */
+/** An MPF field whose value lies inside the segment. @typedef {MpfFieldBase & { fits: true, data: Uint8Array }} MpfFitField */
+/** @typedef {MpfFitField | (MpfFieldBase & { fits: false, data: null })} MpfField */
+/**
+ * The MPF segment read strictly; see parseMpfStrict.
+ * @typedef {{ ok: boolean, le: boolean, ids: Uint8Array | null, layout: MpfFitField[], b004: MpfFitField | null, extra: boolean, extraTags: (number | undefined)[] }} MpfStrict
+ */
+/** @typedef {{ ok: false, full?: undefined, length?: undefined } | { ok: true, full: boolean, length: number }} IsoGain */
+/** Which descriptions a gain map has. @typedef {{ hdrgm: boolean, iso: boolean, apple: boolean, appleHeadroom: boolean }} GainSignals */
+/** @typedef {'gainmap' | 'gainmap-after' | 'preview' | 'mpf' | 'jpeg' | 'video' | 'padding' | 'unknown' | 'samsung'} TrailingKind */
+/**
+ * A part after the end of the photo.
+ * @typedef {object} TrailingRegion
+ * @property {TrailingKind} kind
+ * @property {number} start
+ * @property {number} end
+ * @property {number} [contentStart] where the part itself starts, when zero padding before it was joined to it
+ * @property {number} [jpegEnd] end of a gain map's own JPEG
+ * @property {MpfEntry} [entry] the MPF entry that lists it
+ * @property {number} [entryEnd] where the size in its MPF entry ends
+ * @property {GainSignals} [signals]
+ * @property {TrailingRegion} [owner] the gain map that bytes after it belong to
+ * @property {boolean} [hasVideo] a Samsung trailer that holds a video
+ */
+/** @typedef {{ id: string, group: string, tier: Tier, label: string, note?: string }} TrailingDef */
+/** @typedef {{ def: TrailingDef, ranges: Range[], segs: JpegSegment[], couple: string[], regions: TrailingRegion[] }} TrailingItem */
+/** @typedef {{ seg: JpegMarkerSegment, parsed: ParsedXmp, items: XmpPacketItems, extSegs: JpegMarkerSegment[] }} XmpPacket */
+/** @typedef {{ seg: JpegMarkerSegment, thumbEnd: number }} JfifHeader */
+/** @typedef {{ seg: JpegMarkerSegment }} AdobeHeader */
+/** @typedef {{ segs: JpegMarkerSegment[], irb: ParsedIrb, items: string[], iptc?: ParsedIptc, iptcRes?: IrbResource }} JpegIrb */
+/**
+ * What analyseJpeg finds, and what scrubJpeg needs to rebuild the file.
+ * @typedef {object} JpegModel
+ * @property {JpegWalk} w
+ * @property {JpegSegment[]} segs
+ * @property {MpfIndex | null} mpf
+ * @property {MpfStrict} [mpfStrict] set whenever the file has an MPF segment
+ * @property {TrailingRegion[]} regions
+ * @property {XmpPacket[]} xmpPackets
+ * @property {XmpPacket} [xmpPacket] the main packet
+ * @property {JfifHeader[]} jfif
+ * @property {AdobeHeader[]} adobe
+ * @property {JpegMarkerSegment[]} [exifPad] EXIF blocks whose second identifier zero is not zero
+ * @property {{ seg: JpegMarkerSegment, m: TiffModel }} [exifFirst]
+ * @property {Uint8Array} [iccProfile]
+ * @property {JpegIrb} [irb]
+ * @property {string} [c2paId]
+ * @property {{ iso: boolean, version: boolean, dirGainMap: boolean }} signals
+ * @property {number} width
+ * @property {number} height
+ * @property {number} orientation
+ */
+/** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */
 
 const XMP_ID = 'http://ns.adobe.com/xap/1.0/\0';
 const XMP_EXT_ID = 'http://ns.adobe.com/xmp/extension/\0';
@@ -29,21 +129,31 @@ const ISO_GAIN_ID = 'urn:iso:std:iso:ts:21496:-1\0';
 const PS_ID = 'Photoshop 3.0\0';
 const MAX_DETAILED = 4;
 
+/** @param {number} m */
 const isSof = (m) => m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc;
 // Marker segments a decoder needs: frame and scan headers, tables, restart interval,
 // hierarchical and JPEG-LS headers. DNL is added when the frame height is zero.
+/** @param {number} m */
 const NEEDED = (m) => isSof(m) || m === 0xc4 || m === 0xcc || m === 0xdb || m === 0xdd || m === 0xde || m === 0xdf || m === 0xf7 || m === 0xf8;
 
 // Splits a JPEG into segments. Returns { segs, eoiEnd, sof, warnings }; eoiEnd is -1 when
 // the file stops before EOI. Kinds: soi, seg, sos, entropy, standalone, eoi, junk (stray
 // bytes between parts) and cut (a part the file stops in the middle of).
+/**
+ * @param {Uint8Array} b
+ * @param {number} [limit]
+ * @returns {JpegWalk | null}
+ */
 export function walkJpeg(b, limit = b.length) {
+  /** @type {JpegSegment[]} */
   const segs = [];
+  /** @type {string[]} */
   const warnings = [];
   if (b.length < 3 || b[0] !== 0xff || b[1] !== 0xd8) return null;
   segs.push({ marker: 0xd8, start: 0, end: 2, kind: 'soi' });
   let p = 2;
   let eoiEnd = -1;
+  /** @type {JpegSof | null} */
   let sof = null;
   while (p < limit) {
     if (b[p] !== 0xff) {
@@ -77,11 +187,13 @@ export function walkJpeg(b, limit = b.length) {
       p = limit;
       break;
     }
+    /** @type {JpegMarkerSegment} */
     const seg = { marker: m, start: p, dataStart: q + 3, end: q + 1 + len, kind: 'seg' };
     segs.push(seg);
     if (isSof(m) && len >= 8) {
       const d = seg.dataStart;
       const n = b[d + 5];
+      /** @type {number[]} */
       const ids = [];
       for (let i = 0; i < n && d + 6 + i * 3 < seg.end; i++) ids.push(b[d + 6 + i * 3]);
       sof = { marker: m, height: u16be(b, d + 1), width: u16be(b, d + 3), components: n, ids };
@@ -109,6 +221,7 @@ export function walkJpeg(b, limit = b.length) {
 // Whether a decoder segment really has the shape its marker promises. Any other bytes
 // behind such a marker (a damaged length, or a marker byte changed) cannot be decoded and
 // may hide anything, so the segment is then offered like unknown data.
+/** @param {Uint8Array} b @param {JpegMarkerSegment} s @returns {boolean} */
 function wellFormed(b, s) {
   const m = s.marker;
   const d = s.dataStart;
@@ -141,17 +254,29 @@ function wellFormed(b, s) {
 // new payload (null when nothing is left) } or null when there is nothing to remove or the
 // coding is one this check does not follow (arithmetic, lossless, hierarchical). Tables in
 // use cannot be changed without re-encoding the picture.
+/** @typedef {{ seg: JpegMarkerSegment, start: number, end: number, used: boolean }} TableDef */
+/**
+ * @param {Uint8Array} b
+ * @param {JpegWalk} w
+ * @returns {{ tables: number, bytes: number, rebuild: Map<JpegMarkerSegment, Uint8Array | null> } | null}
+ */
 export function unusedTables(b, w) {
-  const frames = w.segs.filter((s) => s.kind === 'seg' && isSof(s.marker));
+  const frames = /** @type {JpegMarkerSegment[]} */ (w.segs.filter((s) => s.kind === 'seg' && isSof(s.marker)));
   if (frames.length !== 1 || ![0xc0, 0xc1, 0xc2].includes(frames[0].marker)) return null;
   const progressive = frames[0].marker === 0xc2;
   const f = frames[0].dataStart;
+  /** @type {Map<number, number>} */
   const quantOf = new Map();
   for (let i = 0; i < b[f + 5]; i++) quantOf.set(b[f + 6 + i * 3], b[f + 8 + i * 3] & 15);
+  /** @type {Map<string, TableDef>} */
   const defs = new Map();
+  /** @type {TableDef[]} */
   const unused = [];
+  /** @type {(key: string, def: TableDef) => void} */
   const define = (key, def) => { const old = defs.get(key); if (old && !old.used) unused.push(old); defs.set(key, def); };
+  /** @type {(key: string) => void} */
   const use = (key) => { const d = defs.get(key); if (d) d.used = true; };
+  /** @type {Set<number>} */
   const latched = new Set();
   for (const s of w.segs) {
     if (s.kind !== 'seg' && s.kind !== 'sos') continue;
@@ -186,9 +311,11 @@ export function unusedTables(b, w) {
   }
   for (const d of defs.values()) if (!d.used) unused.push(d);
   if (!unused.length) return null;
+  /** @type {Map<JpegMarkerSegment, Uint8Array | null>} */
   const rebuild = new Map();
   for (const seg of new Set(unused.map((d) => d.seg))) {
     const gone = unused.filter((d) => d.seg === seg);
+    /** @type {Uint8Array[]} */
     const parts = [];
     let p = seg.dataStart;
     for (const d of gone.sort((x, y) => x.start - y.start)) { parts.push(b.subarray(p, d.start)); p = d.end; }
@@ -199,8 +326,15 @@ export function unusedTables(b, w) {
   return { tables: unused.length, bytes: unused.reduce((n, d) => n + d.end - d.start, 0), rebuild };
 }
 
+/**
+ * @param {Uint8Array} b
+ * @param {JpegMarkerSegment} s
+ * @param {JpegSof | null} sof
+ * @returns {JpegAppKind}
+ */
 function appKind(b, s, sof) {
   const m = s.marker;
+  /** @param {string} str */
   const at = (str) => startsWith(b, s.dataStart, str);
   if (m === 0xe0) {
     if (at('JFIF\0')) return s.end - s.dataStart >= 14 ? 'jfif' : 'unknown';
@@ -227,6 +361,7 @@ function appKind(b, s, sof) {
   return 'marker';
 }
 
+/** @param {Uint8Array} b @param {JpegMarkerSegment} s @returns {string} */
 function appIdentifier(b, s) {
   const end = Math.min(s.end, s.dataStart + 40);
   let p = s.dataStart;
@@ -235,6 +370,7 @@ function appIdentifier(b, s) {
   return id.length >= 2 ? id : '';
 }
 
+/** @param {number} marker @param {Uint8Array} payload @returns {Uint8Array | null} */
 function makeSegment(marker, payload) {
   if (payload.length > 65533) return null;
   const out = new Uint8Array(4 + payload.length);
@@ -244,15 +380,18 @@ function makeSegment(marker, payload) {
   return out;
 }
 
+/** @type {(b: Uint8Array, s: number, e: number) => boolean} */
 const nonZero = (b, s, e) => { for (let i = s; i < e; i++) if (b[i]) return true; return false; };
 
 // MPF index: entries with absolute positions in the file.
+/** @param {Uint8Array} b @param {JpegMarkerSegment} seg @returns {MpfIndex | null} */
 function parseMpf(b, seg) {
   const base = seg.dataStart + 4;
   const m = parseTiff(b.subarray(base, seg.end));
   if (!m || !m.ifds.ifd0) return null;
   const e = m.ifds.ifd0.entries.find((x) => x.tag === 0xb002 && x.valid);
   if (!e) return { base, entries: [] };
+  /** @type {MpfEntry[]} */
   const entries = [];
   for (let i = 0; i * 16 + 16 <= e.size; i++) {
     const p = e.valueOffset + i * 16;
@@ -282,31 +421,40 @@ const MPF_ATTR_TYPES = new Map([
   [0xb000, [7]], [0xb101, [4]], [0xb201, [4]], [0xb202, [5]], [0xb203, [5]], [0xb204, [4]], [0xb205, [10]], [0xb206, [5]],
   [0xb207, [10]], [0xb208, [10]], [0xb209, [10]], [0xb20a, [10]], [0xb20b, [10]], [0xb20c, [10]], [0xb20d, [10]],
 ]);
+/** @type {Record<number, number>} */
 const TIFF_UNIT = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8 };
 
+/** @param {Uint8Array} b @param {JpegMarkerSegment} seg @returns {MpfStrict} */
 function parseMpfStrict(b, seg) {
   const start = seg.dataStart + 4;
   const t = b.subarray(start, seg.end);
   const n = t.length;
+  /** @type {MpfStrict} */
   const res = { ok: false, le: false, ids: null, layout: [], b004: null, extra: false, extraTags: [] };
   if (n < 8) return res;
   const le = t[0] === 0x49 && t[1] === 0x49;
   if (!le && !(t[0] === 0x4d && t[1] === 0x4d)) return res;
+  /** @type {(p: number) => number} */
   const r16 = le ? (p) => u16le(t, p) : (p) => u16be(t, p);
+  /** @type {(p: number) => number} */
   const r32 = le ? (p) => u32le(t, p) : (p) => u32be(t, p);
   if (r16(2) !== 42) return res;
   res.le = le;
   const covered = new Uint8Array(n);
+  /** @type {(a: number, e: number) => void} */
   const cover = (a, e) => { for (let i = Math.max(0, a); i < Math.min(n, e); i++) covered[i] = 1; };
   cover(0, 8);
+  /** @type {(tag?: number) => void} */
   const flag = (tag) => { res.extra = true; if (tag !== undefined && res.extraTags.length < 4 && !res.extraTags.includes(tag)) res.extraTags.push(tag); };
   // Reads one IFD: its entries with their value bytes, or null when it does not fit.
+  /** @type {(off: number) => { entries: MpfField[], next: number } | null} */
   const readIfd = (off) => {
     if (off < 8 || off + 2 > n) return null;
     const count = r16(off);
     const end = off + 2 + count * 12 + 4;
     if (end > n) return null;
     cover(off, end);
+    /** @type {MpfField[]} */
     const entries = [];
     for (let i = 0; i < count; i++) {
       const p = off + 2 + i * 12;
@@ -318,13 +466,15 @@ function parseMpfStrict(b, seg) {
       const at = inline ? p + 8 : r32(p + 8);
       const fits = TIFF_UNIT[type] > 0 && size < 0x7fffffff && (inline || (at >= 8 && at + size <= n));
       if (fits && !inline) cover(at, at + size);
-      entries.push({ tag, type, count: cnt, size, at, fits, data: fits ? t.slice(at, at + size) : null });
+      entries.push(/** @type {MpfField} */ ({ tag, type, count: cnt, size, at, fits, data: fits ? t.slice(at, at + size) : null }));
     }
     return { entries, next: r32(off + 2 + count * 12) };
   };
   const index = readIfd(r32(4));
   if (!index) return res;
+  /** @type {number | null} */
   let numImages = null;
+  /** @type {{ at: number, count: number } | null} */
   let table = null;
   const seenTags = new Set();
   for (const e of index.entries) {
@@ -374,9 +524,18 @@ function parseMpfStrict(b, seg) {
 // file is put together. Returns { payload, tablePos } with tablePos from the MP header.
 // Only Index IFD entries of four bytes or less are inline, so B002 (16 bytes per image) is
 // always the first value after the IFD.
+/** @typedef {{ tag: number, type: number, count: number, data: Uint8Array }} MpfOutField */
+/**
+ * @param {MpfStrict} strict
+ * @param {MpfEntry[]} entries
+ * @param {{ ids: boolean, layout: boolean }} keep
+ * @returns {{ payload: Uint8Array, tablePos: number }}
+ */
 function buildMpf(strict, entries, { ids, layout }) {
   const le = strict.le;
+  /** @param {number} v */
   const w16 = (v) => { const x = new Uint8Array(2); if (le) { x[0] = v & 255; x[1] = v >>> 8; } else { x[0] = v >>> 8; x[1] = v & 255; } return x; };
+  /** @param {number} v */
   const w32 = (v) => { const x = new Uint8Array(4); for (let i = 0; i < 4; i++) x[le ? i : 3 - i] = (v >>> (8 * i)) & 255; return x; };
   const N = entries.length;
   const table = concat(entries.map((e) => {
@@ -386,6 +545,7 @@ function buildMpf(strict, entries, { ids, layout }) {
   const attrEntries = layout ? strict.layout.filter((e) => e.tag !== 0xb004 || e === strict.b004) : [];
   const b004 = attrEntries.find((e) => e === strict.b004);
   const attrIfdEntries = attrEntries.filter((e) => e !== strict.b004);
+  /** @type {MpfOutField[]} */
   const indexTags = [
     { tag: 0xb000, type: 7, count: 4, data: encodeLatin1('0100') },
     { tag: 0xb001, type: 4, count: 1, data: w32(N) },
@@ -394,8 +554,10 @@ function buildMpf(strict, entries, { ids, layout }) {
   if (ids && strict.ids) indexTags.push({ tag: 0xb003, type: 7, count: strict.ids.length, data: strict.ids });
   if (b004) indexTags.push({ tag: 0xb004, type: 4, count: 1, data: b004.data });
   // Lays out one IFD at `off`, with out-of-line values right after it.
+  /** @type {(list: MpfOutField[], off: number, next: number) => Uint8Array} */
   const ifd = (list, off, next) => {
     const head = [w16(list.length)];
+    /** @type {Uint8Array[]} */
     const values = [];
     let valAt = off + 2 + list.length * 12 + 4;
     for (const e of list) {
@@ -427,6 +589,7 @@ function buildMpf(strict, entries, { ids, layout }) {
 const ISO_MULTI = 0x80;
 const ISO_COMMON = 0x08;
 const ISO_RESERVED = 0x33;
+/** @param {Uint8Array} b @param {number} start @param {number} end @returns {IsoGain} */
 export function parseIsoGain(b, start, end) {
   const n = end - start;
   if (n < 4 || u16be(b, start) !== 0) return { ok: false };
@@ -440,6 +603,7 @@ export function parseIsoGain(b, start, end) {
 }
 
 // Hints the primary XMP gives about trailing media.
+/** @param {string} text */
 function xmpHints(text) {
   const hints = { videoLength: 0, motion: false };
   if (!text) return hints;
@@ -456,6 +620,7 @@ function xmpHints(text) {
   return hints;
 }
 
+/** @param {Uint8Array} b @param {number} from */
 function samsungTrailer(b, from) {
   const n = b.length;
   if (n - from < 16 || !startsWith(b, n - 4, 'SEFT')) return null;
@@ -473,10 +638,12 @@ function samsungTrailer(b, from) {
   return { start, hasVideo: indexOfAscii(b, 'MotionPhoto_Data', start, sefh) >= 0 };
 }
 
+/** @param {Uint8Array} b @param {number} p @param {number} limit */
 function isMp4At(b, p, limit) {
   return p + 12 <= limit && startsWith(b, p + 4, 'ftyp') && u32be(b, p) >= 8;
 }
 
+/** @param {Uint8Array} b @param {number} p @param {number} limit */
 function mp4End(b, p, limit) {
   let q = p;
   while (q + 8 <= limit) {
@@ -498,12 +665,18 @@ function mp4End(b, p, limit) {
 // or three colour channels. Anything else is an extra picture, which is red. Returns
 // { eoiEnd, signals } or null; signals says which descriptions the gain map has (hdrgm,
 // iso, apple), so the scrub can check the photo still points to it.
+/**
+ * @param {Uint8Array} sub
+ * @param {JpegSof | null} photoSof
+ * @returns {{ eoiEnd: number, signals: GainSignals } | null}
+ */
 function gainMapEvidence(sub, photoSof) {
   const w = walkJpeg(sub);
   if (!w || w.eoiEnd < 0 || !w.sof) return null;
   if (w.sof.components !== 1 && w.sof.components !== 3) return null;
   if (photoSof && (w.sof.width > photoSof.width || w.sof.height > photoSof.height)) return null;
-  const segs = w.segs.filter((s) => s.kind === 'seg');
+  const segs = /** @type {JpegMarkerSegment[]} */ (w.segs.filter((s) => s.kind === 'seg'));
+  /** @type {GainSignals} */
   const signals = { hdrgm: false, iso: false, apple: false, appleHeadroom: false };
   const xmp = segs.find((s) => s.marker === 0xe1 && startsWith(sub, s.dataStart, XMP_ID));
   if (xmp) {
@@ -528,11 +701,21 @@ function gainMapEvidence(sub, photoSof) {
   return signals.hdrgm || signals.iso || signals.apple ? { eoiEnd: w.eoiEnd, signals } : null;
 }
 
+/**
+ * @param {Uint8Array} b
+ * @param {number} start
+ * @param {MpfIndex | null} mpf
+ * @param {{ videoLength: number, motion: boolean }} hints
+ * @param {JpegSof | null} photoSof
+ * @returns {TrailingRegion[]}
+ */
 function classifyTrailing(b, start, mpf, hints, photoSof) {
+  /** @type {TrailingRegion[]} */
   const regions = [];
   if (start >= b.length) return regions;
   const sam = samsungTrailer(b, start);
   const tail = sam ? sam.start : b.length;
+  /** @type {{ start: number, end: number, entry: MpfEntry }[]} */
   const mpfRegions = [];
   if (mpf) {
     for (const e of mpf.entries) {
@@ -553,6 +736,7 @@ function classifyTrailing(b, start, mpf, hints, photoSof) {
         // the gain map, anything else is a part of its own.
         const jpegEnd = mr.start + ev.eoiEnd;
         const after = jpegEnd < mr.end && nonZero(b, jpegEnd, mr.end);
+        /** @type {TrailingRegion} */
         const gm = { kind: 'gainmap', start: mr.start, end: after ? jpegEnd : mr.end, jpegEnd, entry: mr.entry, entryEnd: after ? jpegEnd : mr.end, signals: ev.signals };
         regions.push(gm);
         if (after) regions.push({ kind: 'gainmap-after', start: jpegEnd, end: mr.end, entry: mr.entry, owner: gm });
@@ -603,6 +787,7 @@ function classifyTrailing(b, start, mpf, hints, photoSof) {
   return regions;
 }
 
+/** @type {Record<TrailingKind, TrailingDef>} */
 const TRAILING = {
   video: { id: 'jpeg:trailing:motion-video', group: 'hidden', tier: 'red', label: 'Hidden video clip (Motion Photo)', note: 'A short video recorded around the moment the photo was taken.' },
   samsung: { id: 'jpeg:trailing:samsung', group: 'hidden', tier: 'red', label: 'Samsung extra data', note: 'Data the phone adds after the picture, sometimes including a video clip.' },
@@ -623,12 +808,22 @@ const GAIN_MAP_OWN = new Set(['xmp:gainmap', 'icc:profile', 'icc:text', 'icc:unr
 // ======================================================================================
 // Analysis
 
+/**
+ * @param {Uint8Array} b
+ * @param {ItemSet} set
+ * @param {{ embedded?: boolean }} [opts] embedded: the JPEG is a gain map inside another one
+ * @returns {JpegModel}
+ */
 export function analyseJpeg(b, set, opts = {}) {
   const w = walkJpeg(b);
   if (!w) throw new Error('This file type is not supported. Use a JPEG, PNG, WebP or HEIC picture.');
   for (const x of w.warnings) set.warn(x);
-  const model = { w, segs: w.segs, mpf: null, xmpPackets: [], jfif: [], adobe: [] };
-  const byKind = (k) => w.segs.filter((s) => s.kind === 'seg' && s.kindApp === k);
+  // regions, signals, width, height and orientation are filled in below, before the return.
+  const model = /** @type {JpegModel} */ ({
+    w, segs: w.segs, mpf: /** @type {MpfIndex | null} */ (null), xmpPackets: /** @type {XmpPacket[]} */ ([]), jfif: /** @type {JfifHeader[]} */ ([]), adobe: /** @type {AdobeHeader[]} */ ([]),
+  });
+  /** @type {(k: JpegAppKind) => JpegMarkerSegment[]} */
+  const byKind = (k) => /** @type {JpegMarkerSegment[]} */ (w.segs.filter((s) => s.kind === 'seg' && s.kindApp === k));
   for (const s of w.segs) if (s.kind === 'seg' || s.kind === 'sos') s.kindApp = s.kind === 'sos' ? (wellFormed(b, s) ? 'structural' : 'marker') : appKind(b, s, w.sof);
   // JUMBF continuation packets follow the C2PA packet that opened them.
   let lastC2pa = false;
@@ -661,6 +856,7 @@ export function analyseJpeg(b, set, opts = {}) {
   const cut = w.segs.filter((s) => s.kind === 'cut');
   if (cut.length) set.add({ id: 'jpeg:damaged', ...UNREADABLE.damaged, value: formatBytes(cut.reduce((n, s) => n + s.end - s.start, 0)), source: 'JPEG' }, { kind: 'segs', segs: cut });
   // A malformed scan header takes the scan data after it along.
+  /** @type {JpegSegment[]} */
   const markers = [];
   w.segs.forEach((s, i) => {
     if ((s.kind !== 'seg' && s.kind !== 'sos') || s.kindApp !== 'marker') return;
@@ -695,6 +891,7 @@ export function analyseJpeg(b, set, opts = {}) {
     if (model.orientation === undefined) model.orientation = tiffOrientation(m);
     if (!model.exifFirst) model.exifFirst = { seg: s, m };
     for (const it of tiffItems(m)) {
+      /** @type {import('./taxonomy.js').ItemSpec} */
       const pub = { id: `exif:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'EXIF' };
       if (it.note) pub.note = it.note;
       set.add(pub, { kind: 'exif', seg: s, key: it.key });
@@ -706,25 +903,27 @@ export function analyseJpeg(b, set, opts = {}) {
   }
 
   // Trailing media items (needed before XMP so descriptors can follow their tier).
+  /** @type {Map<string, TrailingItem>} */
   const trailingItems = new Map();
   // An Apple gain map that nothing else describes needs the HDR brightness from the photo's
   // Apple maker notes, or a headroom of its own; without either no screen can show it in
   // HDR, so it is red, like any extra picture.
   const appleBrightness = !!(model.exifFirst && appleHdrAny(model.exifFirst.m));
+  /** @param {TrailingRegion} r */
   const unusable = (r) => r.kind === 'gainmap' && r.signals && r.signals.apple && !r.signals.hdrgm && !r.signals.iso && !r.signals.appleHeadroom && !appleBrightness;
   for (const r of regions) {
     const def = TRAILING[r.kind];
     if (!trailingItems.has(def.id)) trailingItems.set(def.id, { def: { ...def }, ranges: [], segs: [], couple: [], regions: [] });
-    const t = trailingItems.get(def.id);
+    const t = /** @type {TrailingItem} */ (trailingItems.get(def.id));
     if (unusable(r)) Object.assign(t.def, { tier: 'red', note: GAIN_MAP_UNUSABLE });
     t.ranges.push([r.start, r.end]);
     t.regions.push(r);
     if (r.kind === 'samsung' && r.hasVideo) t.def.label = 'Hidden video clip and Samsung extra data';
   }
-  const mpfOwner = ['gainmap', 'mpf', 'preview'].map((k) => TRAILING[k].id).find((id) => trailingItems.has(id));
+  const mpfOwner = /** @type {TrailingKind[]} */ (['gainmap', 'mpf', 'preview']).map((k) => TRAILING[k].id).find((id) => trailingItems.has(id));
   const isoSegs = byKind('isogain');
   if (!opts.embedded && (mpfSegs.length || isoSegs.length)) {
-    if (mpfOwner) trailingItems.get(mpfOwner).segs.push(...mpfSegs, ...isoSegs);
+    if (mpfOwner) /** @type {TrailingItem} */ (trailingItems.get(mpfOwner)).segs.push(...mpfSegs, ...isoSegs);
     else {
       trailingItems.set('jpeg:mpf', {
         def: { id: 'jpeg:mpf', group: 'hidden', tier: 'amber', label: 'Extra embedded image, for example an HDR gain map', note: 'Only the index is present; the extra image itself was not found.' },
@@ -737,7 +936,7 @@ export function analyseJpeg(b, set, opts = {}) {
   if (opts.embedded && mpfSegs.length) {
     set.add({ id: 'jpeg:mpf:embedded', group: 'hidden', tier: 'red', label: 'Multi-picture index inside the gain map', value: formatBytes(mpfSegs.reduce((n, x) => n + x.end - x.start, 0)), source: 'JPEG', note: 'A gain map does not need an index of its own. It may hold anything.' }, { kind: 'segs', segs: mpfSegs });
   } else if (mpfSeg) {
-    const st = model.mpfStrict;
+    const st = /** @type {MpfStrict} */ (model.mpfStrict); // set above with mpfSeg
     if (st.ok && st.ids) {
       set.add({ id: 'jpeg:mpf:ids', group: 'hidden', tier: 'red', label: 'Unique image IDs in the multi-picture index', value: formatBytes(st.ids.length), source: 'JPEG', note: 'Can link copies of the picture back to the original file.' }, { kind: 'mpfpart', part: 'ids' });
     }
@@ -756,10 +955,12 @@ export function analyseJpeg(b, set, opts = {}) {
   if (isoSegs.length) {
     // The first segment may keep its parsed bytes; surplus bytes, an unreadable segment and
     // any further segment are offered as one red detail.
+    /** @type {{ seg: JpegMarkerSegment, keepEnd: number }[]} */
     const plan = [];
     let extraBytes = 0;
     isoSegs.forEach((x, i) => {
       const at = x.dataStart + ISO_GAIN_ID.length;
+      /** @type {IsoGain} */
       const pr = i === 0 ? parseIsoGain(b, at, x.end) : { ok: false };
       let keepEnd = pr.ok ? at + pr.length : -1;
       // In the photo the segment only needs its version (the form Ultra HDR 1.1 writes
@@ -781,7 +982,7 @@ export function analyseJpeg(b, set, opts = {}) {
     dirGainMap: false,
   };
   const motionTier = trailingItems.has(TRAILING.video.id) ? 'red' : null;
-  const gainTier = mpfOwner ? trailingItems.get(mpfOwner).def.tier : null;
+  const gainTier = mpfOwner ? /** @type {TrailingItem} */ (trailingItems.get(mpfOwner)).def.tier : null;
 
   // XMP and Extended XMP
   const extSegs = byKind('xmpext');
@@ -790,11 +991,14 @@ export function analyseJpeg(b, set, opts = {}) {
     // Directory entries that stand for no part after the image are offered on their own.
     const dir = !opts.embedded ? directoryOf(parsed) : null;
     if (dir) offerDirectoryEntries(parsed, mapDirectory(dir, regions).map((r, n) => (r ? -1 : n)).filter((n) => n > 0));
-    model.xmpPacket = { seg: xmpSeg, parsed, items: [] };
+    // extSegs is set below, once the items are known.
+    model.xmpPacket = /** @type {XmpPacket} */ ({ seg: xmpSeg, parsed, items: /** @type {XmpPacketItems} */ ([]) });
+    /** @type {{ label: string, tier: Tier, value: string, note: string } | null} */
     let extended = null;
     if (extSegs.length) {
       const total = extSegs.reduce((n, s) => n + s.end - s.dataStart - XMP_EXT_ID.length - 40, 0);
       const extText = latin1(b, extSegs[0].dataStart + XMP_EXT_ID.length + 40, extSegs[0].end);
+      /** @type {string[]} */
       const kinds = [];
       if (/GImage:Data|GImage:Mime/.test(extText)) kinds.push('a second picture');
       if (/GDepth:Data|GDepth:Format/.test(extText)) kinds.push('a depth map');
@@ -813,13 +1017,14 @@ export function analyseJpeg(b, set, opts = {}) {
     if (extSegs.length && !extendedCanonical(b, parsed, extSegs)) set.normalise = true;
     model.xmpPackets.push(model.xmpPacket);
     for (const it of model.xmpPacket.items) {
-      if (it.key === 'motion' && trailingItems.has(TRAILING.video.id)) trailingItems.get(TRAILING.video.id).couple.push(it.id);
-      if (it.key === 'gainmap' && mpfOwner) trailingItems.get(mpfOwner).couple.push(it.id);
+      if (it.key === 'motion' && trailingItems.has(TRAILING.video.id)) /** @type {TrailingItem} */ (trailingItems.get(TRAILING.video.id)).couple.push(it.id);
+      if (it.key === 'gainmap' && mpfOwner) /** @type {TrailingItem} */ (trailingItems.get(mpfOwner)).couple.push(it.id);
     }
     // A file should hold one standard packet; further packets are listed on their own so
     // nothing in them stays hidden, and beyond a few they are offered as one item.
     for (const seg of xmpSegs.slice(1, MAX_DETAILED)) {
       const p = parseXmp(new TextDecoder('utf-8').decode(b.subarray(seg.dataStart + XMP_ID.length, seg.end)));
+      /** @type {XmpPacket} */
       const packet = { seg, parsed: p, items: [], extSegs: [] };
       packet.items = addXmpItems(set, p, { secondary: true, carrier: opts.embedded ? 'gainmap' : 'photo', compact: !!opts.embedded }, { kind: 'xmp' }, seg.end - seg.dataStart - XMP_ID.length);
       model.xmpPackets.push(packet);
@@ -911,14 +1116,16 @@ export function analyseJpeg(b, set, opts = {}) {
   }
 
   // Unidentified APPn segments, one item per identifier (up to a limit).
+  /** @type {Map<string, { ident: string, segs: JpegMarkerSegment[], marker: number }>} */
   const unknown = new Map();
+  /** @type {Set<string>} */
   const seenIds = new Set();
   for (const s of byKind('unknown')) {
     const ident = appIdentifier(b, s);
     const slug = ident.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'data';
     const key = cappedId(seenIds, `jpeg:app${s.marker - 0xe0}:${slug}`, 'jpeg:app:other');
     if (!unknown.has(key)) unknown.set(key, { ident: key === 'jpeg:app:other' ? 'Several kinds' : ident, segs: [], marker: s.marker });
-    unknown.get(key).segs.push(s);
+    /** @type {{ segs: JpegMarkerSegment[] }} */ (unknown.get(key)).segs.push(s);
   }
   for (const [key, u] of unknown) {
     const size = formatBytes(u.segs.reduce((n, s) => n + s.end - s.start, 0));
@@ -928,6 +1135,7 @@ export function analyseJpeg(b, set, opts = {}) {
   for (const [id, t] of trailingItems) {
     const total = t.ranges.reduce((n, [s, e]) => n + e - s, 0);
     const def = t.def;
+    /** @type {import('./taxonomy.js').ItemSpec} */
     const pub = { id, group: def.group, tier: def.tier, label: def.label, value: total ? formatBytes(total) : 'Index only', source: id === 'jpeg:mpf' ? 'JPEG' : 'After the image' };
     if (def.note) pub.note = def.note;
     set.add(pub, { kind: 'trailing', ranges: t.ranges, segs: t.segs, couple: t.couple });
@@ -970,7 +1178,8 @@ export function analyseJpeg(b, set, opts = {}) {
       set.add({ id: 'exif:apple-hdr', group: 'hidden', tier: 'amber', label: 'Apple HDR brightness', value: appleHdrValue(v), source: 'EXIF', note: 'Two numbers from the Apple maker notes that tell HDR screens how much brighter the gain map may make the photo. They stay with the gain map in a maker note of their own when the rest of the maker notes go. Removing them removes the HDR gain map too.' }, { kind: 'applehdr', seg: model.exifFirst.seg, values: v });
     }
   }
-  if (gainOwner && set.has('exif:apple-hdr')) set.get(GAIN_MAP_ITEM).couple.push('exif:apple-hdr');
+  // gainOwner means the gain map item was added in the trailing loop above.
+  if (gainOwner && set.has('exif:apple-hdr')) /** @type {ItemInternal} */ (set.get(GAIN_MAP_ITEM)).couple.push('exif:apple-hdr');
 
   model.width = sof ? sof.width : 0;
   model.height = sof ? sof.height : 0;
@@ -981,8 +1190,10 @@ export function analyseJpeg(b, set, opts = {}) {
 // What an embedded JPEG (a gain map) holds beyond what it needs to work as a gain map:
 // { meta: { tier, value } | null, icc: { value, bytes } | null }, or null when it cannot be
 // read.
+/** @param {Uint8Array} sub */
 function embeddedMetadata(sub) {
   const inner = new ItemSet();
+  /** @type {JpegModel} */
   let m;
   try { m = analyseJpeg(sub, inner, { embedded: true }); } catch { return null; }
   const items = inner.items.filter((i) => !GAIN_MAP_OWN.has(i.id));
@@ -1007,11 +1218,16 @@ function embeddedMetadata(sub) {
 // stays is written in the canonical form (see rewriteXmp in xmp.js), without the packet
 // wrapper; a packet that cannot be, and Extended XMP, go. Returns { bytes, lost } (lost:
 // XMP the user kept had to go), or null when the gain map cannot be read.
+/**
+ * @param {Uint8Array} sub
+ * @param {{ meta?: boolean, icc?: boolean, icctext?: boolean }} [what]
+ * @returns {{ bytes: Uint8Array, lost: boolean } | null}
+ */
 function cleanEmbedded(sub, { meta = true, icc = false, icctext = false } = {}) {
   let w = walkJpeg(sub);
   if (!w || w.eoiEnd < 0) return null;
   if (icctext && !icc) {
-    const segs = w.segs.filter((s) => s.kind === 'seg' && appKind(sub, s, w.sof) === 'icc');
+    const segs = /** @type {JpegMarkerSegment[]} */ (w.segs.filter((s) => s.kind === 'seg' && appKind(sub, s, /** @type {JpegWalk} */ (w).sof) === 'icc'));
     const chunks = segs.map((s) => ({ seq: sub[s.dataStart + 12], at: Math.min(s.end, s.dataStart + 14), end: s.end })).sort((a, c) => a.seq - c.seq);
     const cleaned = chunks.length ? cleanIcc(concat(chunks.map((c) => sub.subarray(c.at, c.end)))) : null;
     if (!cleaned) icc = true;
@@ -1023,11 +1239,14 @@ function cleanEmbedded(sub, { meta = true, icc = false, icctext = false } = {}) 
       if (!w || w.eoiEnd < 0) return null;
     }
   }
+  /** @type {Uint8Array[]} */
   const parts = [];
   let lost = false;
   let isoSeen = false;
   let xmpSeen = false;
+  /** @param {JpegMarkerSegment} s */
   const xmpOf = (s) => parseXmp(new TextDecoder('utf-8').decode(sub.subarray(s.dataStart + XMP_ID.length, s.end)));
+  /** @param {string | null} text */
   const xmpSeg = (text) => (text ? makeSegment(0xe1, concat([encodeLatin1(XMP_ID), encodeUtf8(text)])) : null);
   if (meta) for (const s of w.segs) if (s.kind === 'seg' || s.kind === 'sos') s.kindApp = s.kind === 'sos' ? (wellFormed(sub, s) ? 'structural' : 'marker') : appKind(sub, s, w.sof);
   const tables = meta ? unusedTables(sub, w) : null;
@@ -1036,7 +1255,7 @@ function cleanEmbedded(sub, { meta = true, icc = false, icctext = false } = {}) 
       const k = s.kind === 'seg' ? appKind(sub, s, w.sof) : null;
       if (icc && k === 'icc') continue;
       if (k === 'xmp') {
-        const seg = xmpSeg(canonicalXmp(xmpOf(s), true));
+        const seg = xmpSeg(canonicalXmp(xmpOf(/** @type {JpegMarkerSegment} */ (s)), true)); // k is only 'xmp' for a seg
         if (seg) parts.push(seg); else lost = true;
         continue;
       }
@@ -1049,7 +1268,8 @@ function cleanEmbedded(sub, { meta = true, icc = false, icctext = false } = {}) 
     const k = appKind(sub, s, w.sof);
     if (k === 'structural') {
       // Unused decoder tables go; the tables in use stay byte for byte.
-      if (tables && tables.rebuild.has(s)) { const p = tables.rebuild.get(s); if (p) parts.push(makeSegment(s.marker, p)); continue; }
+      // A segment made from part of an existing one always fits, so makeSegment returns bytes here and below.
+      if (tables && tables.rebuild.has(s)) { const p = tables.rebuild.get(s); if (p) parts.push(/** @type {Uint8Array} */ (makeSegment(s.marker, p))); continue; }
       parts.push(sub.subarray(s.start, s.end));
       continue;
     }
@@ -1058,16 +1278,16 @@ function cleanEmbedded(sub, { meta = true, icc = false, icctext = false } = {}) 
       if (isoSeen) continue;
       isoSeen = true;
       const pr = parseIsoGain(sub, s.dataStart + ISO_GAIN_ID.length, s.end);
-      if (pr.ok) parts.push(makeSegment(0xe2, sub.subarray(s.dataStart, s.dataStart + ISO_GAIN_ID.length + pr.length)));
+      if (pr.ok) parts.push(/** @type {Uint8Array} */ (makeSegment(0xe2, sub.subarray(s.dataStart, s.dataStart + ISO_GAIN_ID.length + pr.length))));
       continue;
     }
     if (k === 'jfif') {
       const head = sub.slice(s.dataStart, s.dataStart + 14);
       head[12] = 0; head[13] = 0;
-      parts.push(makeSegment(0xe0, head));
+      parts.push(/** @type {Uint8Array} */ (makeSegment(0xe0, head)));
       continue;
     }
-    if (k === 'adobe') { parts.push(makeSegment(0xee, sub.subarray(s.dataStart, s.dataStart + 12))); continue; }
+    if (k === 'adobe') { parts.push(/** @type {Uint8Array} */ (makeSegment(0xee, sub.subarray(s.dataStart, s.dataStart + 12)))); continue; }
     if (k === 'xmp') {
       if (xmpSeen) continue;
       xmpSeen = true;
@@ -1084,6 +1304,12 @@ function cleanEmbedded(sub, { meta = true, icc = false, icctext = false } = {}) 
   return { bytes: concat(parts), lost };
 }
 
+/**
+ * @param {Uint8Array} b
+ * @param {JpegMarkerSegment[]} segs
+ * @param {ItemSet} set
+ * @param {JpegModel} model
+ */
 function analyseIrb(b, segs, set, model) {
   const payload = concat(segs.map((s) => b.subarray(s.dataStart + PS_ID.length, s.end)));
   const irb = parseIrb(payload);
@@ -1094,6 +1320,7 @@ function analyseIrb(b, segs, set, model) {
     model.irb.iptc = iptc;
     model.irb.iptcRes = iptcRes;
     for (const it of iptcItems(iptc)) {
+      /** @type {import('./taxonomy.js').ItemSpec} */
       const pub = { id: `iptc:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'IPTC' };
       if (it.note) pub.note = it.note;
       const id = set.add(pub, { kind: 'irb', part: 'iptc', key: it.key });
@@ -1127,7 +1354,9 @@ function analyseIrb(b, segs, set, model) {
 }
 
 // The APP13 segments that carry a Photoshop block, or null when a part is too large.
+/** @param {Uint8Array} data @returns {Uint8Array[] | null} */
 function irbSegments(data) {
+  /** @type {Uint8Array[]} */
   const out = [];
   for (let p = 0; p < data.length; p += 65000) {
     const seg = makeSegment(0xed, concat([encodeLatin1(PS_ID), data.subarray(p, p + 65000)]));
@@ -1137,6 +1366,7 @@ function irbSegments(data) {
   return out;
 }
 
+/** @type {(x: Uint8Array, y: Uint8Array) => boolean} */
 const bytesEqual = (x, y) => x.length === y.length && x.every((v, i) => v === y[i]);
 
 // ======================================================================================
@@ -1152,8 +1382,10 @@ export const IRB_REST_KEPT = 'Photoshop data that could not be read was removed 
 // then the part. extendedText gathers the parts with the GUID the photo's packet gives and
 // returns the packet, or null when they do not make it up exactly.
 const EXT_HEAD = XMP_EXT_ID.length + 32 + 8;
+/** @param {Uint8Array} b @param {JpegMarkerSegment[]} segs @param {string} guid @returns {string | null} */
 function extendedText(b, segs, guid) {
   if (!/^[0-9A-F]{32}$/.test(guid)) return null;
+  /** @type {{ off: number, data: Uint8Array }[]} */
   const parts = [];
   let total = -1;
   for (const s of segs) {
@@ -1179,21 +1411,25 @@ function extendedText(b, segs, guid) {
 // Whether a file's Extended XMP is already in the form the scrub writes: the packet the
 // photo's HasExtendedXMP points to, canonical, split as extendedSegments splits it, in
 // consecutive segments with nothing else among them.
+/** @param {Uint8Array} b @param {ParsedXmp} parsed @param {JpegMarkerSegment[]} extSegs @returns {boolean} */
 function extendedCanonical(b, parsed, extSegs) {
   const f = parsed.ok ? parsed.props.find((p) => p.key === 'xmpNote:HasExtendedXMP' && (p.kind === 'attr' || p.kind === 'elem')) : null;
   const text = f ? extendedText(b, extSegs, String(f.value).trim()) : null;
   const canon = text !== null ? canonicalXmp(parseXmp(text), true) : null;
   const segs = canon !== null ? extendedSegments(canon) : null;
-  if (!segs || segs.guid !== String(f.value).trim()) return false;
+  // segs is only set when f was found.
+  if (!segs || segs.guid !== String(/** @type {NonNullable<typeof f>} */ (f).value).trim()) return false;
   const contiguous = extSegs.every((x, i) => i === 0 || extSegs[i - 1].end === x.start);
   return contiguous && bytesEqual(concat(segs.segs), b.subarray(extSegs[0].start, extSegs[extSegs.length - 1].end));
 }
 
 // The segments of an Extended XMP packet written from text: { guid, segs }, or null.
+/** @param {string} text @returns {{ guid: string, segs: Uint8Array[] } | null} */
 function extendedSegments(text) {
   const bytes = encodeUtf8(text);
   const guid = Array.from(md5(bytes), (x) => x.toString(16).padStart(2, '0')).join('').toUpperCase();
   const room = 65533 - EXT_HEAD;
+  /** @type {Uint8Array[]} */
   const segs = [];
   for (let off = 0; off < bytes.length; off += room) {
     const head = new Uint8Array(8);
@@ -1212,9 +1448,16 @@ const MEDIA = new Set(['gainmap', 'mpf', 'preview', 'jpeg', 'video', 'samsung'])
 // The part after the image each directory entry stands for: 'primary' for the first, a
 // region, or null when it stands for nothing found. A Motion Photo video may sit inside a
 // Samsung trailer; no other entry is matched to one.
+/**
+ * @param {XmpDirectory} dir
+ * @param {TrailingRegion[]} regions
+ * @returns {(TrailingRegion | 'primary' | null)[]}
+ */
 function mapDirectory(dir, regions) {
   const media = regions.filter((r) => MEDIA.has(r.kind));
+  /** @type {Set<TrailingRegion>} */
   const used = new Set();
+  /** @type {(test: (x: TrailingRegion) => boolean | undefined) => TrailingRegion | null} */
   const take = (test) => { const r = media.find((x) => !used.has(x) && test(x)); if (r) used.add(r); return r || null; };
   return dir.dir.entries.map((e, n) => {
     if (n === 0) return 'primary';
@@ -1229,17 +1472,28 @@ function mapDirectory(dir, regions) {
 // a patch for rewriteXmp, or null when nothing in the directory changes. An entry whose part
 // is cut goes; a video inside a kept Samsung trailer keeps its entry as it is, because its
 // position counts from the end of the file, which does not move.
+/** @typedef {{ r: TrailingRegion, range: Range | null, bytes?: Uint8Array, contentAt: number, contentLen: number }} PlacedPart */
+/**
+ * @param {XmpDirectory} dir
+ * @param {TrailingRegion[]} regions
+ * @param {Map<TrailingRegion, PlacedPart>} placed
+ * @param {(r: TrailingRegion) => boolean} isCut
+ */
 function planDirectory(dir, regions, placed, isCut) {
   const map = mapDirectory(dir, regions);
+  /** @type {Set<number>} */
   const drop = new Set();
+  /** @type {Map<number, number>} */
   const length = new Map();
+  /** @type {Map<number, number>} */
   const padding = new Map();
+  /** @type {({ at: number, len: number } | 'gone' | null)[]} */
   const spans = map.map((r, n) => {
     if (r === 'primary') return { at: 0, len: 0 };
     if (!r) return null;
     if (isCut(r)) { drop.add(n); return 'gone'; }
     if (r.kind === 'samsung') return null;
-    const parts = regions.filter((x) => x === r || x.owner === r).map((x) => placed.get(x)).filter(Boolean);
+    const parts = /** @type {PlacedPart[]} */ (regions.filter((x) => x === r || x.owner === r).map((x) => placed.get(x)).filter(Boolean));
     if (!parts.length) return null;
     const len = parts.reduce((s, p) => s + p.contentLen, 0);
     length.set(n, len);
@@ -1249,10 +1503,11 @@ function planDirectory(dir, regions, placed, isCut) {
     if (!sp || sp === 'gone' || !dir.dir.entries[n].fields.Padding) return;
     for (let m = n + 1; m < spans.length; m++) {
       if (spans[m] === 'gone') continue;
-      if (spans[m]) padding.set(n, Math.max(0, spans[m].at - (sp.at + sp.len)));
+      if (spans[m]) padding.set(n, Math.max(0, /** @type {{ at: number, len: number }} */ (spans[m]).at - (sp.at + sp.len)));
       return;
     }
   });
+  /** @type {(map2: Map<number, number>, field: 'Length' | 'Padding') => boolean} */
   const differs = (map2, field) => [...map2].some(([n, v]) => { const f = dir.dir.entries[n].fields[field]; return f && f.value !== String(v); });
   if (!drop.size && !differs(length, 'Length') && !differs(padding, 'Padding')) return null;
   return { index: dir.index, drop, length, padding };
@@ -1263,11 +1518,18 @@ function planDirectory(dir, regions, placed, isCut) {
 // the first entry is the photo, the directory's gain map length is one of those sizes and
 // its entries land on their parts, and the photo still carries what pointed a reader to
 // the gain map before (need: { version, iso, dirGainMap }, each true when required).
+/**
+ * @param {Uint8Array} bytes
+ * @param {{ version?: boolean, iso?: boolean, dirGainMap?: boolean }} [need]
+ * @returns {boolean}
+ */
 function gainMapIntact(bytes, need = {}) {
   const w = walkJpeg(bytes);
   if (!w || w.eoiEnd < 0) return false;
-  const seg = w.segs.find((s) => s.kind === 'seg' && s.marker === 0xe2 && startsWith(bytes, s.dataStart, 'MPF\0'));
+  const seg = /** @type {JpegMarkerSegment | undefined} */ (w.segs.find((s) => s.kind === 'seg' && s.marker === 0xe2 && startsWith(bytes, s.dataStart, 'MPF\0')));
+  /** @type {number[]} */
   const sizes = [];
+  /** @type {number[]} */
   const starts = [];
   if (seg) {
     const m = parseMpf(bytes, seg);
@@ -1283,7 +1545,7 @@ function gainMapIntact(bytes, need = {}) {
       starts.push(at);
     }
   }
-  const x = w.segs.find((s) => s.kind === 'seg' && s.marker === 0xe1 && startsWith(bytes, s.dataStart, XMP_ID));
+  const x = /** @type {JpegMarkerSegment | undefined} */ (w.segs.find((s) => s.kind === 'seg' && s.marker === 0xe1 && startsWith(bytes, s.dataStart, XMP_ID)));
   const parsed = x ? parseXmp(new TextDecoder('utf-8').decode(bytes.subarray(x.dataStart + XMP_ID.length, x.end))) : null;
   const d = parsed ? directoryOf(parsed) : null;
   if (seg && d) {
@@ -1302,26 +1564,45 @@ function gainMapIntact(bytes, need = {}) {
   if (need.dirGainMap && !(d && d.dir.entries.some((e) => e.semantic === 'GainMap'))) return false;
   if (need.version && !hasGainVersion(parsed)) return false;
   if (need.iso) {
-    const iso = w.segs.find((s) => s.kind === 'seg' && s.marker === 0xe2 && startsWith(bytes, s.dataStart, ISO_GAIN_ID));
+    const iso = /** @type {JpegMarkerSegment | undefined} */ (w.segs.find((s) => s.kind === 'seg' && s.marker === 0xe2 && startsWith(bytes, s.dataStart, ISO_GAIN_ID)));
     const at = iso ? iso.dataStart + ISO_GAIN_ID.length : -1;
     if (!iso || iso.end - at < 4 || u16be(bytes, at) !== 0) return false;
   }
   return true;
 }
 
+/** @typedef {{ meta: boolean, icc: boolean, icctext: boolean }} CleanParts */
+/** What analyseJpeg keeps for the icc:text item. @typedef {{ segs: JpegMarkerSegment[], chunks: { seq: number, at: number, end: number }[], profile: Uint8Array }} IccTextInternal */
+/**
+ * @param {Uint8Array} b
+ * @param {JpegModel} model
+ * @param {ItemSet} set
+ * @param {Iterable<string>} removeIn
+ * @param {boolean} [retry]
+ * @returns {{ bytes: Uint8Array, warnings: string[] }}
+ */
 export function scrubJpeg(b, model, set, removeIn, retry = true) {
   const remove = new Set(removeIn);
+  /** @type {string[]} */
   const warnings = [];
   const out = b.slice();
+  /** @type {Set<JpegSegment>} */
   const drop = new Set();
+  /** @type {Map<JpegSegment, Uint8Array | null>} */
   const replace = new Map();
+  /** @type {Range[]} */
   const cut = [];
+  /** @type {Map<TrailingRegion, CleanParts>} */
   const clean = new Map();
+  /** @type {Set<string> | null} */
   let mpfParts = null;
   let wholeMpf = false;
+  /** @type {{ seg: JpegMarkerSegment, keepEnd: number }[]} */
   const isoPlans = [];
+  /** @type {IccTextInternal | null} */
   let iccText = null;
   // Starts again without the gain map, when it cannot be kept safely.
+  /** @type {(why: string) => { bytes: Uint8Array, warnings: string[] }} */
   const withoutGainMap = (why) => {
     const again = scrubJpeg(b, model, set, new Set([...removeIn, GAIN_MAP_ITEM]), false);
     return { bytes: again.bytes, warnings: [why, ...again.warnings] };
@@ -1330,14 +1611,17 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
   // Coupled removals. A gain map whose XMP description goes cannot be found any more, so it
   // goes too; and trailing media take their XMP descriptors with them.
   const gainItem = set.get(GAIN_MAP_ITEM);
-  if (gainItem && gainItem.couple.some((c) => remove.has(c))) remove.add(GAIN_MAP_ITEM);
+  if (gainItem && gainItem.couple.some((/** @type {string} */ c) => remove.has(c))) remove.add(GAIN_MAP_ITEM);
   for (const id of [...remove]) {
     const it = set.get(id);
     if (it && it.kind === 'trailing') for (const c of it.couple) remove.add(c);
   }
 
+  /** @type {Map<JpegMarkerSegment, Set<string>>} */
   const exifKeys = new Map();
+  /** @type {Map<JfifHeader, Set<string>>} */
   const jfifParts = new Map();
+  /** @type {Set<AdobeHeader>} */
   const adobeExtra = new Set();
   for (const id of remove) {
     const it = set.get(id);
@@ -1345,14 +1629,14 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
     switch (it.kind) {
       case 'exif':
         if (!exifKeys.has(it.seg)) exifKeys.set(it.seg, new Set());
-        exifKeys.get(it.seg).add(it.key);
+        /** @type {Set<string>} */ (exifKeys.get(it.seg)).add(it.key);
         break;
       case 'segs':
         for (const s of it.segs) drop.add(s);
         break;
       case 'jfif':
         if (!jfifParts.has(it.jfif)) jfifParts.set(it.jfif, new Set());
-        jfifParts.get(it.jfif).add(it.part);
+        /** @type {Set<string>} */ (jfifParts.get(it.jfif)).add(it.part);
         break;
       case 'adobe':
         adobeExtra.add(it.adobe);
@@ -1363,7 +1647,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
         break;
       case 'clean': {
         const c = clean.get(it.region) || { meta: false, icc: false, icctext: false };
-        c[it.part] = true;
+        c[/** @type {keyof CleanParts} */ (it.part)] = true;
         clean.set(it.region, c);
         break;
       }
@@ -1379,7 +1663,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
         isoPlans.push(...it.plan);
         break;
       case 'icctext':
-        iccText = it;
+        iccText = /** @type {IccTextInternal} */ (it);
         break;
       case 'tables':
         for (const [seg, payload] of it.rebuild) {
@@ -1394,7 +1678,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
 
   // An Apple gain map that stays keeps the photo's two HDR numbers: when the MakerNote
   // goes, a MakerNote holding only those takes its place.
-  const appleId = set.has('exif:apple-hdr') && set.get('exif:apple-hdr').kind === 'applehdr' ? 'exif:apple-hdr' : null;
+  const appleId = set.has('exif:apple-hdr') && /** @type {ItemInternal} */ (set.get('exif:apple-hdr')).kind === 'applehdr' ? 'exif:apple-hdr' : null;
   const apple = appleId && !remove.has(appleId) ? set.get(appleId) : null;
   for (const [s, keys] of exifKeys) {
     const tStart = s.dataStart + 6;
@@ -1434,9 +1718,12 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
   // After the image: each region is cut, copied as it is or cleaned. Planned before the XMP,
   // because the Container directory lists the lengths that result. Positions are relative
   // to the end of the photo.
+  /** @type {(r: TrailingRegion) => boolean} */
   const isCut = (r) => cut.some(([s, e]) => s <= r.start && r.end <= e) || (r.owner ? isCut(r.owner) : false);
   const eoiEnd = model.w.eoiEnd;
+  /** @type {(PlacedPart | { range: Range, r?: undefined, bytes?: undefined, contentAt?: undefined, contentLen?: undefined })[]} */
   const plan = [];
+  /** @type {Map<TrailingRegion, PlacedPart>} */
   const placed = new Map();
   if (eoiEnd >= 0) {
     let rel = 0;
@@ -1449,6 +1736,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
       // A kept gain map is always passed through cleanEmbedded, so its XMP is written in the
       // canonical form even when nothing in it goes.
       const c = clean.get(r) || (r.kind === 'gainmap' ? { meta: false, icc: false, icctext: false } : null);
+      /** @type {PlacedPart} */
       let pl;
       if (c) {
         const res = cleanEmbedded(out.subarray(cs, r.jpegEnd ?? r.end), c);
@@ -1475,12 +1763,15 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
   // lengths and padding are set to what the new file holds. When only the gain map goes,
   // a kept Motion Photo video keeps the directory.
   const pk = model.xmpPacket;
+  /** @type {ReturnType<typeof planDirectory>} */
   let dirPatch = null;
+  /** @type {Set<number> | null} */
   let rescue = null;
   const dir = pk && eoiEnd >= 0 ? directoryOf(pk.parsed) : null;
   if (dir) {
-    const holder = pk.items.find((it) => it.props.includes(dir.index));
-    const motion = pk.items.find((it) => it.key === 'motion');
+    // dir is only set when pk is.
+    const holder = /** @type {XmpPacket} */ (pk).items.find((it) => it.props.includes(dir.index));
+    const motion = /** @type {XmpPacket} */ (pk).items.find((it) => it.key === 'motion');
     const videoKept = model.regions.some((r) => r.kind === 'video' && !isCut(r));
     const holderGone = holder && remove.has(holder.id);
     if (holderGone && holder.key === 'gainmap' && motion && !remove.has(motion.id) && videoKept) rescue = new Set([dir.index]);
@@ -1490,11 +1781,12 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
   // A kept gain map described by hdrgm needs hdrgm:Version in the photo: a malformed one that
   // goes is written again with the one value the specification defines.
   const keptGain = model.regions.find((r) => r.kind === 'gainmap' && !isCut(r)) || null;
+  /** @type {XmpAdd[]} */
   let add = [];
   if (pk && keptGain && keptGain.signals && keptGain.signals.hdrgm) {
     const fix = versionFix(pk.parsed);
     const owner = fix ? pk.items.find((it) => it.props.includes(fix.index)) : null;
-    if (owner && remove.has(owner.id)) add = [fix.add];
+    if (owner && remove.has(owner.id)) add = [/** @type {NonNullable<typeof fix>} */ (fix).add]; // owner is only found when fix is
     // Gain map numbers with more digits than they need are written again, rounded.
     for (const fx of gainFixes(pk.parsed)) {
       const it = pk.items.find((x) => x.props.includes(fx.index));
@@ -1505,17 +1797,20 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
   // Extended XMP that stays is written again in the canonical form, split into segments
   // again, and the photo's packet points to it by the new GUID. When it cannot be, it goes
   // with the field that points to it.
+  /** @type {{ segs: Uint8Array[], also: number[], add: XmpAdd } | null} */
   let extPlan = null;
   const extItem = pk ? pk.items.find((i) => i.key === 'extended') : null;
   if (pk && pk.extSegs.length && extItem && !remove.has(extItem.id)) {
     const fieldIdx = pk.parsed.props.findIndex((p) => p.key === 'xmpNote:HasExtendedXMP' && (p.kind === 'attr' || p.kind === 'elem'));
-    const field = fieldIdx >= 0 ? pk.parsed.props[fieldIdx] : null;
+    // The test above only finds an attribute or an element.
+    const field = /** @type {XmpFieldProp | null} */ (fieldIdx >= 0 ? pk.parsed.props[fieldIdx] : null);
     const text = field ? extendedText(out, pk.extSegs, field.value.trim()) : null;
     const canon = text !== null ? canonicalXmp(parseXmp(text), true) : null;
     const segs = canon !== null ? extendedSegments(canon) : null;
     if (segs) {
-      const name = field.kind === 'attr' ? field.attr.name : field.node.name;
-      extPlan = { segs: segs.segs, also: [fieldIdx], add: { key: field.key, name, node: field.node, value: segs.guid } };
+      // segs is only set when field was found.
+      const name = /** @type {XmpFieldProp} */ (field).kind === 'attr' ? /** @type {import('./xmp.js').XmpAttrProp} */ (field).attr.name : /** @type {XmpFieldProp} */ (field).node.name;
+      extPlan = { segs: segs.segs, also: [fieldIdx], add: { key: /** @type {XmpFieldProp} */ (field).key, name, node: /** @type {XmpFieldProp} */ (field).node, value: segs.guid } };
     } else {
       remove.add(extItem.id);
       warnings.push('The extra XMP data could not be written again in a standard form, so it was removed.');
@@ -1564,13 +1859,15 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
 
   // The multi-picture index, written again without the parts removed from it.
   const mpfSeg = model.segs.find((s) => s.kindApp === 'mpf');
+  /** @type {{ payload: Uint8Array, tablePos: number } | null} */
   let mpfBuilt = null;
   if (mpfSeg && mpfParts && !drop.has(mpfSeg)) {
-    if (wholeMpf || !model.mpf || !model.mpfStrict.ok) {
+    // mpfStrict is set whenever the file has an MPF segment, as it does here.
+    if (wholeMpf || !model.mpf || !/** @type {MpfStrict} */ (model.mpfStrict).ok) {
       drop.add(mpfSeg);
       warnings.push('The multi-picture index could not be read, so it was removed. Some programs may no longer find the extra image after the picture.');
     } else {
-      const built = buildMpf(model.mpfStrict, model.mpf.entries, { ids: !mpfParts.has('ids'), layout: !mpfParts.has('layout') });
+      const built = buildMpf(/** @type {MpfStrict} */ (model.mpfStrict), model.mpf.entries, { ids: !mpfParts.has('ids'), layout: !mpfParts.has('layout') });
       const seg2 = makeSegment(0xe2, built.payload);
       if (seg2) { replace.set(mpfSeg, seg2); mpfBuilt = built; } else drop.add(mpfSeg);
     }
@@ -1607,9 +1904,10 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
     if (gone.length === items.length) {
       for (const s of segs) drop.add(s);
     } else {
-      const removeIptc = new Set(gone.filter((id) => set.get(id).part === 'iptc').map((id) => set.get(id).key));
-      const parts = new Set(gone.map((id) => set.get(id).part));
-      if (items.some((id) => set.get(id).part === 'rest' && !remove.has(id))) warnings.push(IRB_REST_KEPT);
+      // Every id in items came from set.add in analyseIrb, so set.get finds it.
+      const removeIptc = new Set(gone.filter((id) => /** @type {ItemInternal} */ (set.get(id)).part === 'iptc').map((id) => /** @type {ItemInternal} */ (set.get(id)).key));
+      const parts = new Set(gone.map((id) => /** @type {ItemInternal} */ (set.get(id)).part));
+      if (items.some((id) => /** @type {ItemInternal} */ (set.get(id)).part === 'rest' && !remove.has(id))) warnings.push(IRB_REST_KEPT);
       const chunks = irbSegments(canonicalIrb(irb, iptc, iptcRes, { parts, removeIptc }));
       if (!chunks || !chunks.length) for (const s of segs) drop.add(s);
       else segs.forEach((s, i) => { if (i === 0) replace.set(s, concat(chunks)); else drop.add(s); });
@@ -1631,7 +1929,8 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
     lastWasSoi = s.kind === 'soi';
     if (replace.has(s)) {
       if (s === mpfSeg) mpfOutAt = asm.length;
-      asm.add(replace.get(s));
+      // Every replacement is a whole segment: the ones that may not fit are checked as they are made.
+      asm.add(/** @type {Uint8Array} */ (replace.get(s)));
       continue;
     }
     asm.copy(s.start, s.end);
@@ -1655,11 +1954,13 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
   // Keep the MPF index pointing at the images it lists, with their new sizes.
   if (model.mpf && mpfSeg && !drop.has(mpfSeg)) {
     const le = model.mpf.le;
+    /** @type {(pos: number, v: number) => void} */
     const put = (pos, v) => {
       if (le) { result[pos] = v & 255; result[pos + 1] = (v >>> 8) & 255; result[pos + 2] = (v >>> 16) & 255; result[pos + 3] = v >>> 24; }
       else { result[pos] = v >>> 24; result[pos + 1] = (v >>> 16) & 255; result[pos + 2] = (v >>> 8) & 255; result[pos + 3] = v & 255; }
     };
     const base = mpfBuilt ? mpfOutAt + 8 : asm.map(model.mpf.base);
+    /** @type {(e: MpfEntry) => number[]} */
     const posOf = mpfBuilt
       ? (e) => [base + mpfBuilt.tablePos + 16 * e.index + 4, base + mpfBuilt.tablePos + 16 * e.index + 8]
       : (e) => [asm.map(e.sizePos), asm.map(e.offsetPos)];
@@ -1670,7 +1971,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
         if (eoiEnd > 0) put(sizePos, asm.map(eoiEnd - 1) + 1);
         continue;
       }
-      const mine = plan.filter((pl) => pl.r && pl.r.entry === e);
+      const mine = /** @type {PlacedPart[]} */ (plan.filter((pl) => pl.r && pl.r.entry === e));
       if (mine.length) {
         put(offPos, trailStart + mine[0].contentAt - base);
         put(sizePos, mine.reduce((n, pl) => n + pl.contentLen, 0));
@@ -1686,7 +1987,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
   // A kept gain map must still be found where the index and the directory say it is, and
   // the photo must still point to it the way it did.
   if (retry && keptGain) {
-    const sig = keptGain.signals || {};
+    const sig = /** @type {Partial<GainSignals>} */ (keptGain.signals || {});
     const need = {
       version: !!(sig.hdrgm && model.signals && model.signals.version),
       iso: !!(sig.iso && model.signals && model.signals.iso),
@@ -1700,6 +2001,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
 // ======================================================================================
 // Insertion into a freshly encoded JPEG
 
+/** @param {Uint8Array} b @param {Uint8Array} tiff @returns {Uint8Array} */
 export function insertJpegExif(b, tiff) {
   const w = walkJpeg(b);
   if (!w) throw new Error('Not a JPEG file');

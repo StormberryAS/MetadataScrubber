@@ -16,10 +16,69 @@
 //
 // Kept data never moves, so offsets inside a kept MakerNote stay valid.
 
-import { clip, formatBytes, latin1, subtractRanges, u16be, u16le, u32be, u32le, zeroRanges } from './bytes.js?v=4d7df4d3';
-import { inspectIcc } from './icc.js?v=15403b52';
+import { clip, formatBytes, latin1, subtractRanges, u16be, u16le, u32be, u32le, zeroRanges } from './bytes.js?v=e01e89d1';
+import { inspectIcc } from './icc.js?v=50f98571';
+
+/** @typedef {import('./bytes.js').Range} Range */
+/** @typedef {import('./taxonomy.js').Tier} Tier */
+/**
+ * One directory entry as read from the block.
+ * @typedef {object} TiffEntry
+ * @property {number} tag
+ * @property {number} type
+ * @property {number} count
+ * @property {number} size bytes of the value (unit size times count)
+ * @property {boolean} inline whether the value sits inside the entry itself
+ * @property {number} valueOffset
+ * @property {number} entryPos position of the 12-byte entry
+ * @property {boolean} valid whether the type is known and the value lies inside the block
+ * @property {number} index position of the entry in its directory
+ */
+/**
+ * One directory (IFD) of the block.
+ * @typedef {object} TiffIfd
+ * @property {string} name 'ifd0', 'exif', 'gps', 'gps2', 'interop', 'ifd1', 'ifd2' and so on
+ * @property {number} offset
+ * @property {number} count
+ * @property {TiffEntry[]} entries
+ * @property {number} next
+ * @property {boolean} hasNext
+ * @property {{ ifd: string, tag: number, entry: number } | null} parent the pointer entry that leads here
+ * @property {boolean} [chain] set on the preview directories after IFD0
+ */
+/**
+ * A parsed TIFF block. The readers and writers use the block's byte order and edit t in place.
+ * @typedef {object} TiffModel
+ * @property {Uint8Array} t
+ * @property {boolean} le
+ * @property {(p: number) => number} r16
+ * @property {(p: number) => number} r32
+ * @property {(p: number, v: number) => void} w16
+ * @property {(p: number, v: number) => void} w32
+ * @property {{ [name: string]: TiffIfd | undefined }} ifds
+ * @property {TiffIfd[]} order
+ * @property {TiffIfd[]} chain
+ * @property {string[]} warnings
+ * @property {boolean} damaged
+ */
+/**
+ * @typedef {object} TiffItemDef
+ * @property {string} group
+ * @property {Tier} tier
+ * @property {string} label
+ * @property {string} [note]
+ */
+/** @typedef {TiffItemDef & { key: string, value: string }} TiffItem */
+/**
+ * The HDR numbers of an Apple MakerNote.
+ * @typedef {object} AppleHdr
+ * @property {number} maker33
+ * @property {number | null} maker48
+ * @property {number} headroom
+ */
 
 // Field sizes per TIFF type; 129 is the UTF-8 string type added in Exif 3.0.
+/** @type {Record<number, number>} */
 const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4, 129: 1 };
 
 const PTR_EXIF = 0x8769;
@@ -28,6 +87,7 @@ const PTR_INTEROP = 0xa005;
 const MAX_CHAIN = 16;
 
 // Tag names, used for ImageMagick-style "exif:Name" text keys and for listing leftovers.
+/** @type {Record<number, string>} */
 export const TAG_NAMES = {
   0x00fe: 'SubfileType', 0x0100: 'ImageWidth', 0x0101: 'ImageLength', 0x0102: 'BitsPerSample',
   0x0103: 'Compression', 0x0106: 'PhotometricInterpretation', 0x0107: 'Threshholding', 0x0108: 'CellWidth',
@@ -80,7 +140,9 @@ export const TAG_NAMES = {
 
 const NAME_TO_TAG = new Map(Object.entries(TAG_NAMES).map(([k, v]) => [v.toLowerCase(), Number(k)]));
 
+/** @type {Map<number, string>} */
 const KEY_OF_TAG = new Map();
+/** @type {(key: string, tags: number[]) => void} */
 const assign = (key, tags) => { for (const t of tags) KEY_OF_TAG.set(t, key); };
 assign('serial', [0xa431, 0xc62f]);
 assign('lens-serial', [0xa435]);
@@ -117,6 +179,7 @@ assign('format', [0x9000, 0xa000, 0x9101, 0x9102, 0x0212, 0x0213, 0x0103, 0x0102
 const APPLE_HDR_NOTE = 'Two numbers from the Apple maker notes that tell HDR screens how much brighter the gain map may make the photo. They stay with the gain map in a maker note of their own when the rest of the maker notes go. Removing them removes the HDR gain map too.';
 
 // Item definitions, in display order.
+/** @type {Record<string, TiffItemDef>} */
 export const TIFF_ITEMS = {
   gps: { group: 'where', tier: 'red', label: 'GPS position' },
   owner: { group: 'who', tier: 'red', label: 'Owner and author names' },
@@ -150,6 +213,7 @@ export const TIFF_ITEMS = {
 
 // Known tags without a better home are 'other' (amber); tags this tool does not know at
 // all are 'private' (red), because they can hold anything.
+/** @param {number} tag @returns {string} */
 export function keyForTag(tag) {
   return KEY_OF_TAG.get(tag) || (TAG_NAMES[tag] ? 'other' : 'private');
 }
@@ -158,6 +222,7 @@ export function keyForTag(tag) {
 // Whether the text ImageMagick writes for a technical EXIF field reads as numbers.
 // Each value is a number or a fraction of at most ten digits a part, separated by a comma
 // or one space, with no more values than the field has and no other characters.
+/** @param {unknown} value @param {string} [name] @returns {boolean} */
 export function technicalTextOk(value, name = '') {
   const v = String(value);
   if (/^(?:R98|THM|R03)$/.test(v)) return true;
@@ -165,6 +230,7 @@ export function technicalTextOk(value, name = '') {
   return parts.length <= technicalCount(name) && parts.every((x) => /^[+-]?\d{1,10}(?:[./]\d{1,10})?$/.test(x));
 }
 
+/** @param {string} name @returns {string} */
 export function keyForTagName(name) {
   if (/^gps/i.test(name)) return 'gps';
   if (/^thumbnail:/i.test(name)) return 'thumbnail';
@@ -175,6 +241,7 @@ export function keyForTagName(name) {
 // ======================================================================================
 // Parsing
 
+/** @param {Uint8Array} b @param {number} [p] @returns {boolean} */
 export function isTiffHeader(b, p = 0) {
   if (p + 8 > b.length) return false;
   if (b[p] === 0x49 && b[p + 1] === 0x49) return b[p + 2] === 42 && b[p + 3] === 0;
@@ -183,27 +250,41 @@ export function isTiffHeader(b, p = 0) {
 }
 
 // Locates the TIFF header inside an EXIF payload that may start with "Exif\0\0" or similar.
+/** @param {Uint8Array} b @param {number} [limit] @returns {number} -1 when there is none */
 export function findTiffStart(b, limit = 64) {
   for (let p = 0; p <= Math.min(limit, b.length - 8); p++) if (isTiffHeader(b, p)) return p;
   return -1;
 }
 
+/** @type {(ifd: TiffIfd) => boolean} */
 const isChain = (ifd) => ifd.chain === true;
 
+/**
+ * Reads the block in place; null when it does not start with a TIFF header.
+ * @param {Uint8Array} t
+ * @returns {TiffModel | null}
+ */
 export function parseTiff(t) {
   if (!isTiffHeader(t, 0)) return null;
   const le = t[0] === 0x49;
+  /** @type {(p: number) => number} */
   const r16 = le ? (p) => u16le(t, p) : (p) => u16be(t, p);
+  /** @type {(p: number) => number} */
   const r32 = le ? (p) => u32le(t, p) : (p) => u32be(t, p);
+  /** @type {(p: number, v: number) => void} */
   const w16 = le
     ? (p, v) => { t[p] = v & 255; t[p + 1] = (v >>> 8) & 255; }
     : (p, v) => { t[p] = (v >>> 8) & 255; t[p + 1] = v & 255; };
+  /** @type {(p: number, v: number) => void} */
   const w32 = le
     ? (p, v) => { t[p] = v & 255; t[p + 1] = (v >>> 8) & 255; t[p + 2] = (v >>> 16) & 255; t[p + 3] = (v >>> 24) & 255; }
     : (p, v) => { t[p] = (v >>> 24) & 255; t[p + 1] = (v >>> 16) & 255; t[p + 2] = (v >>> 8) & 255; t[p + 3] = v & 255; };
+  /** @type {TiffModel} */
   const m = { t, le, r16, r32, w16, w32, ifds: {}, order: [], chain: [], warnings: [], damaged: false };
+  /** @type {Set<number>} */
   const visited = new Set();
 
+  /** @type {(name: string, off: number, parent: TiffIfd['parent'], label?: string) => TiffIfd | null} */
   const readIfd = (name, off, parent, label = name) => {
     if (!off) return null;
     if (off < 8 || off + 2 > t.length || visited.has(off)) {
@@ -216,6 +297,7 @@ export function parseTiff(t) {
       m.warnings.push(`The ${label} directory in the EXIF data is damaged and was skipped.`);
       return null;
     }
+    /** @type {TiffEntry[]} */
     const entries = [];
     for (let i = 0; i < count; i++) {
       const p = off + 2 + i * 12;
@@ -231,6 +313,7 @@ export function parseTiff(t) {
     }
     const hasNext = off + 2 + count * 12 + 4 <= t.length;
     const next = hasNext ? r32(off + 2 + count * 12) : 0;
+    /** @type {TiffIfd} */
     const ifd = { name, offset: off, count, entries, next, hasNext, parent };
     m.ifds[name] = ifd;
     m.order.push(ifd);
@@ -239,6 +322,7 @@ export function parseTiff(t) {
 
   const ifd0 = readIfd('ifd0', r32(4), null, 'main');
   if (!ifd0) { m.damaged = true; return m; }
+  /** @type {(ifd: TiffIfd, tag: number) => TiffEntry[]} */
   const pointers = (ifd, tag) => ifd.entries.filter((e) => e.tag === tag && e.valid && e.count === 1 && (e.type === 4 || e.type === 13));
   const pe = pointers(ifd0, PTR_EXIF)[0];
   const exif = pe ? readIfd('exif', r32(pe.entryPos + 8), { ifd: 'ifd0', tag: PTR_EXIF, entry: pe.index }, 'Exif') : null;
@@ -268,6 +352,7 @@ export function parseTiff(t) {
 }
 
 // Which sub-IFD a pointer entry leads to, if that sub-IFD was read successfully.
+/** @param {TiffModel} m @param {TiffIfd} ifd @param {TiffEntry} e @returns {TiffIfd | null} */
 function childOf(m, ifd, e) {
   for (const c of m.order) {
     if (c.parent && c.parent.ifd === ifd.name && c.parent.tag === e.tag && c.parent.entry === e.index) return c;
@@ -289,9 +374,13 @@ const GREEN_KEYS = new Set(['orientation', 'resolution', 'colour', 'dimensions',
 // max bounds a code's value, so an enumeration holds a small number, not a word.
 const INT = [3, 4];
 const FRAC = [5, 10];
+/** @typedef {{ types: number[], count: number[], max: number }} GreenSpec */
+/** @type {(types: number[], count: number | number[], max?: number) => GreenSpec} */
 const spec = (types, count, max = Infinity) => ({ types, count: Array.isArray(count) ? count : [count, count], max });
+/** @type {(max: number) => GreenSpec} */
 const one = (max) => spec(INT, 1, max);
 const ratio = spec(FRAC, 1);
+/** @type {Record<number, GreenSpec>} */
 const GREEN_SPEC = {
   0x0112: spec(INT, 1, 8), // Orientation
   0x011a: ratio, 0x011b: ratio, 0x0128: one(3), // resolution and its unit
@@ -313,9 +402,13 @@ const GREEN_SPEC = {
   0x0141: spec(INT, 2, 0xffff), 0x0142: spec(INT, 1), 0x0143: spec(INT, 1), 0x0152: spec(INT, [1, 4], 2),
   0x0153: spec(INT, [1, 4], 6), 0xc612: spec([1], 4, 255),
 };
+/** @type {Record<number, GreenSpec>} */
 const INTEROP_SPEC = { 0x1001: spec(INT, 1), 0x1002: spec(INT, 1) };
+/** @typedef {(b: Uint8Array) => boolean} BytesCheck */
+/** @type {BytesCheck} */
 const fourDigits = (b) => (b.length === 4 || (b.length === 5 && !b[4])) && /^\d{4}$/.test(latin1(b.subarray(0, 4)));
 // Byte and text fields with the form their specification gives (Exif 3.0, TIFF 6.0).
+/** @type {Record<number, BytesCheck>} */
 const BYTES_OK = {
   0x9000: fourDigits, // ExifVersion
   0xa000: fourDigits, // FlashpixVersion
@@ -332,11 +425,13 @@ const BYTES_OK = {
   0xa462: (b) => b.length >= 8 && (b.length % 8 === 0 || b.length % 8 === 2),
   0x8773: (b) => { const i = inspectIcc(b); return i.ok && i.clean; }, // ICCProfile
 };
+/** @type {Record<number, BytesCheck>} */
 const INTEROP_OK = {
   0x0001: (b) => /^(?:R98|THM|R03)\0*$/.test(latin1(b)), // InteroperabilityIndex
   0x0002: fourDigits, // InteroperabilityVersion
 };
 
+/** @param {TiffModel} m @param {TiffIfd} ifd @param {TiffEntry} e @returns {boolean} */
 function greenValueOk(m, ifd, e) {
   // A damaged entry cannot be checked, so it is not kept as technical.
   if (!e.valid) return false;
@@ -380,11 +475,13 @@ const EXIF_DATE = /^(?:\d{4}:\d\d:\d\d \d\d:\d\d:\d\d|    : {2}: {2} {3}: {2}: {
 const EXIF_ZONE = /^(?:[+-]\d\d:\d\d|   : {2})$/;
 // A device name: letters, digits, punctuation and symbols with single spaces between
 // words; no control, format or invisible characters, and no address of any kind.
+/** @type {(s: string) => boolean} */
 export const deviceNameOk = (s) => s.length >= 1 && s.length <= 64 && /^[\p{L}\p{M}\p{N}\p{P}\p{S}](?:[\p{L}\p{M}\p{N}\p{P}\p{S}]| (?! ))*$/u.test(s)
   && !/[\uFE00-\uFE0F\u034F\u180B-\u180F\u{E0100}-\u{E01EF}]/u.test(s) && !/@|:\/\/|www\./i.test(s);
 
 // The text of an ASCII or UTF-8 value up to its end marker, or null when anything but
 // zeros follows that marker or the type is not a text type.
+/** @param {TiffModel} m @param {TiffEntry} e @returns {string | null} */
 function strictText(m, e) {
   if (e.type !== 2 && e.type !== 129) return null;
   const b = valueBytes(m, e);
@@ -396,6 +493,7 @@ function strictText(m, e) {
 
 // The same rules for an EXIF field copied as text (PNG "exif:Name" chunks, as ImageMagick
 // writes them): key is the field's detail key, name its EXIF name.
+/** @param {string} key @param {unknown} name @param {unknown} value @returns {boolean} */
 export function amberTextOk(key, name, value) {
   const v = String(value);
   const tag = NAME_TO_TAG.get(String(name).toLowerCase());
@@ -406,13 +504,16 @@ export function amberTextOk(key, name, value) {
   if (key === 'other') return tag === 0xa004 && /^[A-Za-z0-9_]{1,8}\.[A-Za-z0-9]{3}$/.test(v);
   return false;
 }
+/** @type {(key: string) => boolean} */
 export const isAmberTextKey = (key) => AMBER_TEXT_KEYS.has(key);
 // The usual spelling of an EXIF field name, or null for a name this tool does not know.
+/** @param {unknown} name @returns {string | null} */
 export function tagNameOf(name) {
   const tag = NAME_TO_TAG.get(String(name).toLowerCase());
   return tag === undefined ? null : TAG_NAMES[tag];
 }
 
+/** @param {TiffModel} m @param {TiffIfd} ifd @param {TiffEntry} e @returns {boolean} */
 function amberValueOk(m, ifd, e) {
   if (!e.valid) return false;
   if (e.inline && e.size < 4 && !m.t.subarray(e.entryPos + 8 + e.size, e.entryPos + 12).every((x) => !x)) return false;
@@ -435,14 +536,18 @@ function amberValueOk(m, ifd, e) {
 
 // The most values the text ImageMagick writes for a technical EXIF field (PNG "exif:Name"
 // text) may hold, from the same specification; one value when the field is not listed.
+/** @type {Record<number, number>} */
 const BYTES_COUNT = { 0x9000: 5, 0xa000: 5, 0x9101: 4, 0xa300: 1, 0xa301: 1, 0xa302: 36, 0xa462: 18 };
+/** @param {unknown} name @returns {number} */
 export function technicalCount(name) {
   const tag = NAME_TO_TAG.get(String(name).toLowerCase());
   const s = tag === undefined ? null : GREEN_SPEC[tag];
-  return s ? s.count[1] : BYTES_COUNT[tag] || 1;
+  // An unknown name gives tag undefined, which finds nothing in the table, so 1.
+  return s ? s.count[1] : BYTES_COUNT[/** @type {number} */ (tag)] || 1;
 }
 
 // The removal key of every entry: a pointer to a sub-IFD we read is structural (null).
+/** @param {TiffModel} m @param {TiffIfd} ifd @param {TiffEntry} e @returns {string | null} */
 function entryKey(m, ifd, e) {
   const key = baseKey(m, ifd, e);
   if (key && GREEN_KEYS.has(key) && !greenValueOk(m, ifd, e)) return 'technical-text';
@@ -450,6 +555,7 @@ function entryKey(m, ifd, e) {
   return key;
 }
 
+/** @param {TiffModel} m @param {TiffIfd} ifd @param {TiffEntry} e @returns {string | null} */
 function baseKey(m, ifd, e) {
   if (ifd.name.startsWith('gps')) return 'gps';
   if (isChain(ifd)) return 'thumbnail';
@@ -468,12 +574,15 @@ function baseKey(m, ifd, e) {
 // ======================================================================================
 // Value readers
 
+/** @param {TiffModel} m @param {TiffEntry} e @returns {Uint8Array} */
 function valueBytes(m, e) {
   return m.t.subarray(e.valueOffset, e.valueOffset + e.size);
 }
 
+/** @param {TiffModel} m @param {TiffEntry} e @returns {number[]} */
 function readNumbers(m, e) {
   if (!e.valid) return [];
+  /** @type {number[]} */
   const out = [];
   const { r16, r32 } = m;
   const at = e.valueOffset;
@@ -494,6 +603,7 @@ function readNumbers(m, e) {
   return out;
 }
 
+/** @param {TiffModel} m @param {TiffEntry} e @returns {string} */
 function readText(m, e) {
   if (!e.valid) return '';
   const b = valueBytes(m, e);
@@ -531,27 +641,34 @@ function readText(m, e) {
   return readNumbers(m, e).join(' ');
 }
 
+/** @type {(n: number, word: string) => string} */
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
+/** @type {Record<number, string>} */
 const ORIENTATION_TEXT = {
   1: 'Normal', 2: 'Mirrored left to right', 3: 'Turned upside down', 4: 'Mirrored top to bottom',
   5: 'Mirrored and turned 90° anticlockwise', 6: 'Turned 90° clockwise',
   7: 'Mirrored and turned 90° clockwise', 8: 'Turned 90° anticlockwise',
 };
-export const orientationText = (o) => ORIENTATION_TEXT[o] || `Unknown (${o})`;
+/** @type {(o: number | undefined) => string} */
+export const orientationText = (o) => ORIENTATION_TEXT[/** @type {number} */ (o)] || `Unknown (${o})`;
 
+/** @param {number[]} nums @returns {number | null} */
 function dms(nums) {
   if (!nums.length || nums.some((x) => !Number.isFinite(x))) return null;
   return (nums[0] || 0) + (nums[1] || 0) / 60 + (nums[2] || 0) / 3600;
 }
 
+// sec may be undefined; Number.isFinite turns that away first, so the casts below hold.
+/** @param {number | undefined} sec @returns {string | null} */
 function fmtExposure(sec) {
-  if (!Number.isFinite(sec) || sec <= 0) return null;
-  if (sec >= 1) return `${+sec.toFixed(1)} s`;
-  return `1/${Math.round(1 / sec)} s`;
+  if (!Number.isFinite(sec) || /** @type {number} */ (sec) <= 0) return null;
+  if (/** @type {number} */ (sec) >= 1) return `${+/** @type {number} */ (sec).toFixed(1)} s`;
+  return `1/${Math.round(1 / /** @type {number} */ (sec))} s`;
 }
 
 // Size of a JPEG preview, read from its SOF marker.
+/** @param {Uint8Array} b @returns {{ width: number, height: number } | null} */
 export function jpegSize(b) {
   if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null;
   let p = 2;
@@ -571,9 +688,12 @@ export function jpegSize(b) {
 
 // Where a preview directory's picture lies. A length that runs past the end of the block
 // is cut at the end, so the bytes that do exist are still found and removed.
+/** @param {TiffModel} m @param {TiffIfd} ifd @returns {Range[]} */
 function thumbnailRanges(m, ifd) {
+  /** @type {Range[]} */
   const ranges = [];
   const len = m.t.length;
+  /** @type {(tag: number) => TiffEntry | undefined} */
   const get = (tag) => ifd.entries.find((e) => e.tag === tag && e.valid);
   const off = get(0x0201);
   const cnt = get(0x0202);
@@ -592,7 +712,9 @@ function thumbnailRanges(m, ifd) {
   return ranges;
 }
 
+/** @type {(ifd: TiffIfd) => Range} */
 const tableRange = (ifd) => [ifd.offset, ifd.offset + 2 + ifd.count * 12 + (ifd.hasNext ? 4 : 0)];
+/** @type {(e: TiffEntry) => Range} */
 const valueRange = (e) => [e.valueOffset, e.valueOffset + e.size];
 
 // Subtracts `minus` from `ranges`; both are lists of [start, end).
@@ -604,6 +726,7 @@ const subtract = subtractRanges;
 // others) and from the start of the maker note (Fujifilm, Apple). Only bytes that no
 // other part of the block uses are claimed, so keeping a maker note can never keep a
 // removed GPS value alive.
+/** @param {TiffModel} m @param {TiffEntry} e @returns {Range[]} */
 function makerNoteRanges(m, e) {
   if (!e.valid || e.inline) return [];
   const t = m.t;
@@ -615,6 +738,7 @@ function makerNoteRanges(m, e) {
     const n = m.r16(p);
     if (n < 1 || n > 512 || p + 2 + n * 12 > end) continue;
     let good = 0;
+    /** @type {[Range[], Range[]]} */
     const byBase = [[], []];
     for (let i = 0; i < n; i++) {
       const q = p + 2 + i * 12;
@@ -628,6 +752,7 @@ function makerNoteRanges(m, e) {
       [0, s].forEach((base, k) => { const a = base + off; if (a >= 8 && a + size <= t.length) byBase[k].push([a, a + size]); });
     }
     if (good < Math.ceil(n * 0.8)) continue;
+    /** @type {(list: Range[]) => number} */
     const inside = (list) => list.filter(([a, b]) => a >= s && b <= end).length;
     const pick = inside(byBase[1]) > inside(byBase[0]) || (inside(byBase[1]) === inside(byBase[0]) && byBase[1].length > byBase[0].length) ? byBase[1] : byBase[0];
     return pick.filter(([a, b]) => a < s || b > end);
@@ -637,9 +762,13 @@ function makerNoteRanges(m, e) {
 
 // Who uses which bytes. Returns { referenced, orphans, makernote } where orphans are the
 // stretches of the block that nothing references and that are not all zero.
+/** @param {TiffModel} m @returns {{ orphans: Range[], makernote: Range[] }} */
 function ownership(m) {
+  /** @type {Range[]} */
   const referenced = [[0, 8]];
+  /** @type {Range[]} */
   const others = [[0, 8]];
+  /** @type {TiffEntry | null} */
   let makerNote = null;
   for (const ifd of m.order) {
     referenced.push(tableRange(ifd));
@@ -659,6 +788,7 @@ function ownership(m) {
   return { orphans, makernote: mn };
 }
 
+/** @param {TiffModel} m @param {Range[]} orphans @returns {{ nonZero: number, text: string }} */
 function orphanSummary(m, orphans) {
   let nonZero = 0;
   let best = '';
@@ -674,26 +804,32 @@ function orphanSummary(m, orphans) {
   return { nonZero, text: best.trim() };
 }
 
+/** @typedef {{ ifd: TiffIfd, e: TiffEntry }} Placed */
+/** @param {TiffModel} m @param {string} key @param {Placed[]} entries @returns {string} */
 function describeItem(m, key, entries) {
   const byTag = new Map(entries.map((x) => [x.e.tag, x.e]));
-  const text = (tag) => (byTag.has(tag) ? readText(m, byTag.get(tag)) : '');
-  const num = (tag) => (byTag.has(tag) ? readNumbers(m, byTag.get(tag))[0] : undefined);
+  /** @type {(tag: number) => string} */
+  const text = (tag) => (byTag.has(tag) ? readText(m, /** @type {TiffEntry} */ (byTag.get(tag))) : '');
+  /** @type {(tag: number) => number | undefined} */
+  const num = (tag) => (byTag.has(tag) ? readNumbers(m, /** @type {TiffEntry} */ (byTag.get(tag)))[0] : undefined);
+  /** @type {(list: string[]) => string} */
   const join = (list) => clip(list.filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(', '));
   switch (key) {
     case 'gps': {
       const g = m.ifds.gps;
       if (!g) return 'GPS data that could not be read';
+      /** @type {(tag: number) => TiffEntry | undefined} */
       const get = (tag) => g.entries.find((e) => e.tag === tag && e.valid);
-      const lat = get(2) ? dms(readNumbers(m, get(2))) : null;
-      const lon = get(4) ? dms(readNumbers(m, get(4))) : null;
-      const latRef = get(1) ? readText(m, get(1)).charAt(0).toUpperCase() : 'N';
-      const lonRef = get(3) ? readText(m, get(3)).charAt(0).toUpperCase() : 'E';
+      const lat = get(2) ? dms(readNumbers(m, /** @type {TiffEntry} */ (get(2)))) : null;
+      const lon = get(4) ? dms(readNumbers(m, /** @type {TiffEntry} */ (get(4)))) : null;
+      const latRef = get(1) ? readText(m, /** @type {TiffEntry} */ (get(1))).charAt(0).toUpperCase() : 'N';
+      const lonRef = get(3) ? readText(m, /** @type {TiffEntry} */ (get(3))).charAt(0).toUpperCase() : 'E';
       const parts = [];
       if (lat !== null && lon !== null) parts.push(`${lat.toFixed(4)} ${latRef || 'N'}, ${lon.toFixed(4)} ${lonRef || 'E'}`);
-      const alt = get(6) ? readNumbers(m, get(6))[0] : undefined;
+      const alt = get(6) ? readNumbers(m, /** @type {TiffEntry} */ (get(6)))[0] : undefined;
       if (Number.isFinite(alt)) {
-        const below = get(5) && readNumbers(m, get(5))[0] === 1;
-        parts.push(`altitude ${below ? '-' : ''}${Math.round(alt)} m`);
+        const below = get(5) && readNumbers(m, /** @type {TiffEntry} */ (get(5)))[0] === 1;
+        parts.push(`altitude ${below ? '-' : ''}${Math.round(/** @type {number} */ (alt))} m`);
       }
       if (!parts.length) parts.push(`GPS data without a full position (${plural(g.entries.length, 'field')})`);
       return clip(parts.join(', '));
@@ -736,6 +872,7 @@ function describeItem(m, key, entries) {
       return clip(`${head ? head[0].trim() + ', ' : ''}${formatBytes(e ? e.size : 0)}`);
     }
     case 'embedded': {
+      /** @type {Record<number, string>} */
       const what = { 0x02bc: 'XMP', 0x83bb: 'IPTC', 0x8649: 'Photoshop data' };
       return clip(entries.map((x) => `${what[x.e.tag]}, ${formatBytes(x.e.size)}`).join('; '));
     }
@@ -766,7 +903,7 @@ function describeItem(m, key, entries) {
     case 'resolution': {
       const x = num(0x011a);
       const unit = num(0x0128);
-      return Number.isFinite(x) ? `${Math.round(x)} ${unit === 3 ? 'dots per cm' : 'dpi'}` : 'Resolution unit';
+      return Number.isFinite(x) ? `${Math.round(/** @type {number} */ (x))} ${unit === 3 ? 'dots per cm' : 'dpi'}` : 'Resolution unit';
     }
     case 'colour': {
       const cs = num(0xa001);
@@ -778,11 +915,11 @@ function describeItem(m, key, entries) {
     case 'exposure': {
       const parts = [fmtExposure(num(0x829a))];
       const f = num(0x829d);
-      if (Number.isFinite(f) && f > 0) parts.push(`f/${+f.toFixed(1)}`);
+      if (Number.isFinite(f) && /** @type {number} */ (f) > 0) parts.push(`f/${+/** @type {number} */ (f).toFixed(1)}`);
       const iso = num(0x8827);
       if (iso) parts.push(`ISO ${iso}`);
       const fl = num(0x920a);
-      if (Number.isFinite(fl) && fl > 0) parts.push(`${+fl.toFixed(1)} mm`);
+      if (Number.isFinite(fl) && /** @type {number} */ (fl) > 0) parts.push(`${+/** @type {number} */ (fl).toFixed(1)} mm`);
       return clip(parts.filter(Boolean).join(', ') || plural(entries.length, 'setting'));
     }
     case 'format': {
@@ -797,14 +934,16 @@ function describeItem(m, key, entries) {
 }
 
 // Items present in a parsed TIFF, in display order: [{key, group, tier, label, value, note}].
+/** @param {TiffModel} m @returns {TiffItem[]} */
 export function tiffItems(m) {
+  /** @type {Map<string, Placed[]>} */
   const buckets = new Map();
   for (const ifd of m.order) {
     for (const e of ifd.entries) {
       const key = entryKey(m, ifd, e);
       if (!key) continue;
       if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key).push({ ifd, e });
+      /** @type {Placed[]} */ (buckets.get(key)).push({ ifd, e });
     }
   }
   if (m.chain.length && !buckets.has('thumbnail')) buckets.set('thumbnail', []);
@@ -813,6 +952,7 @@ export function tiffItems(m) {
     const own = ownership(m);
     if (orphanSummary(m, own.orphans).nonZero >= 4) buckets.set('leftover', []);
   }
+  /** @type {TiffItem[]} */
   const out = [];
   for (const [key, def] of Object.entries(TIFF_ITEMS)) {
     const entries = buckets.get(key);
@@ -822,6 +962,7 @@ export function tiffItems(m) {
   return out;
 }
 
+/** @param {TiffModel | null | undefined} m @returns {number} */
 export function tiffOrientation(m) {
   const ifd0 = m && m.ifds.ifd0;
   const e = ifd0 && ifd0.entries.find((x) => x.tag === 0x0112 && x.valid);
@@ -829,6 +970,7 @@ export function tiffOrientation(m) {
   return v >= 1 && v <= 8 ? v : 1;
 }
 
+/** @param {TiffModel} m @returns {boolean} */
 export function tiffIsEmpty(m) {
   return !m.ifds.ifd0 || (m.ifds.ifd0.count === 0 && !m.chain.length);
 }
@@ -839,15 +981,23 @@ export function tiffIsEmpty(m) {
 // Removes every entry whose key is in `keys`, then zeroes every byte of the block that no
 // kept part uses. Returns { changed, empty } where empty means nothing is left in IFD0 or
 // the preview chain, so the caller may drop the whole EXIF block.
+/**
+ * @param {TiffModel} m
+ * @param {Set<string>} keys
+ * @returns {{ changed: boolean, empty: boolean }}
+ */
 export function removeTiffKeys(m, keys) {
   const t = m.t;
   if (!m.ifds.ifd0) return { changed: false, empty: true };
   const own = ownership(m);
+  /** @type {Set<string>} */
   const dropped = new Set();
+  /** @type {Map<string, Set<number>>} */
   const removed = new Map();
+  /** @type {(ifd: TiffIfd, e: TiffEntry) => void} */
   const mark = (ifd, e) => {
     if (!removed.has(ifd.name)) removed.set(ifd.name, new Set());
-    removed.get(ifd.name).add(e.index);
+    /** @type {Set<number>} */ (removed.get(ifd.name)).add(e.index);
   };
 
   for (const ifd of m.order) {
@@ -862,6 +1012,7 @@ export function removeTiffKeys(m, keys) {
 
   // Children before parents (the parse order lists parents first): an emptied or dropped
   // sub-IFD takes its pointer with it, which may in turn empty the parent.
+  /** @type {(ifd: TiffIfd) => number} */
   const liveCount = (ifd) => (dropped.has(ifd.name) ? 0 : ifd.count - (removed.get(ifd.name)?.size || 0));
   for (const c of [...m.order].reverse()) {
     if (!c.parent) continue;
@@ -875,7 +1026,9 @@ export function removeTiffKeys(m, keys) {
   const leftoverGone = keys.has('leftover') && own.orphans.length > 0;
   if (!dropped.size && !removed.size && !leftoverGone) return { changed: false, empty: tiffIsEmpty(m) };
 
+  /** @type {Range[]} */
   const live = [[0, 8]];
+  /** @type {{ ifd: TiffIfd, kept: TiffEntry[], next: number }[]} */
   const rewrites = [];
   for (const ifd of m.order) {
     if (dropped.has(ifd.name)) continue;
@@ -931,11 +1084,14 @@ const APPLE_DEN = 1000000;
 // hidden bits. Tag 48 is therefore kept up to 16, and only while its stops stay at or above
 // zero (checked in appleHdrOf). A value outside is not a headroom a screen can use, so it
 // is not kept.
+/** @type {Record<33 | 48, [number, number]>} */
 const APPLE_RANGE = { 33: [0, 8], 48: [0, 16] };
 // The digits kept of each number: 0.001 and 0.0001. Chrome reads only the headroom they
 // give, so more digits would be free to carry anything. Rounding never moves a value across
 // the thresholds of Chrome's formula (1 for tag 33, 0.01 for tag 48).
+/** @type {Record<33 | 48, number>} */
 const APPLE_STEP = { 33: 1000, 48: 10000 };
+/** @param {33 | 48} tag @param {number} v @returns {number} */
 function appleRound(tag, v) {
   const k = APPLE_STEP[tag];
   let r = Math.round(v * k) / k;
@@ -944,19 +1100,23 @@ function appleRound(tag, v) {
   return r;
 }
 // What the Apple HDR brightness detail shows: the headroom it gives and both numbers.
+/** @type {(v: AppleHdr) => string} */
 export const appleHdrValue = (v) => `Headroom ${v.headroom.toFixed(2)} (maker note values ${v.maker33}${v.maker48 === null ? '' : ` and ${v.maker48}`})`;
 
+/** @param {Uint8Array} b @returns {boolean} */
 function appleBytesOk(b) {
   return b.length >= 16 && APPLE_SIG.every((x, i) => b[i] === x);
 }
 
 // The two HDR numbers of an Apple MakerNote entry: { maker33, maker48, headroom } or null.
+/** @param {TiffModel} m @param {TiffEntry | null | undefined} e @returns {AppleHdr | null} */
 function appleHdrOf(m, e) {
   if (!e || !e.valid || e.inline || e.type !== 7) return null;
   const b = valueBytes(m, e);
   if (!appleBytesOk(b)) return null;
   const n = u16be(b, 14);
   if (n > 512 || 16 + n * 12 > b.length) return null;
+  /** @type {{ 33?: number, 48?: number }} */
   const vals = {};
   for (let i = 0; i < n; i++) {
     const q = 16 + i * 12;
@@ -981,12 +1141,16 @@ function appleHdrOf(m, e) {
 }
 
 // The MakerNote that holds only the two numbers.
+/** @param {AppleHdr} v @returns {Uint8Array} */
 export function appleHdrNote(v) {
-  const tags = [[33, v.maker33], ...(v.maker48 === null ? [] : [[48, v.maker48]])];
+  /** @type {[number, number][]} */
+  const tags = [[33, v.maker33], ...(v.maker48 === null ? [] : [/** @type {[number, number]} */ ([48, v.maker48])])];
   const head = 16 + tags.length * 12 + 4;
   const out = new Uint8Array(head + tags.length * 8);
   out.set(APPLE_SIG);
+  /** @type {(p: number, x: number) => void} */
   const w16 = (p, x) => { out[p] = x >>> 8; out[p + 1] = x & 255; };
+  /** @type {(p: number, x: number) => void} */
   const w32 = (p, x) => { out[p] = x >>> 24; out[p + 1] = (x >>> 16) & 255; out[p + 2] = (x >>> 8) & 255; out[p + 3] = x & 255; };
   w16(14, tags.length);
   tags.forEach(([tag, x], i) => {
@@ -999,6 +1163,7 @@ export function appleHdrNote(v) {
 }
 
 // Whether a MakerNote entry is exactly such a minimal note (what the scrub writes).
+/** @param {TiffModel} m @param {TiffEntry} e @returns {boolean} */
 function isAppleHdrNote(m, e) {
   const v = appleHdrOf(m, e);
   if (!v) return false;
@@ -1008,6 +1173,7 @@ function isAppleHdrNote(m, e) {
 }
 
 // The HDR numbers of the photo's own Apple MakerNote (in the Exif IFD), or null.
+/** @param {TiffModel | null | undefined} m @returns {AppleHdr | null} */
 export function appleHdr(m) {
   const exif = m && m.ifds.exif;
   const e = exif && exif.entries.find((x) => x.tag === 0x927c && x.valid);
@@ -1017,6 +1183,7 @@ export function appleHdr(m) {
 
 // The HDR numbers the photo carries, in its own Apple MakerNote or in a minimal note this
 // tool wrote, or null: whether an Apple gain map can still be shown in HDR.
+/** @param {TiffModel | null | undefined} m @returns {AppleHdr | null} */
 export function appleHdrAny(m) {
   const exif = m && m.ifds.exif;
   const e = exif && exif.entries.find((x) => x.tag === 0x927c && x.valid);
@@ -1026,6 +1193,7 @@ export function appleHdrAny(m) {
 // Replaces the photo's MakerNote, in place, with the minimal note holding v: the note is
 // written at the start of the old one, its length is set, and every other byte the old note
 // used (inside it, or claimed outside it) is zeroed. Returns false when that cannot be done.
+/** @param {TiffModel | null | undefined} m @param {AppleHdr} v @returns {boolean} */
 export function shrinkAppleNote(m, v) {
   const exif = m && m.ifds.exif;
   const e = exif && exif.entries.find((x) => x.tag === 0x927c && x.valid);
@@ -1040,6 +1208,7 @@ export function shrinkAppleNote(m, v) {
 }
 
 // Makes an EXIF block empty in place: header kept, IFD0 with no entries, everything else zero.
+/** @param {TiffModel} m */
 export function blankTiff(m) {
   const t = m.t;
   const off = m.r32(4);
@@ -1054,6 +1223,7 @@ export function blankTiff(m) {
 }
 
 // Writes the picture size into PixelXDimension and PixelYDimension, in place.
+/** @param {TiffModel | null | undefined} m @param {number} width @param {number} height */
 export function setTiffDimensions(m, width, height) {
   const exif = m && m.ifds.exif;
   if (!exif) return;
@@ -1073,25 +1243,40 @@ const BUILD_SKIP = new Set([PTR_EXIF, PTR_GPS, PTR_INTEROP, 0x927c, 0x0201, 0x02
   0x0103, 0x0102, 0x0106, 0x0115, 0x011c, 0x00fe, 0x0212, 0xa005, 0x0144, 0x0145, 0x015b, 0x0140]);
 // Keys never written into a fresh block, whatever the user kept: their data only makes
 // sense in the original file, or cannot be checked.
+/** @type {ReadonlySet<string | null>} */
 const BUILD_NEVER = new Set(['makernote', 'apple-hdr', 'technical-text', 'thumbnail', 'embedded', 'private', 'leftover']);
 
 // Builds a new TIFF block holding only the simple tags whose keys are kept. Orientation is
 // written as 1 because the caller has baked rotation into the pixels. No MakerNote, no
 // preview, no Interop IFD. Returns null when nothing is kept.
+/**
+ * @param {TiffModel | null | undefined} m
+ * @param {ReadonlySet<string | null>} keepKeys
+ * @returns {Uint8Array | null}
+ */
 export function buildTiff(m, keepKeys) {
   if (!m || !m.ifds.ifd0) return null;
+  /** @typedef {{ tag: number, type: number, count: number, bytes: Uint8Array, ptr?: undefined } | { tag: number, type: number, count: number, ptr: 'exif' | 'gps', bytes?: undefined }} NewEntry */
+  /** @type {(k: string | null) => boolean} */
   const keepKey = (k) => keepKeys.has(k) && !BUILD_NEVER.has(k);
+  /** @type {(ifd: TiffIfd | undefined, all: boolean) => TiffEntry[]} */
   const pick = (ifd, all) => (ifd ? ifd.entries.filter((e) => e.valid && !BUILD_SKIP.has(e.tag) && (all || keepKey(entryKey(m, ifd, e)))) : []);
+  /** @type {(e: TiffEntry) => NewEntry} */
   const raw = (e) => ({ tag: e.tag, type: e.type, count: e.count, bytes: m.t.slice(e.valueOffset, e.valueOffset + e.size) });
+  /** @type {(v: number) => Uint8Array} */
   const short = (v) => (m.le ? new Uint8Array([v & 255, v >> 8]) : new Uint8Array([v >> 8, v & 255]));
+  /** @type {NewEntry[]} */
   const ifd0 = pick(m.ifds.ifd0, false).map((e) => (e.tag === 0x0112 ? { tag: 0x0112, type: 3, count: 1, bytes: short(1) } : raw(e)));
   const exif = pick(m.ifds.exif, false).map(raw);
   const gps = keepKey('gps') ? pick(m.ifds.gps, true).map(raw) : [];
   if (!ifd0.length && !exif.length && !gps.length) return null;
   // Fields every EXIF block in a JPEG is expected to have. They are structural and green;
   // the picture size is filled in by insertExif from the picture it goes into.
+  /** @type {(v: number) => Uint8Array} */
   const long = (v) => (m.le ? new Uint8Array([v & 255, (v >>> 8) & 255, (v >>> 16) & 255, v >>> 24]) : new Uint8Array([v >>> 24, (v >>> 16) & 255, (v >>> 8) & 255, v & 255]));
+  /** @type {(list: NewEntry[], tag: number, type: number, count: number, bytes: Uint8Array) => void} */
   const add = (list, tag, type, count, bytes) => { if (!list.some((e) => e.tag === tag)) list.push({ tag, type, count, bytes }); };
+  /** @type {(s: string) => Uint8Array} */
   const ascii = (s) => new Uint8Array([...s].map((c) => c.charCodeAt(0)));
   add(ifd0, 0x011a, 5, 1, new Uint8Array([...long(72), ...long(1)]));
   add(ifd0, 0x011b, 5, 1, new Uint8Array([...long(72), ...long(1)]));
@@ -1106,11 +1291,12 @@ export function buildTiff(m, keepKeys) {
   if (gps.length && !gps.some((e) => e.tag === 0x0000)) gps.push({ tag: 0x0000, type: 1, count: 4, bytes: new Uint8Array([2, 3, 0, 0]) });
   ifd0.push({ tag: PTR_EXIF, type: 4, count: 1, ptr: 'exif' });
   if (gps.length) ifd0.push({ tag: PTR_GPS, type: 4, count: 1, ptr: 'gps' });
-  const dirs = [['ifd0', ifd0], ['exif', exif], ['gps', gps]].filter(([, l]) => l.length);
+  const dirs = /** @type {[string, NewEntry[]][]} */ ([['ifd0', ifd0], ['exif', exif], ['gps', gps]]).filter(([, l]) => l.length);
   for (const [, list] of dirs) list.sort((a, b) => a.tag - b.tag);
 
   // Layout: header, then each directory followed by its out-of-line values.
   let size = 8;
+  /** @type {Record<string, number>} */
   const at = {};
   for (const [name, list] of dirs) {
     at[name] = size;
@@ -1118,7 +1304,9 @@ export function buildTiff(m, keepKeys) {
     for (const e of list) if (e.bytes && e.bytes.length > 4) size += e.bytes.length + (e.bytes.length & 1);
   }
   const out = new Uint8Array(size);
+  /** @type {(p: number, v: number) => void} */
   const w16 = (p, v) => { if (m.le) { out[p] = v & 255; out[p + 1] = v >> 8; } else { out[p] = v >> 8; out[p + 1] = v & 255; } };
+  /** @type {(p: number, v: number) => void} */
   const w32 = (p, v) => {
     if (m.le) { out[p] = v & 255; out[p + 1] = (v >>> 8) & 255; out[p + 2] = (v >>> 16) & 255; out[p + 3] = v >>> 24; }
     else { out[p] = v >>> 24; out[p + 1] = (v >>> 16) & 255; out[p + 2] = (v >>> 8) & 255; out[p + 3] = v & 255; }

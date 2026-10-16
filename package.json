@@ -1,0 +1,13 @@
+{
+  "name": "metadatascrubber-typecheck",
+  "private": true,
+  "type": "module",
+  "description": "Type checking only: tsc checks the plain JavaScript the site and the app serve (JSDoc types, noEmit). The published app has no dependencies and no build step.",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "node types/stamped-imports.mjs && tsc -p jsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

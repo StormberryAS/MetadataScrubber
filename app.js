@@ -27,16 +27,156 @@
 // page's own read-back agrees (a JPEG with nothing listed and nothing to normalise), the
 // photo itself is the new file and is offered at once, without pressing Prepare picture.
 
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=7917c1ca';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=0fdef1c7';
+
+// Types for the checker only (JSDoc); see README, Type checking.
+/** @typedef {import('./src/core/taxonomy.js').Item} Item */
+/** @typedef {import('./src/core/taxonomy.js').Tier} Tier */
+/** @typedef {NonNullable<ReturnType<typeof detectFormat>>} Format */
+/** @typedef {Awaited<ReturnType<typeof inspect>>} Info */
+/** @typedef {ReturnType<typeof privacyWord>} Word */
+/** @typedef {{ x: number, y: number, w: number, h: number }} Rect */
+/**
+ * One loaded file.
+ * @typedef {object} Entry
+ * @property {File} file
+ * @property {Uint8Array} bytes
+ * @property {Format} format
+ * @property {Info} info
+ * @property {ImageBitmap | null} bitmap kept only when one file is loaded
+ * @property {boolean} decodable
+ * @property {boolean} turned
+ * @property {number} w
+ * @property {number} h
+ * @property {HTMLCanvasElement} [thumb]
+ */
+/** @typedef {Item & { count: number, values: Set<string> }} Row One line of the list, merged by id across files. */
+/** @typedef {(Item & { count?: undefined, values?: undefined }) | Row} ListItem */
+/**
+ * A copy of the choices on screen, see readOptions().
+ * @typedef {object} Options
+ * @property {{ mode: string, value?: number, bytes?: number }} resize
+ * @property {'same' | Format} format
+ * @property {string} background
+ * @property {boolean} cropOn
+ * @property {string | null} error
+ * @property {'resize-percent' | 'resize-edge' | 'resize-size' | null} field
+ * @property {Set<string>} selected
+ * @property {Rect | null} cropRect
+ */
+/**
+ * What will happen to one file, see planEntry().
+ * @typedef {object} Plan
+ * @property {Set<string>} remove
+ * @property {Rect} region
+ * @property {boolean} bake
+ * @property {Rect | null} crop
+ * @property {boolean} resized
+ * @property {boolean} convert
+ * @property {boolean} resave
+ * @property {number | null | undefined} sizeLimit
+ * @property {number} scale
+ * @property {number} outW
+ * @property {number} outH
+ * @property {Format} enc
+ * @property {string[]} warnings
+ * @property {string[]} notes
+ * @property {boolean} decodable
+ */
+/** @typedef {{ bytes: Uint8Array, width: number, height: number, quality: number | null | undefined, scale: number }} Encoded */
+/** @typedef {(scale: number, quality: number | undefined) => Promise<Encoded>} Encode */
+/**
+ * One new file, see processEntry().
+ * @typedef {object} Made
+ * @property {Uint8Array} bytes
+ * @property {Format} format
+ * @property {number} width
+ * @property {number} height
+ * @property {number | null | undefined} quality
+ * @property {boolean} lossless
+ * @property {Info} readback
+ * @property {Word} word
+ * @property {string[]} notes
+ * @property {string[]} warnings
+ */
+/** @typedef {Made & { entry: Entry, index: number, camera?: boolean, error?: undefined }} OkResult */
+/** @typedef {{ entry: Entry, index: number, error: Error, camera?: undefined }} FailedResult */
+/** @typedef {OkResult | FailedResult} Result */
+/**
+ * The page's elements by id. Every one is in index.html, and nothing removes them.
+ * @typedef {{
+ *   'announcer': HTMLDivElement,
+ *   'background-field': HTMLDivElement,
+ *   'background-input': HTMLInputElement,
+ *   'camera-input': HTMLInputElement,
+ *   'choose-btn': HTMLButtonElement,
+ *   'colour-note': HTMLParagraphElement,
+ *   'crop-box': HTMLDivElement,
+ *   'crop-controls': HTMLDivElement,
+ *   'crop-layer': HTMLDivElement,
+ *   'crop-multi': HTMLParagraphElement,
+ *   'crop-options': HTMLDivElement,
+ *   'crop-ratios': HTMLDivElement,
+ *   'crop-readout': HTMLParagraphElement,
+ *   'crop-toggle': HTMLInputElement,
+ *   'drop-zone': HTMLDivElement,
+ *   'edit-card': HTMLElement,
+ *   'edit-notes': HTMLUListElement,
+ *   'edit-unavailable': HTMLParagraphElement,
+ *   'file-input': HTMLInputElement,
+ *   'file-list': HTMLUListElement,
+ *   'file-summary': HTMLParagraphElement,
+ *   'format-field': HTMLDivElement,
+ *   'format-select': HTMLSelectElement,
+ *   'go-btn': HTMLButtonElement,
+ *   'go-nothing': HTMLParagraphElement,
+ *   'go-stale': HTMLParagraphElement,
+ *   'meta-empty': HTMLParagraphElement,
+ *   'meta-groups': HTMLDivElement,
+ *   'meta-intro': HTMLParagraphElement,
+ *   'meta-warnings': HTMLUListElement,
+ *   'mode-box': HTMLDivElement,
+ *   'mode-line': HTMLParagraphElement,
+ *   'mode-reasons': HTMLUListElement,
+ *   'name-input': HTMLInputElement,
+ *   'name-preview': HTMLParagraphElement,
+ *   'pick-actions': HTMLDivElement,
+ *   'pick-card': HTMLElement,
+ *   'pick-errors': HTMLDivElement,
+ *   'preview-canvas': HTMLCanvasElement,
+ *   'preview-missing': HTMLParagraphElement,
+ *   'preview-title': HTMLHeadingElement,
+ *   'preview-wrap': HTMLDivElement,
+ *   'reset-btn': HTMLButtonElement,
+ *   'resize-edge': HTMLInputElement,
+ *   'resize-error': HTMLParagraphElement,
+ *   'resize-percent': HTMLInputElement,
+ *   'resize-set': HTMLFieldSetElement,
+ *   'resize-size': HTMLInputElement,
+ *   'resize-unit': HTMLSelectElement,
+ *   'results': HTMLElement,
+ *   'results-list': HTMLDivElement,
+ *   'results-title': HTMLHeadingElement,
+ *   'select-count': HTMLParagraphElement,
+ *   'stage': HTMLDivElement,
+ *   'workspace': HTMLDivElement
+ * }} PageElements
+ */
 
 // ---------------------------------------------------------------------------------------
 // Constants
 
+/** @type {Record<Format, string>} */
 const MIME = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic' };
+/** @type {Record<Format, string>} */
 const EXT = { jpeg: 'jpg', png: 'png', webp: 'webp', heic: 'heic' };
+/** @type {Record<string, string>} */
 const FORMAT_NAME = { jpeg: 'JPEG', png: 'PNG', webp: 'WebP', heic: 'HEIC' };
+/** @type {Tier[]} */
 const TIER_ORDER = ['red', 'amber', 'green'];
+/** @type {Record<Tier, number>} */
 const TIER_RANK = { red: 0, amber: 1, green: 2 };
+/** @type {Record<Tier, string>} */
 const TIER_WORD = { red: 'Red', amber: 'Amber', green: 'Green' };
 const GROUP_RANK = Object.fromEntries(GROUPS.map((g, i) => [g.id, i]));
 const GROUP_LABEL = Object.fromEntries(GROUPS.map((g) => [g.id, g.label]));
@@ -64,6 +204,7 @@ const COLOUR_NOTE_TEXT = 'Colours may look a little duller and bright areas less
 
 // The tier words and their meanings, from the spec's file name table. The colour is the
 // tier of the most sensitive kind of item that can be left in a file with that word.
+/** @type {Record<Word, { tier: Tier, text: string }>} */
 const PRIVACY = {
   public: { tier: 'amber', text: 'Safe to share publicly: location, serial numbers, names, captions and the hidden preview are gone. Dates and device details may remain; check them under Amber.' },
   minimal: { tier: 'green', text: 'Only technical data left: rotation, colour, size and exposure.' },
@@ -95,9 +236,11 @@ const CAMERA_DONE = 'Photo taken. No metadata in it. It is ready to save or shar
 // same as the original and offer Prepare picture, which would make nothing.
 const CAMERA_IDLE = 'This photo is already your new file, below. To make another version, crop, resize or change the format first.';
 
+/** @type {Record<string, number | null>} */
 const RATIOS = { free: null, '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9, '1.91:1': 1.91 };
 
 // Re-saving with no size limit: high quality, so the loss is as small as it can be.
+/** @type {Record<string, number | undefined>} */
 const RESAVE_QUALITY = { jpeg: 0.92, webp: 0.9 };
 // Size limit: search on scale at a good fixed quality first, then lower the quality step
 // by step to a floor, and only then make the picture smaller than FLOOR_EDGE.
@@ -128,17 +271,26 @@ const ORIENT_TEST_TIFF = new Uint8Array([0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 
 // ---------------------------------------------------------------------------------------
 // Small helpers
 
-const $ = (id) => document.getElementById(id);
+// A known id gives its element type; any other id may find nothing.
+const $ = /** @type {{ <K extends keyof PageElements>(id: K): PageElements[K], (id: string): HTMLElement | null }} */ (
+  (/** @type {string} */ id) => document.getElementById(id));
 
 // Builds an element. Strings become text nodes, so untrusted text can never become markup.
+/**
+ * @template {keyof HTMLElementTagNameMap} K
+ * @param {K} tag
+ * @param {Record<string, unknown> | null} [props]
+ * @param {...unknown} kids
+ * @returns {HTMLElementTagNameMap[K]}
+ */
 function h(tag, props, ...kids) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {
     if (value === undefined || value === null || value === false) continue;
-    if (key === 'class') node.className = value;
-    else if (key === 'text') node.textContent = value;
+    if (key === 'class') node.className = /** @type {string} */ (value);
+    else if (key === 'text') node.textContent = /** @type {string} */ (value);
     else if (key === 'dataset') Object.assign(node.dataset, value);
-    else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
+    else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), /** @type {EventListener} */ (value));
     else node.setAttribute(key, value === true ? '' : String(value));
   }
   for (const kid of kids.flat(Infinity)) {
@@ -149,19 +301,25 @@ function h(tag, props, ...kids) {
 }
 
 const intFormat = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 0 });
+/** @param {number} n */
 const fmtInt = (n) => intFormat.format(Math.round(n));
+/** @param {number} w @param {number} h */
 const fmtDims = (w, h) => `${fmtInt(w)} × ${fmtInt(h)} pixels`;
 
+/** @param {number} n */
 function fmtBytes(n) {
   if (n < 1000) return `${fmtInt(n)} bytes`;
+  /** @type {[string, number]} */
   const unit = n < 1e6 ? ['KB', 1e3] : ['MB', 1e6];
   const v = n / unit[1];
   const digits = v < 10 ? 1 : 0;
   return `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: digits }).format(v)} ${unit[0]}`;
 }
 
+/** @param {number} n @param {string} one @param {string} many */
 const plural = (n, one, many) => `${fmtInt(n)} ${n === 1 ? one : many}`;
 
+/** @param {string[]} words */
 function listText(words) {
   if (words.length <= 1) return words.join('');
   return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
@@ -170,6 +328,7 @@ function listText(words) {
 // Reads a number typed by a person: accepts "59,4" and "59.4", spaces, a Unicode minus
 // and a unit after the number ("50 %", "2048 px"). A comma followed by groups of exactly
 // three digits is a thousands separator ("2,048").
+/** @param {unknown} text */
 function parseNumber(text) {
   let t = String(text || '').trim()
     .replace(/[\s\u00a0\u202f]/g, '')
@@ -181,6 +340,7 @@ function parseNumber(text) {
   return parseFloat(t);
 }
 
+/** @param {string} text */
 function announce(text) {
   const node = $('announcer');
   node.textContent = '';
@@ -188,10 +348,12 @@ function announce(text) {
   setTimeout(() => { node.textContent = text; }, 60);
 }
 
+/** @type {(canvas: HTMLCanvasElement, type: string, quality?: number) => Promise<Blob | null>} */
 const canvasBlob = (canvas, type, quality) => new Promise((resolve) => {
   try { canvas.toBlob(resolve, type, quality); } catch { resolve(null); }
 });
 
+/** @param {HTMLCanvasElement} canvas */
 function releaseCanvas(canvas) {
   canvas.width = 0;
   canvas.height = 0;
@@ -200,6 +362,7 @@ function releaseCanvas(canvas) {
 // ---------------------------------------------------------------------------------------
 // Browser abilities, learned once
 
+/** @type {Promise<boolean> | null} */
 let webpSupport = null;
 function canEncodeWebp() {
   if (!webpSupport) {
@@ -217,7 +380,9 @@ function canEncodeWebp() {
 
 // Whether createImageBitmap() turns a picture by its EXIF rotation, per format: true,
 // false, or null when it cannot be tested here.
+/** @type {Record<string, Promise<boolean | null>>} */
 const orientationTests = {};
+/** @param {Format} format */
 function decodeAppliesRotation(format) {
   if (!(format in orientationTests)) {
     orientationTests[format] = (async () => {
@@ -225,14 +390,16 @@ function decodeAppliesRotation(format) {
         const c = document.createElement('canvas');
         c.width = 2;
         c.height = 1;
-        const ctx = c.getContext('2d');
+        // A fresh canvas always has a 2D context; were it missing, the catch below answers null.
+        const ctx = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
         ctx.fillStyle = '#808080';
         ctx.fillRect(0, 0, 2, 1);
         const blob = await canvasBlob(c, MIME[format], 0.9);
         releaseCanvas(c);
         if (!blob || blob.type !== MIME[format]) return null;
         const tagged = insertExif(new Uint8Array(await blob.arrayBuffer()), format, ORIENT_TEST_TIFF);
-        const bmp = await createImageBitmap(new Blob([tagged], { type: MIME[format] }));
+        // The engine's bytes are never backed by a SharedArrayBuffer, which is all the cast rules out.
+        const bmp = await createImageBitmap(new Blob([/** @type {Uint8Array<ArrayBuffer>} */ (tagged)], { type: MIME[format] }));
         const turned = bmp.width === 1 && bmp.height === 2;
         bmp.close();
         return turned;
@@ -248,11 +415,17 @@ function decodeAppliesRotation(format) {
 // State
 
 const state = {
+  /** @type {Entry[]} */
   entries: [],        // one per loaded file, see loadFiles()
+  /** @type {Row[]} */
   rows: [],           // the metadata list: items merged by id across files
+  /** @type {Set<string>} */
   selected: new Set(),
+  /** @type {{ on: boolean, ratio: string, rect: Rect | null }} */
   crop: { on: false, ratio: 'free', rect: null },
+  /** @type {Result[]} */
   results: [],
+  /** @type {string[]} */
   urls: [],
   busy: false,
   loadToken: 0,
@@ -269,12 +442,18 @@ const goLabel = () => (state.entries.length > 1 ? 'Prepare pictures' : 'Prepare 
 // camera: the file is a photo from the app's own camera (1.1.0). If the page's read-back
 // confirms it holds no metadata, it becomes the result straight away (showCameraResult);
 // otherwise it goes through the normal steps like any other picture.
+/**
+ * @param {Iterable<File>} fileList
+ * @param {{ camera?: boolean }} [options]
+ */
 async function loadFiles(fileList, { camera = false } = {}) {
   const files = [...fileList].filter((f) => f && typeof f.arrayBuffer === 'function');
   if (!files.length) return;
   resetAll();
   const token = ++state.loadToken;
+  /** @type {string[]} */
   const errors = [];
+  /** @type {Entry[]} */
   const entries = [];
   announce(files.length === 1 ? 'Reading the picture.' : `Reading ${files.length} pictures.`);
 
@@ -349,6 +528,7 @@ async function loadFiles(fileList, { camera = false } = {}) {
 // own reading of its bytes finds a JPEG with no detail at all, no warning and nothing to
 // put in standard form. The app checked it twice already; this is the third check, and
 // the one the page can see for itself.
+/** @param {Entry} entry */
 function cameraClean(entry) {
   const info = entry.info;
   return entry.format === 'jpeg' && info.format === 'jpeg' && info.items.length === 0 && info.warnings.length === 0 && !info.normalise;
@@ -359,6 +539,7 @@ function cameraClean(entry) {
 // with the read-back the page just made. Crop, resize and format below still work; any
 // change clears this result, as for any other, and Prepare picture then makes a re-saved
 // file without the camera line.
+/** @param {Entry} entry */
 function showCameraResult(entry) {
   state.results = [{
     entry, index: 0, bytes: entry.bytes, format: 'jpeg', width: entry.w, height: entry.h, quality: null, lossless: true,
@@ -374,6 +555,7 @@ function showCameraResult(entry) {
 
 // Decodes the picture (when the browser can) to learn its size the right way up, and
 // whether createImageBitmap already applied the rotation setting.
+/** @param {Entry} entry @param {boolean} keepBitmap */
 async function prepareEntry(entry, keepBitmap) {
   const { info } = entry;
   const o = info.orientation || 1;
@@ -414,6 +596,7 @@ async function prepareEntry(entry, keepBitmap) {
   }
 }
 
+/** @param {Entry} entry */
 async function getBitmap(entry) {
   if (entry.bitmap) return { bitmap: entry.bitmap, owned: false };
   const bitmap = await createImageBitmap(entry.file);
@@ -422,6 +605,10 @@ async function getBitmap(entry) {
 
 // The matrix that maps the decoded picture onto the right-way-up picture, for each EXIF
 // rotation value. w and h are the decoded picture's size.
+/**
+ * @param {number} o @param {number} w @param {number} h
+ * @returns {[number, number, number, number, number, number]}
+ */
 function orientMatrix(o, w, h) {
   switch (o) {
     case 2: return [-1, 0, 0, 1, w, 0];
@@ -437,6 +624,10 @@ function orientMatrix(o, w, h) {
 
 // Draws the part `region` (in right-way-up picture pixels) of the picture into a target
 // of tw x th pixels.
+/**
+ * @param {CanvasRenderingContext2D} ctx @param {Entry} entry @param {ImageBitmap} bitmap
+ * @param {Rect} region @param {number} tw @param {number} th
+ */
 function drawRegion(ctx, entry, bitmap, region, tw, th) {
   const sx = tw / region.w;
   const sy = th / region.h;
@@ -449,15 +640,18 @@ function drawRegion(ctx, entry, bitmap, region, tw, th) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
+/** @param {Entry} entry @returns {Rect} */
 function fullRegion(entry) {
   return { x: 0, y: 0, w: entry.w, h: entry.h };
 }
 
+/** @param {number} w @param {number} h @param {number} longEdge */
 function fitSize(w, h, longEdge) {
   const s = Math.min(1, longEdge / Math.max(w, h));
   return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)) };
 }
 
+/** @param {Entry} entry @param {ImageBitmap} bitmap */
 function drawThumb(entry, bitmap) {
   const size = fitSize(entry.w, entry.h, THUMB_EDGE * 2);
   const canvas = h('canvas', { class: 'ms-thumb', width: size.w, height: size.h, 'aria-hidden': 'true' });
@@ -467,7 +661,9 @@ function drawThumb(entry, bitmap) {
 }
 
 // Merges the items of every loaded file by id, so one tick applies to all files.
+/** @param {Entry[]} entries @returns {Row[]} */
 function mergeRows(entries) {
+  /** @type {Map<string, Row>} */
   const rows = new Map();
   for (const entry of entries) {
     for (const item of entry.info.items) {
@@ -504,6 +700,7 @@ function hdrKept() {
 // ---------------------------------------------------------------------------------------
 // Rendering the workspace
 
+/** @param {string[]} errors */
 function showPickErrors(errors) {
   const box = $('pick-errors');
   box.replaceChildren();
@@ -535,10 +732,12 @@ function renderWorkspace() {
 }
 
 // The engine says so when a file stops early or has broken parts.
+/** @param {Entry} entry */
 function looksDamaged(entry) {
   return entry.info.warnings.some((w) => /cut short|damaged|ends without/i.test(w)) || entry.info.items.some((it) => /:damaged$/.test(it.id));
 }
 
+/** @param {Entry} entry */
 function fileFacts(entry) {
   return `${FORMAT_NAME[entry.format]}, ${fmtDims(entry.w, entry.h)}, ${fmtBytes(entry.bytes.length)}`;
 }
@@ -563,7 +762,8 @@ function renderPreview() {
       const size = fitSize(entry.w, entry.h, PREVIEW_LONG_EDGE);
       canvas.width = size.w;
       canvas.height = size.h;
-      const ctx = canvas.getContext('2d');
+      // The preview canvas is only ever used for 2D drawing, so its context always exists.
+      const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
       ctx.clearRect(0, 0, size.w, size.h);
       drawRegion(ctx, entry, entry.bitmap, fullRegion(entry), size.w, size.h);
       canvas.classList.toggle('is-pixelated', size.w < 400 && size.h < 400);
@@ -574,7 +774,8 @@ function renderPreview() {
       missing.textContent = entry.format === 'heic' ? HEIC_NO_PREVIEW : looksDamaged(entry) ? DAMAGED_NO_PREVIEW : OTHER_NO_PREVIEW;
     }
     $('crop-controls').hidden = false;
-    $('crop-toggle').closest('label').hidden = !entry.bitmap;
+    // index.html wraps the crop tick box in its label.
+    /** @type {HTMLLabelElement} */ ($('crop-toggle').closest('label')).hidden = !entry.bitmap;
     $('crop-multi').hidden = true;
     return;
   }
@@ -598,7 +799,7 @@ function renderPreview() {
         h('p', { class: 'ms-file-meta', text: `${fileFacts(e)}. ${e.info.items.length ? `${plural(e.info.items.length, 'detail', 'details')}, ${fmtInt(reds)} red.` : 'No metadata.'}` })));
   }));
   $('crop-controls').hidden = false;
-  $('crop-toggle').closest('label').hidden = true;
+  /** @type {HTMLLabelElement} */ ($('crop-toggle').closest('label')).hidden = true;
   $('crop-multi').hidden = false;
 }
 
@@ -617,12 +818,14 @@ function layoutStage() {
   stage.style.height = `${ht}px`;
 }
 
+/** @param {Tier} tier */
 function tierBadge(tier) {
   return h('span', { class: 'tier-badge', dataset: { tier }, text: TIER_WORD[tier] });
 }
 
 // The read-only list of what remains in a new file, one block per group (Where, Who and
 // so on), most sensitive first within a group.
+/** @param {Item[]} items @param {{ idPrefix: string }} options */
 function renderGroups(items, { idPrefix }) {
   const frag = document.createDocumentFragment();
   for (const group of GROUPS) {
@@ -649,6 +852,7 @@ function renderGroups(items, { idPrefix }) {
 // red Content Credentials detail sits with the other red details. Within a section the
 // details follow the group order (Where, Who, When, Device, Hidden extras, Technical),
 // then the order the engine found them in, and each names its group.
+/** @param {Row[]} items */
 function renderTiers(items) {
   const frag = document.createDocumentFragment();
   for (const tier of TIER_ORDER) {
@@ -724,6 +928,7 @@ function chevron() {
   return svg;
 }
 
+/** @param {string | undefined} tier @param {boolean} open */
 function setTierOpen(tier, open) {
   const toggle = $(`m-tier-${tier}-toggle`);
   const list = $(`m-tier-${tier}-list`);
@@ -732,6 +937,7 @@ function setTierOpen(tier, open) {
   list.hidden = !open;
 }
 
+/** @param {ListItem} it */
 function itemValue(it) {
   if (!it.values || state.entries.length < 2) return it.value;
   const where = it.count === state.entries.length ? 'in every picture' : `in ${fmtInt(it.count)} of ${fmtInt(state.entries.length)} pictures`;
@@ -741,6 +947,7 @@ function itemValue(it) {
 // One item: its name with the tier and source beside it, then its value and note. The
 // tier is always a word next to the colour. For a checkbox, the name is the label and the
 // value, note and tier are its description, read in that order.
+/** @param {ListItem} it @param {{ pick: boolean, id: string, showGroup?: boolean }} options */
 function renderItem(it, { pick, id, showGroup = false }) {
   // An item whose value cannot be read is still in the file and can still be removed.
   const value = itemValue(it) || 'Present, but its value cannot be read.';
@@ -783,6 +990,7 @@ function renderMetadata() {
   $('meta-intro').hidden = !hasItems;
   $('select-count').hidden = !hasItems;
 
+  /** @type {string[]} */
   const warnings = [];
   state.entries.forEach((e, i) => {
     for (const w of e.info.warnings) warnings.push(single() ? w : `Picture ${i + 1}: ${w}`);
@@ -794,12 +1002,13 @@ function renderMetadata() {
 }
 
 function syncSelectionUi() {
-  for (const box of document.querySelectorAll('#meta-groups .ms-check')) {
-    box.checked = state.selected.has(box.dataset.id);
-    box.closest('.ms-item').classList.toggle('is-ticked', box.checked);
+  for (const box of /** @type {NodeListOf<HTMLInputElement>} */ (document.querySelectorAll('#meta-groups .ms-check'))) {
+    box.checked = state.selected.has(/** @type {string} */ (box.dataset.id));
+    // renderItem puts every tick box inside its .ms-item label.
+    /** @type {HTMLLabelElement} */ (box.closest('.ms-item')).classList.toggle('is-ticked', box.checked);
   }
   // Each tier's own tick box: ticked when every detail of the tier is, half-ticked when some are.
-  for (const all of document.querySelectorAll('#meta-groups .ms-tier-check')) {
+  for (const all of /** @type {NodeListOf<HTMLInputElement>} */ (document.querySelectorAll('#meta-groups .ms-tier-check'))) {
     const tier = all.dataset.tier;
     const rows = state.rows.filter((r) => r.tier === tier);
     const n = rows.filter((r) => state.selected.has(r.id)).length;
@@ -818,7 +1027,7 @@ function syncSelectionUi() {
 function renderEditAvailability() {
   const decodable = state.entries.some((e) => e.decodable);
   const note = $('edit-unavailable');
-  const controls = [...document.querySelectorAll('#resize-set input, #resize-set select, #format-select, #background-input')];
+  const controls = [.../** @type {NodeListOf<HTMLInputElement | HTMLSelectElement>} */ (document.querySelectorAll('#resize-set input, #resize-set select, #format-select, #background-input'))];
   for (const c of controls) c.disabled = !decodable;
   $('resize-set').hidden = !decodable;
   $('format-field').hidden = !decodable;
@@ -830,7 +1039,8 @@ function renderEditAvailability() {
     if (heic && single()) note.textContent = 'This browser cannot open HEIC pictures, so the size and format cannot be changed here. Removing metadata still works.';
     else if (single()) note.textContent = 'This browser cannot open this picture, so it can only have its metadata removed. Cropping, resizing and changing format do not work here.';
     else note.textContent = 'This browser cannot open these pictures, so they can only have their metadata removed. Cropping, resizing and changing format do not work here.';
-    document.querySelector('input[name="resize"][value="none"]').checked = true;
+    // The size choices are fixed in index.html, so this one is always found.
+    /** @type {HTMLInputElement} */ (document.querySelector('input[name="resize"][value="none"]')).checked = true;
     $('format-select').value = 'same';
   } else {
     note.hidden = true;
@@ -846,7 +1056,8 @@ async function updateFormatOptions() {
     if (select.value === 'webp') select.value = 'same';
     option.remove();
   }
-  const same = select.querySelector('option[value="same"]');
+  // index.html holds this option, and only the WebP one is ever removed.
+  const same = /** @type {HTMLOptionElement} */ (select.querySelector('option[value="same"]'));
   const entry = current();
   same.textContent = entry ? `Same as the original (${FORMAT_NAME[entry.format]})` : 'Same as each original';
 }
@@ -854,10 +1065,14 @@ async function updateFormatOptions() {
 // ---------------------------------------------------------------------------------------
 // Reading the options
 
+/** @returns {Options} */
 function readOptions() {
-  const mode = document.querySelector('input[name="resize"]:checked')?.value || 'none';
+  const mode = /** @type {HTMLInputElement | null} */ (document.querySelector('input[name="resize"]:checked'))?.value || 'none';
+  /** @type {Options['resize']} */
   const resize = { mode };
+  /** @type {string | null} */
   let error = null;
+  /** @type {Options['field']} */
   let field = null;
   if (mode === 'percent') {
     const v = parseNumber($('resize-percent').value);
@@ -876,7 +1091,8 @@ function readOptions() {
     if (!(bytes >= 5000)) { error = 'Enter a file size of at least 5 KB.'; field = 'resize-size'; }
     resize.bytes = bytes;
   }
-  const format = $('format-select').value;
+  // The list offers only 'same' and formats the engine knows (index.html).
+  const format = /** @type {Options['format']} */ ($('format-select').value);
   const background = $('background-input').value || '#ffffff';
   const cropOn = single() && state.crop.on && !!state.crop.rect;
   // A copy of the choices, so a click while the files are being made cannot change
@@ -884,10 +1100,11 @@ function readOptions() {
   return {
     resize, format, background, cropOn, error, field,
     selected: new Set(state.selected),
-    cropRect: cropOn ? { ...state.crop.rect } : null,
+    cropRect: cropOn ? { .../** @type {Rect} */ (state.crop.rect) } : null,
   };
 }
 
+/** @param {Entry} entry @param {Options} opts @returns {Rect | null} */
 function cropRegion(entry, opts) {
   if (!opts.cropOn || !opts.cropRect || entry !== current()) return null;
   const r = opts.cropRect;
@@ -901,11 +1118,14 @@ function cropRegion(entry, opts) {
 
 // What will happen to one file with the current choices. Used both to explain the choice
 // before the button is pressed and to do the work after.
+/** @param {Entry} entry @param {Options} opts @param {boolean} webpOk @returns {Plan} */
 function planEntry(entry, opts, webpOk) {
   const info = entry.info;
   const remove = new Set(info.items.filter((it) => opts.selected.has(it.id)).map((it) => it.id));
   const rotationIds = info.items.filter((it) => ROTATION_ID.test(it.id)).map((it) => it.id);
+  /** @type {string[]} */
   const warnings = [];
+  /** @type {string[]} */
   const notes = [];
   let bake = (info.orientation || 1) !== 1 && rotationIds.some((id) => remove.has(id));
   const crop = cropRegion(entry, opts);
@@ -949,15 +1169,18 @@ function planEntry(entry, opts, webpOk) {
 // nothing that re-saves it. A size limit the file already meets changes nothing either.
 // XMP that is not yet in the engine's standard form is always written again (normalise),
 // so such a file changes even with nothing ticked.
+/** @param {Entry} entry @param {Plan} plan */
 function changesNothing(entry, plan) {
   if (plan.remove.size || plan.resave || (entry.info && entry.info.normalise)) return false;
   return !plan.sizeLimit || entry.bytes.length <= plan.sizeLimit;
 }
 
+/** @param {Plan[]} plans */
 const nothingToDo = (plans) => plans.every((p, i) => changesNothing(state.entries[i], p));
 
 // What the page says, instead of making an identical copy, when the button is pressed
 // and no file would change. It names only the choices this page can actually offer.
+/** @param {Plan[]} plans */
 function nothingMessage(plans) {
   // A photo from the app's camera is its own new file already (showCameraResult).
   if (state.results[0]?.camera) return CAMERA_IDLE;
@@ -1014,12 +1237,13 @@ function refreshDerived() {
   const anyResave = plans.some((p) => p.resave);
   if (plans.some((p) => p.bake)) items.push('The rotation setting is being removed, so the picture is turned the right way up in its pixels and re-saved. Without this it would appear on its side.');
   if (plans.some((p) => p.crop)) {
-    const p = plans.find((x) => x.crop);
+    const p = /** @type {Plan & { crop: Rect }} */ (plans.find((x) => x.crop));
     items.push(`Cropped to ${fmtDims(p.crop.w, p.crop.h)}.`);
   }
   if (plans.some((p) => p.resized)) {
     if (single()) items.push(`Resized to ${fmtDims(plans[0].outW, plans[0].outH)}.`);
-    else items.push(opts.resize.mode === 'percent' ? `Resized to ${fmtInt(opts.resize.value)} per cent.` : `Resized so the longest side is at most ${fmtInt(opts.resize.value)} pixels.`);
+    // Only a percentage or a longest side with a value resizes a batch (planEntry).
+    else items.push(opts.resize.mode === 'percent' ? `Resized to ${fmtInt(/** @type {number} */ (opts.resize.value))} per cent.` : `Resized so the longest side is at most ${fmtInt(/** @type {number} */ (opts.resize.value))} pixels.`);
   }
   if (plans.some((p) => p.convert)) items.push(`Saved as ${FORMAT_NAME[opts.format] || 'a new format'}.`);
   const keptOther = anyResave && state.entries.some((e, i) => plans[i].resave && e.info.items.some((it) => !plans[i].remove.has(it.id) && !it.id.startsWith('exif:') && it.tier !== 'green'));
@@ -1068,7 +1292,9 @@ function refreshDerived() {
     // image IDs or layout details also leaves out its unexplained data.
     const gainGone = items.some((it) => GAIN_MAP_IDS.has(it.id)) && [...GAIN_MAP_OWN].some((id) => p.remove.has(id));
     const mpfRebuilt = p.remove.has('jpeg:mpf:ids') || p.remove.has('jpeg:mpf:layout');
+    /** @param {string} id */
     const withGainMap = (id) => GAIN_MAP_OWN.has(id) || id.startsWith(`${GAIN_MAP_ID}:`) || id.startsWith(`${HEIC_GAIN_MAP_ID}:`) || id.startsWith('jpeg:mpf:') || id.startsWith('jpeg:isogain:');
+    /** @param {string} id */
     const gone = (id) => p.remove.has(id) || (gainGone && withGainMap(id)) || (id === 'jpeg:mpf:extra' && mpfRebuilt);
     const remaining = items.filter((it) => !gone(it.id));
     const ext = EXT[p.resave || p.sizeLimit ? p.enc : state.entries[0].format];
@@ -1088,6 +1314,7 @@ function refreshDerived() {
   $('go-btn').disabled = state.busy;
 }
 
+/** @param {boolean} show */
 function setColourNote(show) {
   const note = $('colour-note');
   const text = show ? COLOUR_NOTE_TEXT : '';
@@ -1097,6 +1324,7 @@ function setColourNote(show) {
 
 // The name typed by the user, made safe for a file name. The tier and extension are
 // always added by us, so a typed extension or tier word is dropped.
+/** @param {unknown} text */
 function cleanName(text) {
   let name = String(text || '')
     .normalize('NFC')
@@ -1113,6 +1341,7 @@ function cleanName(text) {
 // Making the new files
 
 class TooBig extends Error {
+  /** @param {number} w @param {number} h @param {{ w: number, h: number } | null} fit */
   constructor(w, h, fit) {
     super('canvas too large');
     this.w = w;
@@ -1121,6 +1350,7 @@ class TooBig extends Error {
   }
 }
 
+/** @param {number} w @param {number} h */
 function canvasWorks(w, h) {
   const c = document.createElement('canvas');
   try {
@@ -1141,6 +1371,7 @@ function canvasWorks(w, h) {
 
 // The nearest size, keeping the shape, that this browser can actually draw. Known limits
 // first (desktop browsers, then iOS), so only a few test canvases are ever made.
+/** @param {number} w @param {number} h */
 function nearestWorkable(w, h) {
   const limits = [[32767, 268435456], [16384, 268435456], [16384, 16777216], [8192, 16777216], [4096, 4194304], [2048, 4194304]];
   for (const [side, area] of limits) {
@@ -1152,6 +1383,7 @@ function nearestWorkable(w, h) {
   return null;
 }
 
+/** @param {number} w @param {number} h */
 function makeCanvas(w, h) {
   if (w * h > SAFE_CANVAS_AREA || w > 16384 || h > 16384) {
     if (!canvasWorks(w, h)) throw new TooBig(w, h, nearestWorkable(w, h));
@@ -1166,18 +1398,23 @@ function makeCanvas(w, h) {
 
 // Re-saves one picture: draw, encode, write back the kept EXIF, then remove anything the
 // encoder added or the user ticked, so the file holds only what the user chose to keep.
+/**
+ * @param {Entry} entry @param {Plan} plan @param {ImageBitmap} bitmap @param {Options} opts
+ * @returns {Encode}
+ */
 function makeEncoder(entry, plan, bitmap, opts) {
   const kept = entry.info.items.filter((it) => !plan.remove.has(it.id)).map((it) => it.id);
   const sourceIds = new Set(entry.info.items.map((it) => it.id));
   const exif = buildExif(entry.bytes, kept);
   const fill = plan.enc === 'jpeg' ? opts.background : null;
   const region = plan.region;
+  /** @type {Map<string, Encoded>} */
   const cache = new Map();
   return async (scale, quality) => {
     const tw = Math.max(1, Math.round(region.w * scale));
     const th = Math.max(1, Math.round(region.h * scale));
     const key = `${tw}x${th}@${quality}`;
-    if (cache.has(key)) return cache.get(key);
+    if (cache.has(key)) return /** @type {Encoded} */ (cache.get(key));
     const { canvas, ctx } = makeCanvas(tw, th);
     if (fill) {
       ctx.fillStyle = fill;
@@ -1190,6 +1427,7 @@ function makeEncoder(entry, plan, bitmap, opts) {
       if (!blob) throw new TooBig(tw, th, nearestWorkable(tw, th));
       throw new Error(`This browser could not save a ${FORMAT_NAME[plan.enc]} file.`);
     }
+    /** @type {Uint8Array} */
     let bytes = new Uint8Array(await blob.arrayBuffer());
     if (exif) bytes = insertExif(bytes, plan.enc, exif);
     const after = await inspect(bytes);
@@ -1204,9 +1442,17 @@ function makeEncoder(entry, plan, bitmap, opts) {
 // Finds the largest scale in [lo, hi] whose file fits `target` bytes, in a handful of tries.
 // File size grows roughly with the number of pixels, so each guess scales by the square
 // root of the size ratio, and the search narrows between the best fit and the smallest miss.
+/**
+ * @param {Encode} encode @param {number | undefined} quality @param {number} lo @param {number} hi
+ * @param {number} target @param {number} tries
+ * @returns {Promise<{ fit: Encoded | null, smallest: Encoded }>}
+ */
 async function searchScale(encode, quality, lo, hi, target, tries) {
+  /** @type {Encoded | null} */
   let fit = null;
+  /** @type {Encoded | null} */
   let miss = null;
+  /** @type {Encoded | null} */
   let smallest = null;
   let s = hi;
   for (let i = 0; i < tries; i++) {
@@ -1227,9 +1473,11 @@ async function searchScale(encode, quality, lo, hi, target, tries) {
     if (Math.abs(next - s) < 1e-4) break;
     s = next;
   }
-  return { fit, smallest };
+  // tries is never 0, so at least one version was made.
+  return { fit, smallest: /** @type {Encoded} */ (smallest) };
 }
 
+/** @param {Encode} encode @param {Plan} plan @param {number} maxBytes */
 async function fitToSize(encode, plan, maxBytes) {
   const target = Math.floor(maxBytes * TARGET_SHARE);
   const long = Math.max(plan.region.w, plan.region.h);
@@ -1251,10 +1499,12 @@ async function fitToSize(encode, plan, maxBytes) {
   return { ...(last.smallest.bytes.length < smallest.bytes.length ? last.smallest : smallest), fitted: false };
 }
 
+/** @param {Entry} entry @param {Options} opts @param {boolean} webpOk */
 async function processEntry(entry, opts, webpOk) {
   const plan = planEntry(entry, opts, webpOk);
   const notes = [...plan.notes];
   const warnings = [...plan.warnings];
+  /** @type {{ bytes: Uint8Array, format: Format, width: number, height: number, quality: number | null | undefined, lossless: boolean } | null} */
   let out = null;
 
   if (!plan.resave) {
@@ -1295,6 +1545,7 @@ async function processEntry(entry, opts, webpOk) {
     const present = new Set(readback.items.map((it) => it.id));
     const lost = entry.info.items.filter((it) => !plan.remove.has(it.id) && !present.has(it.id));
     // "Content Credentials (C2PA)" already names its source, so it is not repeated.
+    /** @param {Item} it */
     const named = (it) => (it.label.includes(`(${it.source})`) ? it.label : `${it.label} (${it.source})`);
     if (lost.length) notes.push(`You kept these, but re-saving the picture left them out: ${listText([...new Set(lost.map(named))])}.`);
   }
@@ -1339,12 +1590,14 @@ async function run() {
   // Let the button repaint before the work starts.
   await new Promise((r) => setTimeout(r, 30));
 
+  /** @type {Result[]} */
   const results = [];
   for (const [index, entry] of state.entries.entries()) {
     try {
       results.push({ entry, index, ...(await processEntry(entry, opts, webpOk)) });
     } catch (err) {
-      results.push({ entry, index, error: err });
+      // What the engine and the browser throw here are Errors and DOMExceptions.
+      results.push({ entry, index, error: /** @type {Error} */ (err) });
     }
   }
 
@@ -1383,6 +1636,7 @@ async function run() {
 // ---------------------------------------------------------------------------------------
 // Results
 
+/** @param {OkResult} r */
 function resultName(r) {
   const base = cleanName($('name-input').value);
   const n = state.entries.length > 1 ? `-${r.index + 1}` : '';
@@ -1403,11 +1657,13 @@ function renderResults() {
   $('results').hidden = false;
 }
 
+/** @param {Item[]} items */
 function tierCounts(items) {
   const parts = TIER_ORDER.map((t) => ({ t, n: items.filter((it) => it.tier === t).length })).filter((x) => x.n);
   return parts.map((x) => `${fmtInt(x.n)} ${x.t}`).join(', ');
 }
 
+/** @param {Result} r */
 function renderResult(r) {
   const many = state.entries.length > 1;
   const headId = `r${r.index}-name`;
@@ -1420,7 +1676,7 @@ function renderResult(r) {
         body.push(h('p', { text: `The largest it can make here is ${fmtDims(err.fit.w, err.fit.h)}.` }));
         body.push(h('button', {
           type: 'button', class: 'btn btn-secondary',
-          onclick: () => useWorkableSize(err.fit),
+          onclick: () => useWorkableSize(/** @type {{ w: number, h: number }} */ (err.fit)),
         }, `Use ${fmtDims(err.fit.w, err.fit.h)} instead`));
       } else {
         body.push(h('p', { text: 'Try a smaller size with Limit the longest side.' }));
@@ -1434,7 +1690,8 @@ function renderResult(r) {
   }
 
   const name = resultName(r);
-  const blob = new Blob([r.bytes], { type: MIME[r.format] });
+  // The engine's bytes are never backed by a SharedArrayBuffer, which is all the cast rules out.
+  const blob = new Blob([/** @type {Uint8Array<ArrayBuffer>} */ (r.bytes)], { type: MIME[r.format] });
   const url = URL.createObjectURL(blob);
   state.urls.push(url);
   const info = PRIVACY[r.word];
@@ -1442,6 +1699,7 @@ function renderResult(r) {
   // The word is public only because the HDR gain map stayed, still usable (with its XMP
   // description when the photo had one): say why, and how to get minimal.
   const notGreen = r.readback.items.filter((it) => it.tier !== 'green');
+  /** @param {string} id */
   const kept = (id) => notGreen.some((it) => it.id === id);
   const hadDescription = r.entry.info.items.some((it) => it.id === 'xmp:gainmap');
   const keptOnlyGainMap = r.word === 'public' && [...GAIN_MAP_IDS].some(kept) && (!hadDescription || kept('xmp:gainmap'))
@@ -1493,17 +1751,20 @@ function renderResult(r) {
     notes.length ? h('ul', { class: 'ms-notes' }, notes.map((n) => h('li', { class: 'ms-note', dataset: n.tier ? { tier: n.tier } : null, text: n.t }))) : null,
     readback);
 
-  if (single()) drawResultPreview(article.querySelector('.ms-result-preview'), blob);
+  // With one picture the article above holds the preview canvas.
+  if (single()) drawResultPreview(/** @type {HTMLCanvasElement} */ (article.querySelector('.ms-result-preview')), blob);
   return article;
 }
 
+/** @param {HTMLCanvasElement} canvas @param {Blob} blob */
 async function drawResultPreview(canvas, blob) {
   try {
     const bmp = await createImageBitmap(blob);
     const size = fitSize(bmp.width, bmp.height, 480);
     canvas.width = size.w;
     canvas.height = size.h;
-    const ctx = canvas.getContext('2d');
+    // A missing context would throw here, and the catch hides the preview.
+    const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(bmp, 0, 0, size.w, size.h);
     bmp.close();
@@ -1540,6 +1801,7 @@ async function drawResultPreview(canvas, blob) {
 // The line under the buttons follows both: a timer from the app's own count, a check when
 // the page becomes visible again (timers do not run while Android has frozen the app), and
 // the app's event. A newer Copy replaces the copy, so an older line reads as expired.
+/** @type {{ status: HTMLElement | null, deadline: number, timer: number, listening: boolean }} */
 const appCopy = { status: null, deadline: 0, timer: 0, listening: false };
 
 function expireAppCopy() {
@@ -1557,6 +1819,7 @@ function checkAppCopy() {
   else appCopy.timer = setTimeout(checkAppCopy, left);
 }
 
+/** @param {HTMLElement} status @param {number} expiresIn */
 function startAppCopy(status, expiresIn) {
   if (!appCopy.listening) {
     appCopy.listening = true;
@@ -1576,10 +1839,12 @@ function androidApp() {
   return a && typeof a.share === 'function' && typeof a.copyImage === 'function' ? a : null;
 }
 
+/** @param {OkResult} r */
 function resultFile(r) {
-  return new File([r.bytes], resultName(r), { type: MIME[r.format] });
+  return new File([/** @type {Uint8Array<ArrayBuffer>} */ (r.bytes)], resultName(r), { type: MIME[r.format] });
 }
 
+/** @param {File} file */
 function canShareFile(file) {
   try {
     return typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] }) === true;
@@ -1588,6 +1853,7 @@ function canShareFile(file) {
   }
 }
 
+/** @param {OkResult} r */
 function canCopy(r) {
   try {
     if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function' || typeof window.ClipboardItem !== 'function') return false;
@@ -1599,6 +1865,7 @@ function canCopy(r) {
   return r.format !== 'heic' || r.entry.decodable;
 }
 
+/** @param {Blob} blob */
 async function pngWithoutDetails(blob) {
   const bmp = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
@@ -1618,6 +1885,7 @@ async function pngWithoutDetails(blob) {
   return png;
 }
 
+/** @param {OkResult} r @param {Blob} blob */
 function renderShare(r, blob) {
   const app = androidApp();
   const share = app ? true : canShareFile(resultFile(r));
@@ -1626,6 +1894,7 @@ function renderShare(r, blob) {
   if (!share && !copy) return null;
   const id = `r${r.index}-share`;
   const status = h('p', { class: 'ms-share-status', id: `${id}-status`, role: 'status', 'aria-live': 'polite' });
+  /** @param {string} text */
   const say = (text) => { status.textContent = text; };
 
   let sharing = false;
@@ -1641,7 +1910,7 @@ function renderShare(r, blob) {
       }
     } catch (err) {
       // AbortError: the person closed the share sheet. Nothing to say.
-      if (!err || err.name !== 'AbortError') say(SHARE_FAILED);
+      if (!err || /** @type {Error} */ (err).name !== 'AbortError') say(SHARE_FAILED);
     } finally {
       sharing = false;
     }
@@ -1699,20 +1968,23 @@ function renderShare(r, blob) {
 }
 
 function renameResults() {
-  for (const link of document.querySelectorAll('#results-list .ms-download')) {
-    const r = state.results.find((x) => String(x.index) === link.dataset.result);
+  for (const link of /** @type {NodeListOf<HTMLAnchorElement>} */ (document.querySelectorAll('#results-list .ms-download'))) {
+    // Only a made file has a Save link, so the result found is never a failed one.
+    const r = /** @type {OkResult | undefined} */ (state.results.find((x) => String(x.index) === link.dataset.result));
     if (!r) continue;
     const name = resultName(r);
     link.download = name;
-    link.querySelector('.ms-download-name').textContent = name;
-    const article = link.closest('.ms-result');
+    // renderResult builds each link with its name span, inside its .ms-result article.
+    /** @type {HTMLSpanElement} */ (link.querySelector('.ms-download-name')).textContent = name;
+    const article = /** @type {HTMLElement} */ (link.closest('.ms-result'));
     const title = article.querySelector('.ms-result-name');
     if (title) title.textContent = name;
   }
 }
 
+/** @param {{ w: number, h: number }} fit */
 function useWorkableSize(fit) {
-  document.querySelector('input[name="resize"][value="edge"]').checked = true;
+  /** @type {HTMLInputElement} */ (document.querySelector('input[name="resize"][value="edge"]')).checked = true;
   $('resize-edge').value = String(Math.max(fit.w, fit.h));
   refreshDerived();
   run();
@@ -1732,11 +2004,13 @@ function choicesChanged() {
 // ---------------------------------------------------------------------------------------
 // Crop frame
 
+/** @param {Entry} entry */
 function cropMin(entry) {
   return Math.max(1, Math.min(MIN_EDGE, entry.w, entry.h));
 }
 
 // The largest frame of the given shape, centred on the picture.
+/** @param {Entry} entry @param {number} ratio @returns {Rect} */
 function largestWithRatio(entry, ratio) {
   let w = entry.w;
   let ht = w / ratio;
@@ -1747,6 +2021,7 @@ function largestWithRatio(entry, ratio) {
   return { x: (entry.w - w) / 2, y: (entry.h - ht) / 2, w, h: ht };
 }
 
+/** @param {Rect} rect */
 function setCropRect(rect) {
   const entry = current();
   if (!entry) return;
@@ -1775,6 +2050,7 @@ function placeCropBox() {
   $('crop-readout').textContent = `Crop: ${fmtDims(Math.round(r.w), Math.round(r.h))}, starting ${fmtInt(x)} from the left and ${fmtInt(y)} from the top.`;
 }
 
+/** @param {boolean} on */
 function setCropOn(on) {
   const entry = current();
   state.crop.on = on && !!entry && !!entry.bitmap;
@@ -1784,11 +2060,12 @@ function setCropOn(on) {
   choicesChanged();
 }
 
+/** @param {string} id */
 function applyRatio(id) {
   const entry = current();
   if (!entry) return;
   state.crop.ratio = id in RATIOS ? id : 'free';
-  for (const btn of document.querySelectorAll('#crop-ratios [data-ratio]')) btn.setAttribute('aria-pressed', String(btn.dataset.ratio === state.crop.ratio));
+  for (const btn of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#crop-ratios [data-ratio]'))) btn.setAttribute('aria-pressed', String(btn.dataset.ratio === state.crop.ratio));
   const ratio = RATIOS[state.crop.ratio];
   if (ratio) setCropRect(largestWithRatio(entry, ratio));
   else if (!state.crop.rect) setCropRect({ x: entry.w * 0.05, y: entry.h * 0.05, w: entry.w * 0.9, h: entry.h * 0.9 });
@@ -1797,8 +2074,10 @@ function applyRatio(id) {
 
 // Resizing from a handle. Edges move freely; with a fixed shape only the corners are
 // shown, and the size follows whichever direction the pointer moved further.
+/** @param {Rect} start @param {string} handle @param {number} dx @param {number} dy @returns {Rect} */
 function resizeFrom(start, handle, dx, dy) {
-  const entry = current();
+  // Only a drag on the crop frame gets here, and the frame is shown for one picture only.
+  const entry = /** @type {Entry} */ (current());
   const ratio = RATIOS[state.crop.ratio];
   const min = cropMin(entry);
   let l = start.x;
@@ -1823,27 +2102,31 @@ function resizeFrom(start, handle, dx, dy) {
   return { x: west ? r - w : l, y: north ? b - ht : t, w, h: ht };
 }
 
+/** @type {{ id: number, mode: string, x: number, y: number, start: Rect, kx: number, ky: number } | null} */
 let drag = null;
 
+/** @param {PointerEvent} ev */
 function onCropPointerDown(ev) {
-  const handleEl = ev.target.closest('[data-handle]');
-  const boxEl = ev.target.closest('#crop-box');
+  const handleEl = /** @type {HTMLElement | null} */ (/** @type {Element} */ (ev.target).closest('[data-handle]'));
+  const boxEl = /** @type {HTMLElement | null} */ (/** @type {Element} */ (ev.target).closest('#crop-box'));
   if (!boxEl || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
   ev.preventDefault();
   boxEl.focus({ preventScroll: true });
   const stageRect = $('stage').getBoundingClientRect();
   drag = {
     id: ev.pointerId,
-    mode: handleEl ? handleEl.dataset.handle : 'move',
+    mode: handleEl ? /** @type {string} */ (handleEl.dataset.handle) : 'move',
     x: ev.clientX,
     y: ev.clientY,
-    start: { ...state.crop.rect },
-    kx: current().w / stageRect.width,
-    ky: current().h / stageRect.height,
+    // The crop frame is shown for one picture only, and always with its rectangle.
+    start: { .../** @type {Rect} */ (state.crop.rect) },
+    kx: /** @type {Entry} */ (current()).w / stageRect.width,
+    ky: /** @type {Entry} */ (current()).h / stageRect.height,
   };
   try { $('crop-layer').setPointerCapture(ev.pointerId); } catch { /* capture is a nicety */ }
 }
 
+/** @param {PointerEvent} ev */
 function onCropPointerMove(ev) {
   if (!drag || ev.pointerId !== drag.id) return;
   ev.preventDefault();
@@ -1853,6 +2136,7 @@ function onCropPointerMove(ev) {
   else setCropRect(resizeFrom(drag.start, drag.mode, dx, dy));
 }
 
+/** @param {PointerEvent} ev */
 function onCropPointerUp(ev) {
   if (!drag || ev.pointerId !== drag.id) return;
   drag = null;
@@ -1861,13 +2145,16 @@ function onCropPointerUp(ev) {
 }
 
 let cropAnnounceTimer = 0;
+/** @param {KeyboardEvent} ev */
 function onCropKey(ev) {
+  /** @type {Record<string, [number, number] | undefined>} */
   const keys = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   const move = keys[ev.key];
   if (!move) return;
   ev.preventDefault();
-  const entry = current();
-  const r = state.crop.rect;
+  // The crop frame takes the keys only while it is shown: one picture, with its rectangle.
+  const entry = /** @type {Entry} */ (current());
+  const r = /** @type {Rect} */ (state.crop.rect);
   const step = Math.max(1, Math.round(Math.max(entry.w, entry.h) / 100));
   const [mx, my] = move;
   if (!ev.shiftKey) {
@@ -1908,7 +2195,7 @@ function resetAll() {
   setColourNote(false);
   if (!state.busy) $('go-btn').textContent = goLabel();
   $('choose-btn').textContent = 'Choose pictures';
-  for (const btn of document.querySelectorAll('#crop-ratios [data-ratio]')) btn.setAttribute('aria-pressed', String(btn.dataset.ratio === 'free'));
+  for (const btn of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#crop-ratios [data-ratio]'))) btn.setAttribute('aria-pressed', String(btn.dataset.ratio === 'free'));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1937,7 +2224,8 @@ function setUpCamera() {
     const input = $('camera-input');
     btn.addEventListener('click', () => input.click());
     input.addEventListener('change', () => {
-      const files = [...input.files];
+      // A file input always has a file list.
+      const files = [.../** @type {FileList} */ (input.files)];
       input.value = '';
       loadFiles(files);
     });
@@ -1978,7 +2266,7 @@ function init() {
   const input = $('file-input');
   $('choose-btn').addEventListener('click', () => input.click());
   input.addEventListener('change', () => {
-    const files = [...input.files];
+    const files = [.../** @type {FileList} */ (input.files)];
     input.value = '';
     loadFiles(files);
   });
@@ -1987,6 +2275,7 @@ function init() {
   // browser leave the page to show the file instead.
   const zone = $('drop-zone');
   let depth = 0;
+  /** @param {DragEvent} ev */
   const hasFiles = (ev) => [...(ev.dataTransfer?.types || [])].includes('Files');
   window.addEventListener('dragenter', (ev) => {
     if (!hasFiles(ev)) return;
@@ -2000,7 +2289,8 @@ function init() {
   window.addEventListener('dragover', (ev) => {
     if (!hasFiles(ev)) return;
     ev.preventDefault();
-    ev.dataTransfer.dropEffect = gateOpen() ? 'none' : 'copy';
+    // hasFiles() found files in it, so the transfer is there.
+    /** @type {DataTransfer} */ (ev.dataTransfer).dropEffect = gateOpen() ? 'none' : 'copy';
   });
   window.addEventListener('drop', (ev) => {
     if (!hasFiles(ev)) return;
@@ -2008,13 +2298,13 @@ function init() {
     depth = 0;
     zone.classList.remove('is-over');
     if (gateOpen() || state.busy) return;
-    loadFiles(ev.dataTransfer.files);
+    loadFiles(/** @type {DataTransfer} */ (ev.dataTransfer).files);
   });
 
   $('reset-btn').addEventListener('click', () => {
     resetAll();
     // Starting again also brings the size and format back to their defaults.
-    document.querySelector('input[name="resize"][value="none"]').checked = true;
+    /** @type {HTMLInputElement} */ (document.querySelector('input[name="resize"][value="none"]')).checked = true;
     $('format-select').value = 'same';
     $('background-input').value = '#ffffff';
     showPickErrors([]);
@@ -2023,7 +2313,7 @@ function init() {
   });
 
   $('meta-groups').addEventListener('change', (ev) => {
-    const all = ev.target.closest('.ms-tier-check');
+    const all = /** @type {HTMLInputElement | null} */ (/** @type {Element} */ (ev.target).closest('.ms-tier-check'));
     if (all) {
       // A half-ticked box becomes ticked when pressed, so a press ticks the whole tier.
       for (const r of state.rows) {
@@ -2036,24 +2326,25 @@ function init() {
       announce($('select-count').textContent);
       return;
     }
-    const box = ev.target.closest('.ms-check');
+    const box = /** @type {HTMLInputElement | null} */ (/** @type {Element} */ (ev.target).closest('.ms-check'));
     if (!box) return;
-    if (box.checked) state.selected.add(box.dataset.id);
-    else state.selected.delete(box.dataset.id);
+    // renderItem gives every tick box the id of its detail.
+    if (box.checked) state.selected.add(/** @type {string} */ (box.dataset.id));
+    else state.selected.delete(/** @type {string} */ (box.dataset.id));
     syncSelectionUi();
     choicesChanged();
   });
   $('meta-groups').addEventListener('click', (ev) => {
-    const toggle = ev.target.closest('.ms-tier-toggle');
+    const toggle = /** @type {HTMLButtonElement | null} */ (/** @type {Element} */ (ev.target).closest('.ms-tier-toggle'));
     if (!toggle) return;
     setTierOpen(toggle.dataset.tier, toggle.getAttribute('aria-expanded') !== 'true');
   });
 
-  $('crop-toggle').addEventListener('change', (ev) => setCropOn(ev.target.checked));
+  $('crop-toggle').addEventListener('change', (ev) => setCropOn(/** @type {HTMLInputElement} */ (ev.target).checked));
   $('crop-ratios').addEventListener('click', (ev) => {
-    const btn = ev.target.closest('[data-ratio]');
+    const btn = /** @type {HTMLElement | null} */ (/** @type {Element} */ (ev.target).closest('[data-ratio]'));
     if (!btn) return;
-    applyRatio(btn.dataset.ratio);
+    applyRatio(/** @type {string} */ (btn.dataset.ratio));
     choicesChanged();
   });
   const layer = $('crop-layer');
@@ -2066,15 +2357,16 @@ function init() {
   // The file name sits in this card too, but a new name changes no picture: it only
   // renames the file to save (below), so it never clears the new file.
   const editCard = $('edit-card');
-  const isName = (ev) => ev.target.id === 'name-input';
+  /** @param {Event} ev */
+  const isName = (ev) => /** @type {Element} */ (ev.target).id === 'name-input';
   editCard.addEventListener('change', (ev) => {
     if (!isName(ev)) choicesChanged();
   });
   editCard.addEventListener('input', (ev) => {
     if (isName(ev)) return;
     // Typing in a size field picks its option, so the number typed is the one used.
-    const field = ev.target.closest('.ms-radio-row')?.querySelector('input[type="radio"]');
-    if (field && ev.target.type === 'text') field.checked = true;
+    const field = /** @type {Element} */ (ev.target).closest('.ms-radio-row')?.querySelector('input[type="radio"]');
+    if (field && /** @type {HTMLInputElement | HTMLSelectElement} */ (ev.target).type === 'text') /** @type {HTMLInputElement} */ (field).checked = true;
     choicesChanged();
   });
 
