@@ -154,8 +154,8 @@ tasks.matching { it.name == "packageRelease" || it.name == "signReleaseBundle" }
 // ONE VISIBLE VERSION, TWO CODE LINES. The sovereign versionCode and versionName in
 // defaultConfig below are the only numbers ever bumped by hand. The Play build derives its
 // code from them and shows the same version name (Marcos, 2026-10-05: "1.0.0 for both"):
-//   Play versionCode = 1000 + sovereign versionCode   (1.1.0 code 6 -> code 1006)
-//   Play versionName = sovereign versionName          (1.1.0 -> 1.1.0)
+//   Play versionCode = 1000 + sovereign versionCode   (1.1.1 code 7 -> code 1007)
+//   Play versionName = sovereign versionName          (1.1.1 -> 1.1.1)
 // Play only needs monotonic codes within its own package, and the offset keeps them distinct
 // from the sovereign line and rising with it. The package name and the signing key are what
 // keep the two apart, not the version. Build every Play upload from a sovereign release tag.
@@ -182,8 +182,9 @@ android {
         // 1.0.0 (code 4): Share the new image with a warning that a picture online cannot be taken back (website: Share and Copy image; app: a warning before the first Share), a privacy page, a note when colours may look duller on HDR screens, and iPhone HDR brightness kept again when Apple's HDR gain is above 1 (2026-10-05). The Play build is 1.0.0 too, code 1004.
         // 1.0.1 (code 5): the app shows the website's Save, Copy image and Share the new image buttons, with the warning always under Share; Share goes straight to Android's share sheet, Copy image puts a fresh PNG without file details on Android's clipboard for 2 minutes (Marcos, 2026-10-06: "do the 2 minutes limit on the app, including the message"), and Save only saves (Marcos, 2026-10-05: "Build 1.0.1"); the HDR gain map keeps Amber with a new note that it is a second, smaller picture that may still show what was edited or blurred elsewhere. The Play build is 1.0.1 too, code 1005.
         // 1.1.0 (code 6): Take a photo in the app, a simple camera (shutter, front or back camera, flash where there is one, pinch to zoom) whose photo is made without a location or device details, is never added to the gallery and goes straight to Save, Copy image and Share (Marcos, 2026-10-10). CAMERA is the only permission, asked when Take a photo is tapped and the app does not have it yet; there is still no internet. A shared file is deleted after 10 minutes, and a file waiting for the save screen is deleted when that screen is closed without saving. On the website, phones and tablets get Take a photo too, through the device's own camera app. The Play build is 1.1.0 too, code 1006.
-        versionCode = 6
-        versionName = "1.1.0"
+        // 1.1.1 (code 7): Save writes the new file over an existing one whole or not at all: a storage app that refuses "write and truncate" gets a plain write, and the save then fails (and the mixed file goes) unless the file is exactly the new picture, so an older, longer file's end (a Motion Photo's video, say) can never follow it (SaveTarget.kt; Marcos, 2026-10-12: "1- next release"). The app also bundles the website as it stands since 1.1.0, among it the engine fix that finds and removes text stored under names such as constructor in PNG text or XMP (2026-10-16). The Play build is 1.1.1 too, code 1007.
+        versionCode = 7
+        versionName = "1.1.1"
         // Play line, derived from the code above (see playVersionCodeOffset); same versionName.
         if (playBuild) {
             versionCode = playVersionCodeOffset + versionCode!!
@@ -361,7 +362,7 @@ object WebAssets {
     // exclude list; repeating them here keeps the APK correct even if that list changes.
     val APK_EXCLUDES = listOf(
         "android/**", "fastlane/**", "tests/**", ".github/**", "zapstore.yaml", "CNAME",
-        "README*", "LICENSE", "NOTICE", "bump_assets.py", "node_modules/**",
+        "README*", "CHANGELOG*", "LICENSE", "NOTICE", "bump_assets.py", "node_modules/**",
         "**/__pycache__/**", "**/*.pyc", "**/*.bak*", "**/.DS_Store", "package.json",
         "package-lock.json", "Gemfile", "Gemfile.lock",
         // Type-checking tooling (2026-10-16): read by the TypeScript checker, never by the app.

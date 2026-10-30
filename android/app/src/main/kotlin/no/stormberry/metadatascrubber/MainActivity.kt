@@ -13,6 +13,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -563,9 +564,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * The document the save screen returned. What is written there, and what is removed after a
+     * failure, is decided by [SaveTarget] (1.1.1): the new file replaces the document whole or the
+     * save fails, and a file the person chose to replace is never deleted unless MetadataScrubber
+     * has opened it for writing.
+     */
     private fun onSaveTarget(target: Uri?) {
         val out = pendingOut ?: run {
-            if (target != null) toast(R.string.file_gone)
+            if (target != null) {
+                // The file waiting for this screen is gone (Android stopped the app meanwhile):
+                // only an empty document the save screen made is removed.
+                io.execute { SaveTarget.save(documentAt(target), null) }
+                toast(R.string.file_gone)
+            }
             return
         }
         if (target == null) {
@@ -577,13 +589,11 @@ class MainActivity : ComponentActivity() {
         }
         val name = out.file.name
         io.execute {
-            val ok = try {
-                if (!out.file.isFile || !outgoingFiles.owns(out.file)) throw IllegalStateException("gone")
-                openForWrite(target).use { sink -> out.file.inputStream().use { it.copyTo(sink) } }
-                true
-            } catch (_: Exception) {
-                false
-            }
+            val file = out.file
+            val ok = SaveTarget.save(
+                documentAt(target),
+                if (file.isFile && outgoingFiles.owns(file)) SaveTarget.Picture(file.length()) { file.inputStream() } else null,
+            )
             // Only this file's own folder goes, saved or not (a failed save is tried again
             // from the page, which makes a new copy). Another result may still be arriving or
             // waiting in its dialog, and a file shared earlier may not have been read yet by
@@ -597,12 +607,34 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun openForWrite(uri: Uri): OutputStream =
-        try {
-            contentResolver.openOutputStream(uri, "wt")
-        } catch (_: Exception) {
-            null
-        } ?: contentResolver.openOutputStream(uri, "w") ?: throw IllegalStateException("no stream")
+    /** The save screen's document, as [SaveTarget] reads and writes it. */
+    private fun documentAt(uri: Uri) = object : SaveTarget.Document {
+        override fun open(mode: String): OutputStream? = contentResolver.openOutputStream(uri, mode)
+
+        // The descriptor's own size first; a storage app that serves a pipe has none, so then the
+        // size it reports for the document.
+        override fun size(): Long? =
+            try {
+                contentResolver.openFileDescriptor(uri, "r")?.use { pfd -> pfd.statSize.takeIf { it >= 0 } }
+            } catch (_: Exception) {
+                null
+            } ?: try {
+                contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    val i = c.getColumnIndex(OpenableColumns.SIZE)
+                    if (c.moveToFirst() && i >= 0 && !c.isNull(i)) c.getLong(i) else null
+                }
+            } catch (_: Exception) {
+                null
+            }
+
+        override fun delete() {
+            try {
+                DocumentsContract.deleteDocument(contentResolver, uri)
+            } catch (_: Exception) {
+                // Some storage apps do not allow it; the file stays then.
+            }
+        }
+    }
 
     /**
      * Android's share sheet with the file, straight away; the page shows the warning. The

@@ -96,7 +96,7 @@ website: https://metadata.stormberry.as
 # compare link, and all Zapstore showed for 1.0.0 and 1.0.1. A plain text file is used
 # whole. Point it at the changelog of the versionCode being released, and change the
 # number at every release.
-release_notes: ./fastlane/metadata/android/en-US/changelogs/6.txt
+release_notes: ./fastlane/metadata/android/en-US/changelogs/7.txt
 
 # The APK ships no raster icon (the launcher icon is an adaptive-icon XML built
 # from vectors), and a store front-end without a bitmap shows an empty tile. So

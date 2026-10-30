@@ -27,10 +27,14 @@
 #
 # jsconfig.json, types/, package.json and package-lock.json are the type-checking tooling
 # (2026-10-16): the TypeScript checker reads them, the site and the app never do.
+#
+# CHANGELOG.md is the Android app's release log (1.1.1), read on GitHub, not part of the
+# website or the app.
 exclude:
   - LICENSE
   - NOTICE
   - README.md
+  - CHANGELOG.md
   - bump_assets.py
   - tests/
   - package.json
