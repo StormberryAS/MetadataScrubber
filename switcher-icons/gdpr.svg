@@ -1,0 +1,18 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- GDPRLetterBuilder: the icon, ICON-1 draft C, "Data about you", chosen by Marcos on
+       16 October 2026: a closed envelope with a small person on it. The same drawing as the
+       launcher icon (android/tools/launcher-icon.svg), the store icon and apple-touch-icon.png.
+       No tick, no scales of justice and no emblem of any authority.
+       switcher-icons/gdpr.svg is a byte copy of this file. -->
+  <rect x="6" y="14" width="52" height="38" rx="5" fill="#103033" stroke="url(#cGrad)" stroke-width="3"/>
+  <path d="M8 17 L32 35 L56 17" stroke="url(#cGrad)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="47" cy="44" r="12" fill="#ecfdfa"/>
+  <circle cx="47" cy="40.5" r="3.6" fill="#0f766e"/>
+  <path d="M40.5 51.5 A6.5 6 0 0 1 53.5 51.5" fill="#0f766e"/>
+  <defs>
+    <linearGradient id="cGrad" x1="6" y1="14" x2="58" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5eead4"/>
+      <stop offset="100%" stop-color="#14b8a6"/>
+    </linearGradient>
+  </defs>
+</svg>
