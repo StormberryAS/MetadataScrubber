@@ -92,6 +92,7 @@ function androidIndex(text) {
   return text.slice(0, lineStart) + indent + BRIDGE_TAG + '\n' + text.slice(lineStart);
 }
 const ZAPSTORE = 'https://zapstore.dev/apps/no.stormberry.metadatascrubber';
+const PLAY = 'https://play.google.com/store/apps/details?id=no.stormberry.metadatascrubber.play';
 
 // ---------------------------------------------------------------------------------------
 // Preconditions
@@ -682,7 +683,8 @@ async function appSection(p) {
     return { id: sec.id, n: document.querySelectorAll('[data-web-only]:not(#camera-btn)').length, hidden: sec.hidden, display: getComputedStyle(sec).display, height: r.height, last: main.lastElementChild === sec,
       href: a && a.getAttribute('href'), target: a && a.getAttribute('target'), rel: a && a.getAttribute('rel'), btn: !!a && a.matches('.btn.btn-secondary'), linkHeight: a ? a.getBoundingClientRect().height : 0,
       text: a && a.textContent, extra: a && a.querySelector('.visually-hidden')?.textContent, line: sec.querySelector('p')?.textContent,
-      firstScript: document.scripts[0]?.getAttribute('src') || null };
+      firstScript: document.scripts[0]?.getAttribute('src') || null,
+      play: (() => { const g = sec.querySelectorAll('a')[1]; return g ? { href: g.getAttribute('href'), target: g.getAttribute('target'), rel: g.getAttribute('rel'), btn: g.matches('.btn.btn-secondary'), height: g.getBoundingClientRect().height, text: g.textContent, row: g.parentElement === a.parentElement && g.parentElement.matches('.store-links') } : null; })() };
   })()`);
 }
 
@@ -692,6 +694,7 @@ async function checkAppSectionShown(p) {
   check(`${v}: the Android app section is the last thing in main, marked data-web-only, and shown on the website`, !!app && app.id === 'android-app' && app.n === 1 && app.last && !app.hidden && app.display !== 'none' && app.height > 0 && app.firstScript !== BRIDGE_FILE, app);
   check(`${v}: it links to ${ZAPSTORE} in a new tab (target _blank, rel noopener)`, !!app && app.href === ZAPSTORE && app.target === '_blank' && app.rel === 'noopener', app);
   check(`${v}: the link is a 44 px button that says where it goes and that it opens a new tab`, !!app && app.btn && app.linkHeight >= 44 && app.text === 'Get the Android app on Zapstore (opens in a new tab)' && app.extra === ' (opens in a new tab)', app);
+  check(`${v}: beside it, in the same row, a 44 px button to ${PLAY} in a new tab (2026-10-30)`, !!app && !!app.play && app.play.href === PLAY && app.play.target === '_blank' && app.play.rel === 'noopener' && app.play.btn && app.play.height >= 44 && app.play.text === 'Get the Android app on Google Play (opens in a new tab)' && app.play.row, app && app.play);
   check(`${v}: the line says what the app is, camera included, and no longer claims "no permissions"`, !!app && app.line === CAMERA_TEXT.appLine && !/no permissions/.test(app.line), app && app.line);
   await p.shot('0-android-app-bottom', { bottomFrom: '#android-app' });
   await p.ev("scrollTo({ top: 0, behavior: 'instant' })");

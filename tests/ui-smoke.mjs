@@ -66,6 +66,7 @@ function androidIndex(text) {
   return text.slice(0, lineStart) + indent + BRIDGE_TAG + '\n' + text.slice(lineStart);
 }
 const ZAPSTORE = 'https://zapstore.dev/apps/no.stormberry.metadatascrubber';
+const PLAY = 'https://play.google.com/store/apps/details?id=no.stormberry.metadatascrubber.play';
 const COLOUR_NOTE = 'Colours may look a little duller and bright areas less vivid on HDR screens.';
 
 // ---- Static server ---------------------------------------------------------------------
@@ -338,11 +339,13 @@ try {
       return { id: sec.id, n: document.querySelectorAll('[data-web-only]').length, hidden: sec.hidden, shown: r.height > 0 && getComputedStyle(sec).display !== 'none', last: main.lastElementChild === sec,
         href: a && a.getAttribute('href'), target: a && a.getAttribute('target'), rel: a && a.getAttribute('rel'), btn: !!a && a.matches('.btn.btn-secondary'), height: a ? a.getBoundingClientRect().height : 0,
         text: a && a.textContent, extra: a && a.querySelector('.visually-hidden')?.textContent, line: sec.querySelector('p')?.textContent,
-        bridge: !!document.querySelector('script[src="${BRIDGE_FILE}"]') };
+        bridge: !!document.querySelector('script[src="${BRIDGE_FILE}"]'),
+        play: (() => { const g = sec.querySelectorAll('a')[1]; return g ? { href: g.getAttribute('href'), target: g.getAttribute('target'), rel: g.getAttribute('rel'), btn: g.matches('.btn.btn-secondary'), height: g.getBoundingClientRect().height, text: g.textContent, row: g.parentElement === a.parentElement && g.parentElement.matches('.store-links') } : null; })() };
     })()`);
     check(`${tag} the Android app section is the last thing in main, marked data-web-only, and shown on the website`, !!app && app.id === 'android-app' && app.n === 1 && app.last && !app.hidden && app.shown && !app.bridge, app);
     check(`${tag} it links to the Zapstore listing in a new tab`, !!app && app.href === ZAPSTORE && app.target === '_blank' && app.rel === 'noopener', app);
     check(`${tag} the link is a button, says where it goes, and that it opens a new tab`, !!app && app.btn && app.height >= 44 && app.text === 'Get the Android app on Zapstore (opens in a new tab)' && app.extra === ' (opens in a new tab)', app);
+    check(`${tag} beside it, in the same row, a button to the Google Play listing in a new tab (2026-10-30)`, !!app && !!app.play && app.play.href === PLAY && app.play.target === '_blank' && app.play.rel === 'noopener' && app.play.btn && app.play.height >= 44 && app.play.text === 'Get the Android app on Google Play (opens in a new tab)' && app.play.row, app && app.play);
     check(`${tag} the line says what the app is, camera included, and no longer claims "no permissions"`, !!app && app.line === CAMERA_TEXT.appLine && !/no permissions/.test(app.line), app && app.line);
     // Without a touch screen (a laptop or desktop, at either width) there is no Take a photo.
     const cam = await p.ev(CAMERA_STATE);

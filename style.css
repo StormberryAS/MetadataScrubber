@@ -232,6 +232,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   white-space: normal;
 }
 
+/* The two store buttons, Zapstore and Google Play: side by side when they fit,
+   one above the other on a narrow screen. */
+.store-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-sm);
+  max-width: 100%;
+}
+
 /* ---- Shared building blocks for the app UI ------------------------ */
 .card {
   position: relative;
