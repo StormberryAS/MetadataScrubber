@@ -33,7 +33,7 @@
 // fails, 2 when the only failures are in the scrubbing engine (src/), which this harness
 // reports but does not judge the page by.
 //
-// The file name does not end in .test.mjs, so `node --test tests/` does not run it.
+// The file name does not end in .test.mjs, so `npm test` does not run it.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

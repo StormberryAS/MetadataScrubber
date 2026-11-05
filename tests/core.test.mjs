@@ -1,4 +1,4 @@
-// Engine tests for src/scrub-core.js. Run from the repository root with: node --test tests/
+// Engine tests for src/scrub-core.js. Run from the repository root with: npm test
 //
 // Every picture is generated here (see core-fixtures.mjs). Each format is checked the same
 // way: inspect() finds the planted items with the right tiers; scrubbing the red items

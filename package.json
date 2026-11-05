@@ -11,7 +11,7 @@
     "build": "tools/build-ts.sh",
     "check": "tools/build-ts.sh --check",
     "typecheck": "tools/build-ts.sh --check",
-    "test": "node --test tests/",
+    "test": "node --test 'tests/*.test.{mjs,ts}'",
     "audit": "node tests/audit.mjs",
     "ui-smoke": "node tests/ui-smoke.mjs",
     "e2e": "node tests/e2e.mjs"

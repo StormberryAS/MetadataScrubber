@@ -2,7 +2,7 @@
 // Adversarial privacy audit of the MetadataScrubber engine (src/scrub-core.js).
 //
 // A skeptic's harness: it tries to prove that metadata survives a scrub. It is not part of
-// the unit test suite (node --test does not pick it up) because it is slow and needs the
+// the unit test suite (npm test does not pick it up) because it is slow and needs the
 // same tools as the fixtures: exiftool, ImageMagick 7 (magick, with HEIC and WebP) and
 // python3 with Pillow.
 //
@@ -694,7 +694,7 @@ async function sectionRegistry(records) {
 
 async function sectionCore(records) {
   if (!existsSync(CORE_FIX) || !readdirSync(CORE_FIX).length) {
-    log(`[core] ${CORE_FIX} is empty; run the engine tests first (MS_FIXTURE_DIR=${CORE_FIX} node --test tests/)`);
+    log(`[core] ${CORE_FIX} is empty; run the engine tests first (MS_FIXTURE_DIR=${CORE_FIX} npm test)`);
     return;
   }
   const prev = process.env.MS_FIXTURE_DIR;
