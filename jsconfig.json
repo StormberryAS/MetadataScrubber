@@ -24,7 +24,6 @@
   "include": [
     "app.js",
     "src/scrub-core.js",
-    "src/core/heic.js",
     "src/core/jpeg.js",
     "src/core/png.js",
     "types/stamped-imports.d.ts",
