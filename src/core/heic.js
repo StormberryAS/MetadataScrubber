@@ -20,14 +20,14 @@
 // item properties, image items the picture does not use, and bytes inside the media data
 // that no item points at. What is not needed to show the picture is offered as an item.
 
-import { concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, subtractRanges, u16be, u32be, u64be, w16be, w32be, w64be, zeroRanges } from './bytes.js?v=e01e89d1';
-import { describeC2pa } from './c2pa.js?v=7e2f4ee2';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=50f98571';
+import { concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, subtractRanges, u16be, u32be, u64be, w16be, w32be, w64be, zeroRanges } from './bytes.js?v=987761c7';
+import { describeC2pa } from './c2pa.js?v=4b808582';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=7af211f7';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c7ed327c';
-import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=f4348940';
-import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=e0e75fec';
+import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=34ebccc5';
+import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=cbb67e4e';
 
-/** @typedef {import('./bytes.js').Range} Range */
+/** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
 /** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
 /** @typedef {import('./taxonomy.js').ItemSpec} ItemSpec */
 /** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */

@@ -7,7 +7,6 @@
 # TypeScript source; and on a listed app file that jsconfig.json does not type-check.
 #
 # Columns: the file today, what replaces it ("retire" means it is deleted, not converted), group.
-src/core/bytes.js                       ts/src/core/bytes.ts                    core-leaf
 src/core/taxonomy.js                    ts/src/core/taxonomy.ts                 core-leaf
 src/core/c2pa.js                        ts/src/core/c2pa.ts                     core
 src/core/icc.js                         ts/src/core/icc.ts                      core

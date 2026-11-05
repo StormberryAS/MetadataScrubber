@@ -1,4 +1,4 @@
-// The little of Node that src/core/bytes.js uses when the engine runs under the tests.
+// The little of Node that ts/src/core/bytes.ts uses when the engine runs under the tests.
 // The browser never takes that branch. Declared here so the page's programs need no @types
 // package (the tests have @types/node instead and do not read this file). Types only, so tsc
 // emits nothing for it; never served.

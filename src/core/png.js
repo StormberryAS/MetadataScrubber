@@ -8,17 +8,17 @@
 import {
   Assembler, clip, concat, crc32, encodeLatin1, encodeUtf8, formatBytes, hexDecode, hexEncodeLines, inflate, latin1,
   startsWith, u16be, u32be, utf8, w32be, zlibStored,
-} from './bytes.js?v=e01e89d1';
-import { describeC2pa } from './c2pa.js?v=7e2f4ee2';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=50f98571';
+} from './bytes.js?v=987761c7';
+import { describeC2pa } from './c2pa.js?v=4b808582';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=7af211f7';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc,
-} from './iptc.js?v=8de9a6f5';
+} from './iptc.js?v=9ef1fc59';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c7ed327c';
 import {
   TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation,
-} from './tiff.js?v=f4348940';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=e0e75fec';
+} from './tiff.js?v=34ebccc5';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=cbb67e4e';
 
 /** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
 /** @typedef {import('./taxonomy.js').ItemSpec} ItemSpec */

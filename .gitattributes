@@ -12,3 +12,5 @@
 # types/stamped-imports.d.ts is written by types/stamped-imports.mjs from the ?v= stamps (until the
 # last hand-written JavaScript file is gone, when both are deleted).
 /types/stamped-imports.d.ts linguist-generated=true
+# The engine's modules, compiled from ts/src/ (one per commit while the move goes on).
+/src/core/bytes.js linguist-generated=true

@@ -10,7 +10,7 @@
 // Each manifest also carries a unique identifier that links the file to its original, as
 // the XMP document IDs do. What the manifest is seen to repeat is still named in the value.
 
-import { formatBytes, latin1 } from './bytes.js?v=e01e89d1';
+import { formatBytes, latin1 } from './bytes.js?v=987761c7';
 
 const LOCATION = /GPS(?:Latitude|Longitude|Altitude|Position|Coordinates)|"?exif:GPS|LocationCreated|LocationShown/;
 const SERIAL = /SerialNumber|BodySerial|LensSerial|CameraSerial/;

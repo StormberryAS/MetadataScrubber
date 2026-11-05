@@ -20,9 +20,9 @@
 // recomputed when the old one was right, and cleared to zero, which means "not computed",
 // otherwise.
 
-import { clip, latin1, startsWith, u16be, u32be } from './bytes.js?v=e01e89d1';
+import { clip, latin1, startsWith, u16be, u32be } from './bytes.js?v=987761c7';
 
-/** @typedef {import('./bytes.js').Range} Range */
+/** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
 /** @typedef {import('./taxonomy.js').Tier} Tier */
 /**
  * One tag of the profile's tag table. kind says what happens to it: kept as colour data,

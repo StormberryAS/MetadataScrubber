@@ -7,12 +7,12 @@
 // checked. Resource names, padding, the character set marker, record versions and the
 // digest of the old IPTC data cannot carry anything along.
 
-import { clip, concat, encodeLatin1, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=e01e89d1';
-import { md5 } from './icc.js?v=50f98571';
-import { deviceNameOk } from './tiff.js?v=f4348940';
+import { clip, concat, encodeLatin1, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=987761c7';
+import { md5 } from './icc.js?v=7af211f7';
+import { deviceNameOk } from './tiff.js?v=34ebccc5';
 
 /** @typedef {import('./taxonomy.js').Tier} Tier */
-/** @typedef {import('./bytes.js').Range} Range */
+/** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
 /**
  * One IPTC dataset: record and number, and where it and its data lie.
  * @typedef {{ rec: number, ds: number, id: string, start: number, end: number, dataStart: number, dataEnd: number }} IptcDataset

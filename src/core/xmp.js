@@ -12,9 +12,9 @@
 // node names, old identifiers and any text between properties do not survive. The new
 // packet is parsed again and checked before it is trusted.
 
-import { clip, encodeUtf8, utf8 } from './bytes.js?v=e01e89d1';
-import { iccNameAllowed } from './icc.js?v=50f98571';
-import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=f4348940';
+import { clip, encodeUtf8, utf8 } from './bytes.js?v=987761c7';
+import { iccNameAllowed } from './icc.js?v=7af211f7';
+import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=34ebccc5';
 
 /** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
 /** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */
