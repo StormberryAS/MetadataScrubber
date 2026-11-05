@@ -17,10 +17,10 @@
 // Kept data never moves, so offsets inside a kept MakerNote stay valid.
 
 import { clip, formatBytes, latin1, subtractRanges, u16be, u16le, u32be, u32le, zeroRanges } from './bytes.js?v=987761c7';
-import { inspectIcc } from './icc.js?v=7af211f7';
+import { inspectIcc } from './icc.js?v=f690fd20';
 
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
-/** @typedef {import('./taxonomy.js').Tier} Tier */
+/** @typedef {Taxonomy.Tier} Tier */
 /**
  * One directory entry as read from the block.
  * @typedef {object} TiffEntry

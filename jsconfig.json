@@ -30,11 +30,11 @@
     "src/core/iptc.js",
     "src/core/jpeg.js",
     "src/core/png.js",
-    "src/core/taxonomy.js",
     "src/core/tiff.js",
     "src/core/webp.js",
     "src/core/xmp.js",
     "types/stamped-imports.d.ts",
+    "types/moved-types.d.ts",
     "ts/page.d.ts",
     "ts/node-shim.d.ts"
   ]

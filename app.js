@@ -27,11 +27,11 @@
 // page's own read-back agrees (a JPEG with nothing listed and nothing to normalise), the
 // photo itself is the new file and is offered at once, without pressing Prepare picture.
 
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=43dcd517';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=d34ae1f0';
 
 // Types for the checker only (JSDoc); see README, Type checking.
-/** @typedef {import('./src/core/taxonomy.js').Item} Item */
-/** @typedef {import('./src/core/taxonomy.js').Tier} Tier */
+/** @typedef {Taxonomy.Item} Item */
+/** @typedef {Taxonomy.Tier} Tier */
 /** @typedef {NonNullable<ReturnType<typeof detectFormat>>} Format */
 /** @typedef {Awaited<ReturnType<typeof inspect>>} Info */
 /** @typedef {ReturnType<typeof privacyWord>} Word */

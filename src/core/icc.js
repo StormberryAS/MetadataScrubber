@@ -23,7 +23,7 @@
 import { clip, latin1, startsWith, u16be, u32be } from './bytes.js?v=987761c7';
 
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
-/** @typedef {import('./taxonomy.js').Tier} Tier */
+/** @typedef {Taxonomy.Tier} Tier */
 /**
  * One tag of the profile's tag table. kind says what happens to it: kept as colour data,
  * checked as text, or stripped. used (colour tags) holds the ranges a colour engine reads;

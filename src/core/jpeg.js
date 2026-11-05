@@ -14,18 +14,18 @@
 import {
   Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, u16be, u16le, u32be, u32le, u64be, w16be,
 } from './bytes.js?v=987761c7';
-import { describeC2pa } from './c2pa.js?v=4b808582';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=7af211f7';
+import { describeC2pa } from './c2pa.js?v=97ae70f3';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=f690fd20';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb,
-} from './iptc.js?v=9ef1fc59';
-import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=c7ed327c';
-import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=34ebccc5';
-import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=cbb67e4e';
+} from './iptc.js?v=9c0d09fc';
+import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=c8d592f3';
+import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=95b646c0';
+import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=c0855ddd';
 
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
-/** @typedef {import('./taxonomy.js').Tier} Tier */
-/** @typedef {import('./taxonomy.js').Item} Item */
+/** @typedef {Taxonomy.Tier} Tier */
+/** @typedef {Taxonomy.Item} Item */
 /** @typedef {import('./tiff.js').TiffModel} TiffModel */
 /** @typedef {import('./iptc.js').ParsedIrb} ParsedIrb */
 /** @typedef {import('./iptc.js').ParsedIptc} ParsedIptc */
@@ -121,7 +121,7 @@ import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gai
  * @property {number} height
  * @property {number} orientation
  */
-/** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */
+/** @typedef {Taxonomy.ItemInternal} ItemInternal */
 
 const XMP_ID = 'http://ns.adobe.com/xap/1.0/\0';
 const XMP_EXT_ID = 'http://ns.adobe.com/xmp/extension/\0';
@@ -891,7 +891,7 @@ export function analyseJpeg(b, set, opts = {}) {
     if (model.orientation === undefined) model.orientation = tiffOrientation(m);
     if (!model.exifFirst) model.exifFirst = { seg: s, m };
     for (const it of tiffItems(m)) {
-      /** @type {import('./taxonomy.js').ItemSpec} */
+      /** @type {Taxonomy.ItemSpec} */
       const pub = { id: `exif:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'EXIF' };
       if (it.note) pub.note = it.note;
       set.add(pub, { kind: 'exif', seg: s, key: it.key });
@@ -1135,7 +1135,7 @@ export function analyseJpeg(b, set, opts = {}) {
   for (const [id, t] of trailingItems) {
     const total = t.ranges.reduce((n, [s, e]) => n + e - s, 0);
     const def = t.def;
-    /** @type {import('./taxonomy.js').ItemSpec} */
+    /** @type {Taxonomy.ItemSpec} */
     const pub = { id, group: def.group, tier: def.tier, label: def.label, value: total ? formatBytes(total) : 'Index only', source: id === 'jpeg:mpf' ? 'JPEG' : 'After the image' };
     if (def.note) pub.note = def.note;
     set.add(pub, { kind: 'trailing', ranges: t.ranges, segs: t.segs, couple: t.couple });
@@ -1320,7 +1320,7 @@ function analyseIrb(b, segs, set, model) {
     model.irb.iptc = iptc;
     model.irb.iptcRes = iptcRes;
     for (const it of iptcItems(iptc)) {
-      /** @type {import('./taxonomy.js').ItemSpec} */
+      /** @type {Taxonomy.ItemSpec} */
       const pub = { id: `iptc:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'IPTC' };
       if (it.note) pub.note = it.note;
       const id = set.add(pub, { kind: 'irb', part: 'iptc', key: it.key });

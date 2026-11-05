@@ -9,21 +9,21 @@ import {
   Assembler, clip, concat, crc32, encodeLatin1, encodeUtf8, formatBytes, hexDecode, hexEncodeLines, inflate, latin1,
   startsWith, u16be, u32be, utf8, w32be, zlibStored,
 } from './bytes.js?v=987761c7';
-import { describeC2pa } from './c2pa.js?v=4b808582';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=7af211f7';
+import { describeC2pa } from './c2pa.js?v=97ae70f3';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=f690fd20';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc,
-} from './iptc.js?v=9ef1fc59';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=c7ed327c';
+} from './iptc.js?v=9c0d09fc';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import {
   TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation,
-} from './tiff.js?v=34ebccc5';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=cbb67e4e';
+} from './tiff.js?v=95b646c0';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=c0855ddd';
 
-/** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
-/** @typedef {import('./taxonomy.js').ItemSpec} ItemSpec */
-/** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */
-/** @typedef {import('./taxonomy.js').Tier} Tier */
+/** @typedef {Taxonomy.ItemSet} ItemSet */
+/** @typedef {Taxonomy.ItemSpec} ItemSpec */
+/** @typedef {Taxonomy.ItemInternal} ItemInternal */
+/** @typedef {Taxonomy.Tier} Tier */
 /** @typedef {import('./iptc.js').ParsedIptc} ParsedIptc */
 /** @typedef {import('./iptc.js').ParsedIrb} ParsedIrb */
 /** @typedef {import('./iptc.js').IrbResource} IrbResource */

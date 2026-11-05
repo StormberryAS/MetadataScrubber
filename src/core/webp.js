@@ -5,14 +5,14 @@
 // removal the VP8X flags are brought in line and the RIFF size is rewritten.
 
 import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=987761c7';
-import { describeC2pa } from './c2pa.js?v=4b808582';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=7af211f7';
-import { UNREADABLE, cappedId } from './taxonomy.js?v=c7ed327c';
-import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=34ebccc5';
-import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=cbb67e4e';
+import { describeC2pa } from './c2pa.js?v=97ae70f3';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=f690fd20';
+import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
+import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=95b646c0';
+import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=c0855ddd';
 
-/** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
-/** @typedef {import('./taxonomy.js').ItemSpec} ItemSpec */
+/** @typedef {Taxonomy.ItemSet} ItemSet */
+/** @typedef {Taxonomy.ItemSpec} ItemSpec */
 /**
  * One RIFF chunk. `broken` marks a chunk whose stated size runs past the file.
  * @typedef {object} WebpChunk

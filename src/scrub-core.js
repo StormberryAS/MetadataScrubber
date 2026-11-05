@@ -17,17 +17,17 @@
 //   GROUPS, TIERS
 
 import { latin1, toU8 } from './core/bytes.js?v=987761c7';
-import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=c7ed327c';
-import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=5eba1783';
-import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=01828c70';
-import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=56e90d34';
-import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=46e66687';
-import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=34ebccc5';
+import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=c8d592f3';
+import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=c24cac38';
+import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=ca514f27';
+import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=39e90a6e';
+import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=26d369af';
+import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=95b646c0';
 
 export { GROUPS, TIERS };
 
 /** @typedef {'jpeg' | 'png' | 'webp' | 'heic'} Format */
-/** @typedef {import('./core/taxonomy.js').Item} Item */
+/** @typedef {Taxonomy.Item} Item */
 /** @typedef {ArrayBuffer | ArrayBufferView} Input A file's bytes, as the page or the tests hold them. */
 /**
  * What inspect() reports about a picture.

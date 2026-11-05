@@ -22,7 +22,7 @@ const FREE_TEXT = /dc:title|dc:description|dc:subject|\btitle\b|\bdescription\b|
 // { tier, value, note } for the item; tier is always red.
 /**
  * @param {Uint8Array[]} parts
- * @returns {{ tier: import('./taxonomy.js').Tier, value: string, note: string }}
+ * @returns {{ tier: Taxonomy.Tier, value: string, note: string }}
  */
 export function describeC2pa(parts) {
   let total = 0;

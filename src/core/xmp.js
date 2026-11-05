@@ -13,12 +13,12 @@
 // packet is parsed again and checked before it is trusted.
 
 import { clip, encodeUtf8, utf8 } from './bytes.js?v=987761c7';
-import { iccNameAllowed } from './icc.js?v=7af211f7';
-import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=34ebccc5';
+import { iccNameAllowed } from './icc.js?v=f690fd20';
+import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=95b646c0';
 
-/** @typedef {import('./taxonomy.js').ItemSet} ItemSet */
-/** @typedef {import('./taxonomy.js').ItemInternal} ItemInternal */
-/** @typedef {import('./taxonomy.js').Tier} Tier */
+/** @typedef {Taxonomy.ItemSet} ItemSet */
+/** @typedef {Taxonomy.ItemInternal} ItemInternal */
+/** @typedef {Taxonomy.Tier} Tier */
 
 /** @typedef {{ name: string, value: string, start: number, end: number }} XmlAttr */
 /** A text node; a directory clone's text has no source position. @typedef {{ text: string, start?: number, end?: number, name?: undefined }} XmlText */
@@ -1613,7 +1613,7 @@ export function addXmpItems(set, parsed, ctx, internal, byteSize) {
   }
   if (canon !== parsed.text || encodeUtf8(canon).length !== byteSize) set.normalise = true;
   for (const it of xmpItems(parsed, ctx)) {
-    /** @type {import('./taxonomy.js').ItemSpec} */
+    /** @type {Taxonomy.ItemSpec} */
     const pub = { id: `xmp:${it.key}`, group: it.group, tier: it.tier, label: it.label, value: it.value, source: 'XMP' };
     // A second packet's gain map fields are a copy, never the one description a kept gain
     // map keeps, so they get an id of their own and are ticked like any amber detail.

@@ -14,3 +14,4 @@
 /types/stamped-imports.d.ts linguist-generated=true
 # The engine's modules, compiled from ts/src/ (one per commit while the move goes on).
 /src/core/bytes.js linguist-generated=true
+/src/core/taxonomy.js linguist-generated=true
