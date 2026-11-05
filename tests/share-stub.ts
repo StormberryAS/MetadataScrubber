@@ -1,8 +1,11 @@
 // Stand-ins for the Web Share API and the async clipboard, for the browser tests
-// (tests/ui-smoke.mjs and tests/e2e.mjs). Desktop Chromium on Linux has no share sheet,
-// and a headless browser has no clipboard a test can read, so the tests replace both
-// before the page loads and record what the page hands them. Nothing is sent anywhere:
-// the stand-ins only keep the bytes in the page for the test to read back.
+// (tests/ui-smoke.mjs and tests/e2e.mjs). Node 24 runs this file directly; it is
+// type-checked with tests/tsconfig.json. Every export is either text the tests hand to
+// the page or a Node-side helper, so the types below describe only what this file gives
+// and takes. Desktop Chromium on Linux has no share sheet, and a headless browser has no
+// clipboard a test can read, so the tests replace both before the page loads and record
+// what the page hands them. Nothing is sent anywhere: the stand-ins only keep the bytes
+// in the page for the test to read back.
 //
 //   shareStub({ share: true, clipboard: true })  returns the source for
 //   Page.addScriptToEvaluateOnNewDocument.
@@ -19,7 +22,13 @@
 // The names the stand-ins create: window.__share = { mode, calls: [{ title, n, name, type,
 // b64 }] } and window.__clip = { mode, calls: [{ types, type, b64 }] }.
 
-export function shareStub({ share = true, clipboard = true } = {}) {
+/** Which stand-ins shareStub installs; each one is on unless set to false. */
+export interface ShareStubOptions {
+  share?: boolean;
+  clipboard?: boolean;
+}
+
+export function shareStub({ share = true, clipboard = true }: ShareStubOptions = {}): string {
   return `(() => {
   const b64 = (buf) => {
     const bytes = new Uint8Array(buf);
@@ -167,7 +176,7 @@ export const SHARE_STATE = `(() => {
 // 'camera', and serves it through 'in-pull' in chunks; mode 'hold' answers nothing until
 // answer(ok) is called. done lists the batches the page reported as received ('in-done'),
 // after which the app deletes its copy.
-export function appBridgeStub() {
+export function appBridgeStub(): string {
   return `(() => {
   const b64 = (bytes) => {
     let s = '';
@@ -227,14 +236,26 @@ export function appBridgeStub() {
 })();`;
 }
 
-// Joins one recorded file's chunks back into its bytes (Node side).
-export function appFileBytes(file) {
+/** One file the app stand-in kept: an entry of window.__ms.files, read back with page.evaluate. */
+export interface AppFile {
+  id: number;
+  action: string;
+  name: string;
+  mime: string;
+  size: number;
+  chunks: number;
+  parts: string[];
+}
+
+// Joins one recorded file's chunks back into its bytes (Node side). A missing file, or one
+// without parts, gives no bytes.
+export function appFileBytes(file: Pick<AppFile, 'parts'> | null | undefined): Buffer {
   return Buffer.concat((file && file.parts ? file.parts : []).map((p) => Buffer.from(p, 'base64')));
 }
 
 // A clock moved on by ms for Date.now only, then a 'visibilitychange' as when Android shows
 // the app again after freezing it (its timers did not run meanwhile). For page.evaluate.
-export const SKIP_CLOCK = (ms) => `(() => {
+export const SKIP_CLOCK = (ms: number): string => `(() => {
   const real = window.__realNow || (window.__realNow = Date.now.bind(Date));
   const skew = (window.__skew || 0) + ${ms};
   window.__skew = skew;

@@ -43,7 +43,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GROUPS, detectFormat, inspect, privacyWord, scrub } from '../src/scrub-core.js';
-import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
+import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.ts';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -68,10 +68,10 @@ const PHONE = { width: 390, height: 844, mobile: true, label: 'phone' };
 // and clipboard stand-ins say yes here, so only the bridge can hide Share and Copy.
 const ANDROID = { ...PHONE, label: 'android', android: true, init: shareStub({ share: true, clipboard: true }) };
 // The page as the Android app runs it (1.0.1): the bridge line, plus a stand-in for the app's
-// message channel that answers as MainActivity does (share-stub.mjs). The share and
+// message channel that answers as MainActivity does (share-stub.ts). The share and
 // clipboard stand-ins say no, as Android's WebView does, so only the app can show the buttons.
 const ANDROID_APP = { ...PHONE, label: 'android-app', android: true, init: `${appBridgeStub()}\n${shareStub({ share: false, clipboard: false })}` };
-// A phone with a share sheet (Linux Chromium has none, so share-stub.mjs stands in for it
+// A phone with a share sheet (Linux Chromium has none, so share-stub.ts stands in for it
 // and for the clipboard, and records what the page hands over).
 const SHARE_PHONE = { ...PHONE, label: 'phone-share', init: shareStub({ share: true, clipboard: true }) };
 // A browser with neither the Web Share API nor image copy.

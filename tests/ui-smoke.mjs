@@ -21,7 +21,7 @@ import { crc32, deflateSync } from 'node:zlib';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inspect, privacyWord } from '../src/scrub-core.js';
-import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.mjs';
+import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.ts';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -157,10 +157,10 @@ function pil(script, ...files) {
 // ---- One page --------------------------------------------------------------------------
 // android: load the page the way the APK does (see androidIndex), with a stand-in for the
 // app's message channel, window.MSBridge, that records what the bridge posts. android:
-// 'app' uses the stand-in of share-stub.mjs instead, which answers as the app does.
+// 'app' uses the stand-in of share-stub.ts instead, which answers as the app does.
 // android: 'bare' loads the bridge with no channel at all, as in an app whose WebView is
 // too old for it.
-// init: extra script run before the page's own, such as the share stand-ins (share-stub.mjs).
+// init: extra script run before the page's own, such as the share stand-ins (share-stub.ts).
 // touch: a touch screen, so the page sees a coarse pointer and no hover, as on a phone.
 async function openPage(width, height, { android = false, init = null, touch = false } = {}) {
   const { browserContextId } = await send('Target.createBrowserContext');
@@ -747,7 +747,7 @@ try {
   }
 
   // Share and Copy under Save. Linux Chromium has no share sheet and a headless browser no
-  // clipboard to read, so share-stub.mjs stands in for both and records what it is given.
+  // clipboard to read, so share-stub.ts stands in for both and records what it is given.
   {
     const tag = 'share';
     const p = await openPage(360, 780, { init: shareStub({ share: true, clipboard: true }) });
