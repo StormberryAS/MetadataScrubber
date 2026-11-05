@@ -27,7 +27,6 @@
     "src/core/heic.js",
     "src/core/jpeg.js",
     "src/core/png.js",
-    "src/core/webp.js",
     "types/stamped-imports.d.ts",
     "types/moved-types.d.ts",
     "ts/page.d.ts",
