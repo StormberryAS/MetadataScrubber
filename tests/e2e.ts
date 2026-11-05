@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // End-to-end test of MetadataScrubber in headless Chromium, set up to behave like production.
 //
-//   node tests/e2e.mjs [--out DIR] [--only name,name] [--chromium PATH] [--keep]
+//   node tests/e2e.ts [--out DIR] [--only name,name] [--chromium PATH] [--keep]
 //
 // What "like production" means here:
 //  * tests/serve.py serves the repository over HTTPS with the headers the stormberry.as zone
@@ -34,6 +34,16 @@
 // reports but does not judge the page by.
 //
 // The file name does not end in .test.ts, so `npm test` does not run it.
+//
+// TypeScript (TS-STEP-1, 1 November 2026): Node 24 runs this file directly (npm run e2e), and
+// tests/tsconfig.json type-checks it (strict) when tools/build-ts.sh runs. The engine is imported
+// through "#src/", which Node maps to the served ./src/ (see "imports" in package.json), so the
+// downloads are checked by the engine that ships. Only types were added to the JavaScript it was.
+// What comes back over the DevTools protocol, what the page returns to Runtime.evaluate, and what
+// Pillow, exiftool and the server log print is JSON from outside the program, which tsc cannot
+// know: it is typed Json (any) in this one place on purpose, as in tests/ui-smoke.ts and
+// GDPRLetterBuilder's tests/cdp.ts, so the checks read it as they always have. A non-null
+// assertion (!) marks a value that is always there at that point.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -42,8 +52,15 @@ import { tmpdir } from 'node:os';
 import { crc32, deflateSync } from 'node:zlib';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GROUPS, detectFormat, inspect, privacyWord, scrub } from '../src/scrub-core.js';
+import type { ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
+import { GROUPS, detectFormat, inspect, privacyWord, scrub } from '#src/scrub-core.js';
+import type { Format, InspectResult } from '#src/scrub-core.js';
+import type { Item, Tier } from '#src/core/taxonomy.js';
 import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.ts';
+
+/** JSON from outside the program (the DevTools protocol, the page, Pillow, exiftool): any on purpose, see the header. */
+type Json = any;
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
@@ -53,7 +70,7 @@ const ORIGIN = `https://${HOST}`;
 const PAGE_URL = `${ORIGIN}/`;
 
 const args = process.argv.slice(2);
-const opt = (name, fallback) => {
+const opt = (name: string, fallback: string): string => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
@@ -62,20 +79,29 @@ const OUT = resolve(opt('--out', process.env.MS_E2E_OUT || join(tmpdir(), 'metad
 const ONLY = (opt('--only', '') || '').split(',').filter(Boolean);
 const KEEP = args.includes('--keep');
 
-const DESKTOP = { width: 1280, height: 900, mobile: false, label: 'desktop' };
-const PHONE = { width: 390, height: 844, mobile: true, label: 'phone' };
+/** A browser window: its size, whether it is a phone, and what the page gets before its own scripts. */
+interface View {
+  width: number;
+  height: number;
+  mobile: boolean;
+  label: string;
+  android?: boolean;
+  init?: string;
+}
+const DESKTOP: View = { width: 1280, height: 900, mobile: false, label: 'desktop' };
+const PHONE: View = { width: 390, height: 844, mobile: true, label: 'phone' };
 // The page as the Android app loads it, on a phone-sized screen (see openPage). The share
 // and clipboard stand-ins say yes here, so only the bridge can hide Share and Copy.
-const ANDROID = { ...PHONE, label: 'android', android: true, init: shareStub({ share: true, clipboard: true }) };
+const ANDROID: View = { ...PHONE, label: 'android', android: true, init: shareStub({ share: true, clipboard: true }) };
 // The page as the Android app runs it (1.0.1): the bridge line, plus a stand-in for the app's
 // message channel that answers as MainActivity does (share-stub.ts). The share and
 // clipboard stand-ins say no, as Android's WebView does, so only the app can show the buttons.
-const ANDROID_APP = { ...PHONE, label: 'android-app', android: true, init: `${appBridgeStub()}\n${shareStub({ share: false, clipboard: false })}` };
+const ANDROID_APP: View = { ...PHONE, label: 'android-app', android: true, init: `${appBridgeStub()}\n${shareStub({ share: false, clipboard: false })}` };
 // A phone with a share sheet (Linux Chromium has none, so share-stub.ts stands in for it
 // and for the clipboard, and records what the page hands over).
-const SHARE_PHONE = { ...PHONE, label: 'phone-share', init: shareStub({ share: true, clipboard: true }) };
+const SHARE_PHONE: View = { ...PHONE, label: 'phone-share', init: shareStub({ share: true, clipboard: true }) };
 // A browser with neither the Web Share API nor image copy.
-const NO_SHARE = { ...DESKTOP, label: 'desktop-no-share', init: shareStub({ share: false, clipboard: false }) };
+const NO_SHARE: View = { ...DESKTOP, label: 'desktop-no-share', init: shareStub({ share: false, clipboard: false }) };
 
 // The APK serves the same index.html with one line added on its own line before the first
 // <script> tag, which loads android/web-overlay/android-bridge.js (WebAssets.inject in
@@ -84,7 +110,7 @@ const NO_SHARE = { ...DESKTOP, label: 'desktop-no-share', init: shareStub({ shar
 const BRIDGE_FILE = 'android-bridge.js';
 const BRIDGE_PATH = join(ROOT, 'android', 'web-overlay', BRIDGE_FILE);
 const BRIDGE_TAG = `<script src="${BRIDGE_FILE}"></script>`;
-function androidIndex(text) {
+function androidIndex(text: string): string {
   const first = text.indexOf('<script');
   const lineStart = text.lastIndexOf('\n', first) + 1;
   const indent = text.slice(lineStart, first);
@@ -106,7 +132,7 @@ for (const f of NEED) {
     process.exit(1);
   }
 }
-for (const [tool, probe] of [['python3', ['-c', 'import PIL']], ['exiftool', ['-ver']], ['magick', ['-version']], ['openssl', ['version']]]) {
+for (const [tool, probe] of [['python3', ['-c', 'import PIL']], ['exiftool', ['-ver']], ['magick', ['-version']], ['openssl', ['version']]] as [string, string[]][]) {
   if (spawnSync(tool, probe).status !== 0) {
     console.error(`This harness needs ${tool}${tool === 'python3' ? ' with Pillow' : ''}.`);
     process.exit(1);
@@ -125,21 +151,30 @@ const CHECKS = join(RUN, 'checks');
 for (const d of [SHOTS, DOWNLOADS, CHECKS]) mkdirSync(d, { recursive: true });
 const PROFILE = mkdtempSync(join(RUN, 'chromium-profile-'));
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const J = JSON.stringify;
 
 // ---------------------------------------------------------------------------------------
 // Results
 
-const results = []; // { flow, name, ok, category, detail, level }
+/** One check or note: category is ui, engine, harness or note. */
+interface Result {
+  flow: string;
+  name: string;
+  ok: boolean;
+  category: string;
+  detail: unknown;
+  level: 'pass' | 'fail' | 'note';
+}
+const results: Result[] = []; // { flow, name, ok, category, detail, level }
 let currentFlow = 'setup';
-function check(name, ok, detail, category = 'ui') {
+function check(name: string, ok: unknown, detail?: unknown, category = 'ui'): boolean {
   results.push({ flow: currentFlow, name, ok: !!ok, category, detail: ok ? undefined : detail, level: ok ? 'pass' : 'fail' });
   const tag = ok ? 'ok  ' : category === 'engine' ? 'FAIL[engine]' : 'FAIL';
   console.log(`  ${tag} ${name}${!ok && detail !== undefined ? `\n         ${typeof detail === 'string' ? detail : J(detail)}` : ''}`);
   return !!ok;
 }
-function note(name, detail) {
+function note(name: string, detail?: unknown): void {
   results.push({ flow: currentFlow, name, ok: true, category: 'note', detail, level: 'note' });
   console.log(`  note ${name}${detail !== undefined ? `: ${typeof detail === 'string' ? detail : J(detail)}` : ''}`);
 }
@@ -148,10 +183,10 @@ function note(name, detail) {
 // The local production stand-in
 
 const serveLog = join(RUN, 'serve.log');
-const server = spawn('python3', [join(ROOT, 'tests', 'serve.py'), '--tls', '--log', serveLog], {
+const server: ChildProcessByStdio<null, Readable, null> = spawn('python3', [join(ROOT, 'tests', 'serve.py'), '--tls', '--log', serveLog], {
   env: { ...process.env, TMPDIR: RUN }, stdio: ['ignore', 'pipe', 'inherit'],
 });
-const ready = await new Promise((res, rej) => {
+const ready = await new Promise<{ url: string; spki: string }>((res, rej) => {
   let buf = '';
   const t = setTimeout(() => rej(new Error('serve.py did not start')), 20000);
   server.stdout.on('data', (d) => {
@@ -166,7 +201,7 @@ const PORT = Number(new URL(ready.url).port);
 // ---------------------------------------------------------------------------------------
 // Chromium and the DevTools protocol
 
-const chrome = spawn(CHROMIUM, [
+const chrome: ChildProcessByStdio<null, null, Readable> = spawn(CHROMIUM, [
   '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${PROFILE}`,
   `--host-resolver-rules=MAP ${HOST} 127.0.0.1:${PORT}, MAP * ~NOTFOUND`,
   `--ignore-certificate-errors-spki-list=${ready.spki}`,
@@ -180,7 +215,7 @@ const chrome = spawn(CHROMIUM, [
   // this throwaway browser out of the person's own Chromium settings entirely.
   env: { ...process.env, XDG_CONFIG_HOME: join(RUN, 'xdg-config'), CHROME_CONFIG_HOME: join(RUN, 'xdg-config'), XDG_CACHE_HOME: join(RUN, 'xdg-cache') },
 });
-const wsUrl = await new Promise((res, rej) => {
+const wsUrl = await new Promise<string>((res, rej) => {
   let buf = '';
   const t = setTimeout(() => rej(new Error('Chromium did not start')), 30000);
   chrome.stderr.on('data', (d) => {
@@ -192,26 +227,26 @@ const wsUrl = await new Promise((res, rej) => {
 const ws = new WebSocket(wsUrl);
 await new Promise((r) => ws.addEventListener('open', r, { once: true }));
 let seq = 0;
-const pending = new Map();
-const listeners = new Set();
+const pending = new Map<number, { res: (value: Json) => void; rej: (err: Error) => void; method: string }>();
+const listeners = new Set<(m: Json) => void>();
 ws.addEventListener('message', (ev) => {
-  const m = JSON.parse(ev.data);
+  const m: Json = JSON.parse(ev.data);
   if (m.id && pending.has(m.id)) {
-    const p = pending.get(m.id);
+    const p = pending.get(m.id)!;
     pending.delete(m.id);
     if (m.error) p.rej(new Error(`${p.method}: ${m.error.message}`));
     else p.res(m.result);
   } else for (const fn of listeners) fn(m);
 });
-const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
+const send = (method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Json> => new Promise((res, rej) => {
   const id = ++seq;
   pending.set(id, { res, rej, method });
   ws.send(J({ id, method, params, sessionId }));
 });
 
 // Downloads are browser events, keyed by guid.
-const downloads = new Map(); // guid -> { name, url, state, dir }
-listeners.add((m) => {
+const downloads = new Map<string, { name: string; url: string; state: string }>(); // guid -> { name, url, state, dir }
+listeners.add((m: Json) => {
   if (m.method === 'Browser.downloadWillBegin') downloads.set(m.params.guid, { name: m.params.suggestedFilename, url: m.params.url, state: 'started' });
   if (m.method === 'Browser.downloadProgress') {
     const d = downloads.get(m.params.guid);
@@ -220,24 +255,85 @@ listeners.add((m) => {
 });
 
 // Everything recorded, across all flows.
-const record = { requests: [], failed: [], responses: [], console: [], logs: [], exceptions: [], issues: [], csp: [] };
+/** Where and when something was seen: the flow, the view and the page's phase (loading or after-load). */
+interface Seen {
+  flow: string;
+  view: string;
+  phase: string;
+}
+/** Everything recorded, by kind. The values come from DevTools events (Json); csp from the page. */
+interface Recorded {
+  requests: (Seen & { id: string; url: string; method: string; type: string; initiator?: string })[];
+  failed: (Seen & { url?: string; error: string; blocked?: string; cors?: Json })[];
+  responses: (Seen & { url: string; status: number; mime: string; type: string })[];
+  console: (Seen & { type: string; text: string })[];
+  logs: (Seen & { level: string; source: string; text: string; url?: string })[];
+  exceptions: (Seen & { text: string })[];
+  issues: (Seen & { code: string; details: Json })[];
+  csp: Json[];
+}
+const record: Recorded = { requests: [], failed: [], responses: [], console: [], logs: [], exceptions: [], issues: [], csp: [] };
 
 // ---------------------------------------------------------------------------------------
 // One page in a fresh browser context
 
-async function openPage(view) {
+/** A file the page saved, read back from the download folder. */
+interface Download {
+  name: string;
+  url: string;
+  bytes: Uint8Array;
+  path: string;
+}
+/** Where a screenshot starts and how much it takes (the whole window when none is given). */
+interface ShotOptions {
+  selector?: string;
+  full?: boolean;
+  bottomFrom?: string;
+}
+/** One page in its own browser context, and what a flow can do with it (see openPage). */
+interface Page {
+  view: View;
+  flow: string;
+  phase: string;
+  inflight: Map<string, string>;
+  lastNet: number;
+  loadFired: boolean;
+  dl: string;
+  androidInjected?: boolean;
+  gateSeen?: Json;
+  browserContextId: string;
+  s: (method: string, params?: Record<string, unknown>) => Promise<Json>;
+  ev: (expression: string) => Promise<Json>;
+  waitFor: (expression: string, ms?: number, label?: string) => Promise<boolean>;
+  click: (selector: string, index?: number) => Promise<void>;
+  typeInto: (selector: string, text: string) => Promise<void>;
+  setSelect: (selector: string, value: string) => Promise<void>;
+  setFiles: (names: string[]) => Promise<void>;
+  load: (names: string[]) => Promise<void>;
+  press: () => Promise<void>;
+  settle: () => Promise<void>;
+  download: () => Promise<Download[]>;
+  shot: (label: string, options?: ShotOptions) => Promise<string>;
+  shotAtButton: (label: string) => Promise<string>;
+  layout: (where: string) => Promise<void>;
+  close: () => Promise<void>;
+  networkIdle: (quiet?: number, ms?: number) => Promise<void>;
+  point: (selector: string, index?: number) => Promise<Json>;
+}
+
+async function openPage(view: View): Promise<Page> {
   const { browserContextId } = await send('Target.createBrowserContext', { disposeOnDetach: true });
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
-  const s = (m, p) => send(m, p, sessionId);
+  const s = (m: string, p?: Record<string, unknown>): Promise<Json> => send(m, p, sessionId);
   const flow = currentFlow;
-  const page = { view, flow, phase: 'loading', inflight: new Map(), lastNet: Date.now(), loadFired: false, dl: join(DOWNLOADS, `${flow}-${view.label}`) };
+  const page = { view, flow, phase: 'loading', inflight: new Map<string, string>(), lastNet: Date.now(), loadFired: false, dl: join(DOWNLOADS, `${flow}-${view.label}`) } as Page;
   mkdirSync(page.dl, { recursive: true });
 
-  const onMsg = (m) => {
+  const onMsg = (m: Json): void => {
     if (m.sessionId !== sessionId) return;
     const p = m.params;
-    const at = { flow, view: view.label, phase: page.phase };
+    const at: Seen = { flow, view: view.label, phase: page.phase };
     switch (m.method) {
       case 'Network.requestWillBeSent':
         record.requests.push({ ...at, id: p.requestId, url: p.request.url, method: p.request.method, type: p.type, initiator: p.initiator?.type });
@@ -257,7 +353,7 @@ async function openPage(view) {
         record.responses.push({ ...at, url: p.response.url, status: p.response.status, mime: p.response.mimeType, type: p.type });
         break;
       case 'Runtime.consoleAPICalled':
-        record.console.push({ ...at, type: p.type, text: p.args.map((a) => a.value ?? a.description ?? '').join(' ') });
+        record.console.push({ ...at, type: p.type, text: p.args.map((a: Json) => a.value ?? a.description ?? '').join(' ') });
         break;
       case 'Log.entryAdded':
         record.logs.push({ ...at, level: p.entry.level, source: p.entry.source, text: p.entry.text, url: p.entry.url });
@@ -272,7 +368,7 @@ async function openPage(view) {
         page.loadFired = true;
         break;
       case 'Fetch.requestPaused':
-        androidServe(p).catch((err) => record.exceptions.push({ ...at, text: `harness: Android injection failed: ${err.message}` }));
+        androidServe(p).catch((err: Error) => record.exceptions.push({ ...at, text: `harness: Android injection failed: ${err.message}` }));
         break;
       default:
     }
@@ -280,7 +376,7 @@ async function openPage(view) {
   listeners.add(onMsg);
 
   // Android view only: add the bridge line to the page and serve the bridge itself.
-  const androidServe = async (p) => {
+  const androidServe = async (p: Json): Promise<void> => {
     if (p.request.url === `${ORIGIN}/${BRIDGE_FILE}`) {
       await s('Fetch.fulfillRequest', { requestId: p.requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/javascript; charset=utf-8' }, { name: 'Cache-Control', value: 'no-store' }], body: readFileSync(BRIDGE_PATH).toString('base64') });
       return;
@@ -288,7 +384,7 @@ async function openPage(view) {
     if (p.request.url === PAGE_URL && p.responseStatusCode === 200) {
       const r = await s('Fetch.getResponseBody', { requestId: p.requestId });
       const text = r.base64Encoded ? Buffer.from(r.body, 'base64').toString('utf8') : r.body;
-      const headers = (p.responseHeaders || []).filter((h) => !/^(content-length|etag|content-encoding)$/i.test(h.name));
+      const headers = (p.responseHeaders || []).filter((h: Json) => !/^(content-length|etag|content-encoding)$/i.test(h.name));
       await s('Fetch.fulfillRequest', { requestId: p.requestId, responseCode: 200, responseHeaders: headers, body: Buffer.from(androidIndex(text), 'utf8').toString('base64') });
       page.androidInjected = true;
       return;
@@ -312,12 +408,12 @@ async function openPage(view) {
     source: "window.__e2eCsp=[];document.addEventListener('securitypolicyviolation',e=>window.__e2eCsp.push({d:e.violatedDirective,u:e.blockedURI,s:e.sourceFile,l:e.lineNumber,o:e.originalPolicy.slice(0,60)}),true);",
   });
 
-  const ev = async (expression) => {
+  const ev = async (expression: string): Promise<Json> => {
     const r = await s('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
     if (r.exceptionDetails) throw new Error(`evaluate failed: ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
     return r.result.value;
   };
-  const waitFor = async (expression, ms = 30000, label = expression) => {
+  const waitFor = async (expression: string, ms = 30000, label = expression): Promise<boolean> => {
     const end = Date.now() + ms;
     while (Date.now() < end) {
       if (await ev(expression)) return true;
@@ -325,7 +421,7 @@ async function openPage(view) {
     }
     throw new Error(`timed out waiting for ${label}`);
   };
-  const networkIdle = async (quiet = 600, ms = 20000) => {
+  const networkIdle = async (quiet = 600, ms = 20000): Promise<void> => {
     const end = Date.now() + ms;
     while (Date.now() < end) {
       if (page.inflight.size === 0 && Date.now() - page.lastNet >= quiet) return;
@@ -335,7 +431,7 @@ async function openPage(view) {
 
   // Presses an element where a person would: in its centre, after scrolling it into view,
   // and only if nothing else (an overlay, a sticky bar) is on top of it there.
-  const point = async (selector, index = 0) => {
+  const point = async (selector: string, index = 0): Promise<Json> => {
     const r = await ev(`(() => {
       const el = document.querySelectorAll(${J(selector)})[${index}];
       if (!el) return { err: 'not found' };
@@ -351,7 +447,7 @@ async function openPage(view) {
     if (!r.ok) throw new Error(`cannot press ${selector}: covered by ${r.hit}`);
     return r;
   };
-  const click = async (selector, index = 0) => {
+  const click = async (selector: string, index = 0): Promise<void> => {
     const { x, y } = await point(selector, index);
     if (view.mobile) {
       // A finger tap. (Input.synthesizeTapGesture gives a pointerdown but no click in
@@ -366,24 +462,24 @@ async function openPage(view) {
     }
     await sleep(80);
   };
-  const typeInto = async (selector, text) => {
+  const typeInto = async (selector: string, text: string): Promise<void> => {
     await click(selector);
     await ev(`document.querySelector(${J(selector)}).select()`);
     await s('Input.insertText', { text });
     await sleep(80);
   };
-  const setSelect = async (selector, value) => {
+  const setSelect = async (selector: string, value: string): Promise<void> => {
     await point(selector);
     await ev(`(() => { const el = document.querySelector(${J(selector)}); el.focus(); el.value = ${J(value)}; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     await sleep(80);
   };
-  const setFiles = async (names) => {
+  const setFiles = async (names: string[]): Promise<void> => {
     const { root } = await s('DOM.getDocument', { depth: 0 });
     const { nodeId } = await s('DOM.querySelector', { nodeId: root.nodeId, selector: '#file-input' });
     await s('DOM.setFileInputFiles', { nodeId, files: names.map((n) => (n.startsWith('/') ? n : join(FIX, n))) });
   };
   // Loads files through the real file input and waits for the page's own announcement.
-  const load = async (names) => {
+  const load = async (names: string[]): Promise<void> => {
     await ev("document.getElementById('announcer').textContent = ''");
     await setFiles(names);
     await waitFor("/loaded\\.|No picture could be read\\./.test(document.getElementById('announcer').textContent)", 60000, 'the files to load');
@@ -391,7 +487,7 @@ async function openPage(view) {
   };
   // The page scrolls smoothly to the result; a tap sent while it still moves would land
   // somewhere else, so wait until the page is still.
-  const settle = async () => {
+  const settle = async (): Promise<void> => {
     let last = await ev('scrollY');
     for (let i = 0; i < 40; i++) {
       await sleep(120);
@@ -400,19 +496,19 @@ async function openPage(view) {
       last = now;
     }
   };
-  const press = async () => {
+  const press = async (): Promise<void> => {
     await click('#go-btn');
     await waitFor("document.getElementById('go-btn').getAttribute('aria-busy') === null && !document.getElementById('results').hidden", 180000, 'the new file');
     await sleep(200);
     await settle();
   };
   // Presses every download link and returns [{ name, url, bytes, path }].
-  const download = async () => {
+  const download = async (): Promise<Download[]> => {
     const count = await ev("document.querySelectorAll('#results-list .ms-download').length");
     const before = new Set(downloads.keys());
     for (let i = 0; i < count; i++) await click('#results-list .ms-download', i);
     const end = Date.now() + 30000;
-    let mine = [];
+    let mine: [string, { name: string; url: string; state: string }][] = [];
     while (Date.now() < end) {
       mine = [...downloads.entries()].filter(([g]) => !before.has(g));
       if (mine.length >= count && mine.every(([, d]) => d.state === 'completed')) break;
@@ -423,9 +519,9 @@ async function openPage(view) {
       return { name: d.name, url: d.url, bytes: new Uint8Array(readFileSync(path)), path };
     });
   };
-  const shot = async (label, { selector, full, bottomFrom } = {}) => {
+  const shot = async (label: string, { selector, full, bottomFrom }: ShotOptions = {}): Promise<string> => {
     const file = join(SHOTS, `${view.label}-${label}.png`);
-    let clip;
+    let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
     if (bottomFrom) {
       // From just above this element to the end of the page.
       const b = await ev(`(() => { const el = document.querySelector(${J(bottomFrom)}); el.scrollIntoView({ block: 'start', behavior: 'instant' }); return [el.getBoundingClientRect().top + scrollY, document.documentElement.scrollHeight]; })()`);
@@ -445,11 +541,11 @@ async function openPage(view) {
   };
   // The page as a person sees it with the button in view: the loaded state, scrolled to
   // the one button at the bottom of the steps.
-  const shotAtButton = async (label) => {
+  const shotAtButton = async (label: string): Promise<string> => {
     await ev("document.getElementById('go-btn').scrollIntoView({ block: 'center', behavior: 'instant' })");
     return shot(label);
   };
-  const layout = async (where) => {
+  const layout = async (where: string): Promise<void> => {
     const o = await ev(`(() => {
       const vw = document.documentElement.clientWidth;
       const bad = [];
@@ -462,7 +558,7 @@ async function openPage(view) {
     })()`);
     check(`${view.label} ${where}: no sideways scrolling, nothing wider than the screen`, o.sw <= o.vw && !o.bad.length, o);
   };
-  const close = async () => {
+  const close = async (): Promise<void> => {
     const csp = await ev('window.__e2eCsp || []').catch(() => []);
     for (const c of csp) record.csp.push({ flow, view: view.label, ...c });
     listeners.delete(onMsg);
@@ -495,12 +591,28 @@ async function openPage(view) {
 // ---------------------------------------------------------------------------------------
 // Checking a downloaded file outside the browser
 
-const registry = readFileSync(REGISTRY, 'utf8').trim().split('\n').slice(1).map((line) => {
+/** A group of details as the checks use it (GROUPS in src/core/taxonomy.js). Typed here because,
+ * until ts/src/scrub-core.ts exists, src/scrub-core.js imports taxonomy through a ?v= stamped path
+ * that the tests' program does not follow, and GROUPS reads as any. */
+type Group = { id: string; label: string };
+
+/** One planted string from tests/fixtures/out/canaries.tsv. */
+interface Canary {
+  string: string;
+  kind: string;
+  file: string;
+  location: string;
+  group: string;
+  tier: string;
+  basis: string;
+  encoding: string;
+}
+const registry: Canary[] = readFileSync(REGISTRY, 'utf8').trim().split('\n').slice(1).map((line) => {
   const [string, kind, file, location, group, tier, basis, encoding] = line.split('\t');
   return { string, kind, file, location, group, tier, basis, encoding };
 });
 
-function py(script, ...argv) {
+function py(script: string, ...argv: string[]): Json {
   const r = spawnSync('python3', ['-c', script, ...argv], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(r.stderr || `python exited ${r.status}`);
   return JSON.parse(r.stdout);
@@ -525,7 +637,7 @@ from PIL import Image
 im = Image.open(sys.argv[1]); fmt = im.format; im = im.convert('RGB'); w, h = im.size
 print(json.dumps({'format': fmt, 'size': [w, h], 'corners': [im.getpixel(p) for p in [(1, 1), (w - 2, 1), (1, h - 2), (w - 2, h - 2)]], 'centre': im.getpixel((w // 2, h // 2))}))`;
 
-function exiftoolKeys(path) {
+function exiftoolKeys(path: string): Json {
   const r = spawnSync('exiftool', ['-j', '-a', '-u', '-G1', '-ee3', '-U', path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   try {
     return JSON.parse(r.stdout)[0];
@@ -534,14 +646,14 @@ function exiftoolKeys(path) {
   }
 }
 
-function rgbaHash(path) {
+function rgbaHash(path: string): string | null {
   const r = spawnSync('magick', [path, '-depth', '8', 'RGBA:-'], { maxBuffer: 512 * 1024 * 1024 });
   if (r.status !== 0) return null;
   return createHash('sha256').update(r.stdout).digest('hex');
 }
 
 // Searches files for planted strings with the fixture kit (raw, zlib, hex and UTF-16).
-function scan(rows, file) {
+function scan(rows: Canary[], file: string): Canary[] {
   if (!rows.length) return [];
   const reg = join(CHECKS, `registry-${createHash('sha1').update(rows.map((r) => r.string).join('|') + file).digest('hex').slice(0, 10)}.tsv`);
   writeFileSync(reg, `string\tkind\tfile\tlocation\tgroup\ttier\tbasis\tencoding\texiftool_form\n${rows.map((r) => [r.string, r.kind, r.file, r.location, r.group, r.tier, r.basis, r.encoding, ''].join('\t')).join('\n')}\n`);
@@ -551,10 +663,10 @@ function scan(rows, file) {
 }
 
 const NAME_RE = /^(?<base>.+?)(?:-(?<n>\d+))?\.(?<word>public|minimal|clean|custom)\.(?<ext>jpg|png|webp|heic)$/;
-const EXT_OF = { jpeg: 'jpg', png: 'png', webp: 'webp', heic: 'heic' };
+const EXT_OF: Record<Format, string> = { jpeg: 'jpg', png: 'png', webp: 'webp', heic: 'heic' };
 
 // Whether a URL is one of this site's published files (as GitHub Pages would serve it).
-const published = (url) => {
+const published = (url: string): boolean => {
   const u = new URL(url);
   if (u.origin !== ORIGIN) return false;
   if (u.pathname === '/cdn-cgi/speculation') return true;
@@ -565,16 +677,34 @@ const published = (url) => {
 
 // The checks every downloaded file gets. Returns the read-back for extra checks.
 // keep: ids allowed to stay although their tier is in removed (the gain map kept by default).
-async function verifyDownload(page, file, { fixture, base = 'image', index = null, removed, keep = [], lossless, word, expectFormat }) {
+/** What verifyDownload checks a file against. */
+interface Expect {
+  fixture?: string;
+  base?: string;
+  index?: number | null;
+  removed: string[];
+  keep?: string[];
+  lossless?: boolean;
+  word?: string;
+  expectFormat?: Format;
+}
+/** What verifyDownload read back from a file, for further checks. */
+interface Verified {
+  back: InspectResult;
+  ex: Json;
+  path: string;
+  measured: string;
+}
+async function verifyDownload(page: Page, file: Pick<Download, 'name' | 'url' | 'bytes'>, { fixture, base = 'image', index = null, removed, keep = [], lossless, word, expectFormat }: Expect): Promise<Verified> {
   const tag = file.name;
   const m = NAME_RE.exec(file.name);
-  check(`${tag}: name follows [name].[tier].[ext]`, !!m && m.groups.base === base && (index === null ? !m.groups.n : m.groups.n === String(index)), { name: file.name, base, index });
+  check(`${tag}: name follows [name].[tier].[ext]`, !!m && m.groups!.base === base && (index === null ? !m.groups!.n : m.groups!.n === String(index)), { name: file.name, base, index });
   check(`${tag}: the download is a local blob of this page, not a network address`, file.url.startsWith(`blob:${ORIGIN}/`), file.url);
   const fmt = detectFormat(file.bytes);
-  check(`${tag}: extension matches the bytes (${fmt})`, !!m && EXT_OF[fmt] === m.groups.ext && (!expectFormat || fmt === expectFormat), { fmt, expectFormat });
+  check(`${tag}: extension matches the bytes (${fmt})`, !!m && EXT_OF[fmt!] === m.groups!.ext && (!expectFormat || fmt === expectFormat), { fmt, expectFormat });
   const back = await inspect(file.bytes);
   const measured = privacyWord(back.items);
-  check(`${tag}: privacy word in the name matches the read-back (${measured})`, !!m && m.groups.word === measured, { inName: m?.groups.word, measured });
+  check(`${tag}: privacy word in the name matches the read-back (${measured})`, !!m && m.groups!.word === measured, { inName: m?.groups!.word, measured });
   if (word) check(`${tag}: privacy word is "${word}"`, measured === word, measured);
 
   // What the page showed for this file.
@@ -641,14 +771,14 @@ async function verifyDownload(page, file, { fixture, base = 'image', index = nul
 // A fixture with its XMP already in the engine's standard form (0.0.3: XMP is only ever
 // kept in that form, so a file whose XMP is not yet so changes even with nothing ticked).
 // Flows that need "nothing ticked, nothing changes" load this copy.
-async function standardCopy(name) {
+async function standardCopy(name: string): Promise<string> {
   mkdirSync(CHECKS, { recursive: true });
   const out = join(CHECKS, name.replace(/\.(\w+)$/, '.standard.$1'));
   if (!existsSync(out)) writeFileSync(out, (await scrub(new Uint8Array(readFileSync(join(FIX, name))), [])).bytes);
   return out;
 }
 
-async function pressExpectingNothing(p) {
+async function pressExpectingNothing(p: Page): Promise<Json> {
   await p.click('#go-btn');
   await p.waitFor("!document.getElementById('go-nothing').hidden", 10000, 'the "nothing to change" message');
   await sleep(300);
@@ -663,7 +793,7 @@ async function pressExpectingNothing(p) {
 }
 
 // What a person reads on the page: no em dashes, no double hyphens, British spelling.
-async function textCheck(page, where) {
+async function textCheck(page: Page, where: string): Promise<void> {
   const text = await page.ev('document.body.innerText');
   const dashes = [...new Set((text.match(/.{0,30}(\u2014|\u2013|--).{0,30}/g) || []))];
   check(`${page.view.label} ${where}: no em dashes, en dashes or double hyphens in the text`, !dashes.length, dashes);
@@ -673,7 +803,7 @@ async function textCheck(page, where) {
 
 // The Android app section at the foot of the page, as the page shows it. n counts the
 // website-only parts other than Take a photo, which phones also get (1.1.0).
-async function appSection(p) {
+async function appSection(p: Page): Promise<Json> {
   return p.ev(`(() => {
     const sec = document.querySelector('#android-app[data-web-only]');
     if (!sec) return null;
@@ -688,7 +818,7 @@ async function appSection(p) {
   })()`);
 }
 
-async function checkAppSectionShown(p) {
+async function checkAppSectionShown(p: Page): Promise<void> {
   const app = await appSection(p);
   const v = p.view.label;
   check(`${v}: the Android app section is the last thing in main, marked data-web-only, and shown on the website`, !!app && app.id === 'android-app' && app.n === 1 && app.last && !app.hidden && app.display !== 'none' && app.height > 0 && app.firstScript !== BRIDGE_FILE, app);
@@ -703,8 +833,8 @@ async function checkAppSectionShown(p) {
 // ---------------------------------------------------------------------------------------
 // Flows
 
-const flows = [];
-const flow = (name, view, fn) => flows.push({ name, view, fn });
+const flows: { name: string; view: View; fn: (p: Page) => Promise<void> }[] = [];
+const flow = (name: string, view: View, fn: (p: Page) => Promise<void>): number => flows.push({ name, view, fn });
 
 // First, prove the recorders work: break the rules on purpose and check each break is
 // seen. These records are then left out of the whole-run checks below.
@@ -718,8 +848,8 @@ flow(SELF_TEST, DESKTOP, async (p) => {
   await p.ev("setTimeout(() => { throw new Error('e2e self-test') }, 0)");
   await sleep(600);
   const csp = await p.ev('window.__e2eCsp');
-  check('self-test: a policy violation is recorded', csp.some((c) => c.d === 'connect-src') && csp.some((c) => /^style-src/.test(c.d)) && csp.some((c) => c.d === 'img-src'), csp);
-  check('self-test: an off-site attempt is recorded', record.requests.slice(mark.req).some((r) => r.url.startsWith('https://example.org/')) || csp.some((c) => /example\.org/.test(c.u)), record.requests.slice(mark.req).map((r) => r.url));
+  check('self-test: a policy violation is recorded', csp.some((c: Json) => c.d === 'connect-src') && csp.some((c: Json) => /^style-src/.test(c.d)) && csp.some((c: Json) => c.d === 'img-src'), csp);
+  check('self-test: an off-site attempt is recorded', record.requests.slice(mark.req).some((r) => r.url.startsWith('https://example.org/')) || csp.some((c: Json) => /example\.org/.test(c.u)), record.requests.slice(mark.req).map((r) => r.url));
   check('self-test: an uncaught exception is recorded', record.exceptions.length > mark.exc);
   check('self-test: a console error is recorded', record.console.slice(mark.con).some((c) => c.type === 'error'));
 });
@@ -733,7 +863,7 @@ flow('jpeg-default', DESKTOP, async (p) => {
   // Every same-origin link and asset in the page points at a file GitHub Pages publishes.
   // Checked against the repository, not fetched, so it adds no requests.
   const refs = await p.ev(`[...document.querySelectorAll('a[href], img[src], link[href], script[src]')].map(e => e.href || e.src).filter(u => u.startsWith(location.origin + '/'))`);
-  const broken = [...new Set(refs.filter((u) => !published(u)))];
+  const broken = [...new Set(refs.filter((u: string) => !published(u)))];
   check(`every same-origin link and asset in the page exists and is published (${new Set(refs).size} checked)`, !broken.length, broken);
   const cam = await p.ev(CAMERA_STATE);
   check('desktop: no Take a photo button (a laptop or desktop has no camera app to open), the capture input stays hidden', !cam.button && !!cam.input && cam.input.hidden, cam);
@@ -755,42 +885,42 @@ flow('jpeg-default', DESKTOP, async (p) => {
     });
     return { sections, rows, legend: !!document.getElementById('tier-legend'), quick: !!document.getElementById('quick') || !!document.querySelector('[data-preset]'), intro: document.getElementById('meta-intro').textContent, count: document.getElementById('select-count').textContent, mode: document.getElementById('mode-line').textContent, preview: document.getElementById('name-preview').textContent, summary: document.getElementById('file-summary').textContent, canvas: [document.getElementById('preview-canvas').width, document.getElementById('preview-canvas').height] };
   })()`);
-  const ids = meta.rows.map((r) => r.id).sort();
+  const ids = meta.rows.map((r: Json) => r.id).sort();
   check('every detail the engine finds is listed, once', J(ids) === J(src.items.map((i) => i.id).sort()), { page: ids.length, engine: src.items.length });
   // Decision of 2026-10-03 (Marcos): the list is sorted by tier, red, amber and green, and
   // only shows the details the file has.
-  check('the list is in three tier sections, in the order red, amber, green', J(meta.sections.map((x) => x.tier)) === J(['red', 'amber', 'green']), meta.sections.map((x) => x.tier));
-  check('each detail sits in the section of its own tier', meta.rows.every((r) => r.section === r.tier), meta.rows.filter((r) => r.section !== r.tier).map((r) => r.id));
-  const groupWord = Object.fromEntries(GROUPS.map((g) => [g.id, g.label]));
+  check('the list is in three tier sections, in the order red, amber, green', J(meta.sections.map((x: Json) => x.tier)) === J(['red', 'amber', 'green']), meta.sections.map((x: Json) => x.tier));
+  check('each detail sits in the section of its own tier', meta.rows.every((r: Json) => r.section === r.tier), meta.rows.filter((r: Json) => r.section !== r.tier).map((r: Json) => r.id));
+  const groupWord = Object.fromEntries(GROUPS.map((g: Group) => [g.id, g.label]));
   const srcGroup = new Map(src.items.map((i) => [i.id, groupWord[i.group]]));
   // The group word is shown only in a section that mixes groups; every green detail is
   // Technical, so green details look as the Technical group did before.
-  const mixedTier = (tier) => new Set(src.items.filter((i) => i.tier === tier).map((i) => i.group)).size > 1;
-  check('in a section that mixes groups, each detail names its group (Where, Who, When, Device, Hidden extras)', meta.rows.filter((r) => mixedTier(r.tier)).every((r) => r.group && r.group === srcGroup.get(r.id)), meta.rows.filter((r) => mixedTier(r.tier) && r.group !== srcGroup.get(r.id)).map((r) => [r.id, r.group]));
-  check('in a section of one group (green, all Technical), no detail repeats the group word', !mixedTier('green') && meta.rows.filter((r) => !mixedTier(r.tier)).every((r) => r.group === undefined), meta.rows.filter((r) => !mixedTier(r.tier) && r.group !== undefined).map((r) => [r.id, r.group]));
-  const groupOrder = (tier) => meta.rows.filter((r) => r.tier === tier).map((r) => GROUPS.findIndex((g) => g.label === srcGroup.get(r.id)));
+  const mixedTier = (tier: Tier): boolean => new Set(src.items.filter((i) => i.tier === tier).map((i) => i.group)).size > 1;
+  check('in a section that mixes groups, each detail names its group (Where, Who, When, Device, Hidden extras)', meta.rows.filter((r: Json) => mixedTier(r.tier)).every((r: Json) => r.group && r.group === srcGroup.get(r.id)), meta.rows.filter((r: Json) => mixedTier(r.tier) && r.group !== srcGroup.get(r.id)).map((r: Json) => [r.id, r.group]));
+  check('in a section of one group (green, all Technical), no detail repeats the group word', !mixedTier('green') && meta.rows.filter((r: Json) => !mixedTier(r.tier)).every((r: Json) => r.group === undefined), meta.rows.filter((r: Json) => !mixedTier(r.tier) && r.group !== undefined).map((r: Json) => [r.id, r.group]));
+  const groupOrder = (tier: string): number[] => meta.rows.filter((r: Json) => r.tier === tier).map((r: Json) => GROUPS.findIndex((g: Group) => g.label === srcGroup.get(r.id)));
   check('within a section, details follow the group order', ['red', 'amber', 'green'].every((t) => groupOrder(t).every((g, i, a) => !i || a[i - 1] <= g)), ['red', 'amber', 'green'].map(groupOrder));
   // Decision of 2026-10-04 (Marcos, 0.0.3): only red is ticked to start with; amber and
   // green are kept unless the user ticks them.
-  check('red details are ticked to start with, amber and green details are not', meta.rows.every((r) => r.checked === (r.tier === 'red')), meta.rows.filter((r) => r.checked !== (r.tier === 'red')).map((r) => r.id));
+  check('red details are ticked to start with, amber and green details are not', meta.rows.every((r: Json) => r.checked === (r.tier === 'red')), meta.rows.filter((r: Json) => r.checked !== (r.tier === 'red')).map((r: Json) => r.id));
   // Decision of 2026-10-02: the computer name is its own red detail; editing software stays amber.
-  const computerRow = meta.rows.find((r) => r.id === 'exif:computer');
+  const computerRow = meta.rows.find((r: Json) => r.id === 'exif:computer');
   check('"Computer name" is its own red detail, ticked to start with', !!computerRow && computerRow.tier === 'red' && computerRow.checked && computerRow.label === 'Computer name', computerRow);
-  const softwareRow = meta.rows.find((r) => r.id === 'exif:software');
+  const softwareRow = meta.rows.find((r: Json) => r.id === 'exif:software');
   check('"Editing software" stays amber and, like all amber, starts unticked', !!softwareRow && softwareRow.tier === 'amber' && !softwareRow.checked && softwareRow.label === 'Editing software', softwareRow);
   // Decision of 2026-10-04: free text that can name people is red, so it is ticked.
-  const freeText = meta.rows.filter((r) => ['exif:description', 'xmp:description', 'iptc:caption', 'iptc:keywords', 'jpeg:comment'].includes(r.id));
-  check('captions, descriptions, keywords and comments are red and ticked to start with', freeText.length >= 4 && freeText.every((r) => r.tier === 'red' && r.checked), freeText);
-  check('each detail shows its tier as a word as well as a colour', meta.rows.every((r) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier] && r.badgeTier === r.tier), meta.rows.filter((r) => r.badge !== { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier]).map((r) => r.id));
-  const colours = new Map(meta.rows.map((r) => [r.tier, r.colour]));
+  const freeText = meta.rows.filter((r: Json) => ['exif:description', 'xmp:description', 'iptc:caption', 'iptc:keywords', 'jpeg:comment'].includes(r.id));
+  check('captions, descriptions, keywords and comments are red and ticked to start with', freeText.length >= 4 && freeText.every((r: Json) => r.tier === 'red' && r.checked), freeText);
+  check('each detail shows its tier as a word as well as a colour', meta.rows.every((r: Json) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier as Tier] && r.badgeTier === r.tier), meta.rows.filter((r: Json) => r.badge !== { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier as Tier]).map((r: Json) => r.id));
+  const colours = new Map(meta.rows.map((r: Json) => [r.tier, r.colour]));
   check('the three tiers have three different colours', new Set(colours.values()).size === 3, Object.fromEntries(colours));
-  check('each detail shows where it was found (EXIF, XMP, IPTC and so on)', meta.rows.every((r) => r.source && r.source.length > 1));
+  check('each detail shows where it was found (EXIF, XMP, IPTC and so on)', meta.rows.every((r: Json) => r.source && r.source.length > 1));
   const MEANING = {
     red: 'Red Remove before sharing. Can identify you, your camera or the place. Removed by default.',
     amber: 'Amber Think about it. Can reveal routines, devices or history. Kept unless you tick it.',
     green: 'Green Harmless and useful. Helps the picture display correctly. Kept by default.',
   };
-  check('each section carries its tier word and its explanation, word for word', meta.sections.every((x) => x.text.replace(/\s+/g, ' ').trim() === MEANING[x.tier] && x.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[x.tier]), meta.sections);
+  check('each section carries its tier word and its explanation, word for word', meta.sections.every((x: Json) => x.text.replace(/\s+/g, ' ').trim() === MEANING[x.tier as Tier] && x.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[x.tier as Tier]), meta.sections);
   check('the separate colour legend is gone', !meta.legend);
   check('there are no quick choice buttons (Red only, Red and amber, Select all, None)', !meta.quick);
   check('the intro says what is ticked to start with, word for word', meta.intro === 'Ticked details will be removed. Red details are ticked to start with; amber and green are kept unless you tick them.', meta.intro);
@@ -859,7 +989,7 @@ flow('jpeg-default', DESKTOP, async (p) => {
 // The tier sections of the selection list (decision of 2026-10-03)
 
 // Each section as the page shows it: its tick box, its arrow and its details.
-const tierState = (p) => p.ev(`(() => Object.fromEntries([...document.querySelectorAll('#meta-groups .ms-tier')].map((sec) => {
+const tierState = (p: Page): Promise<Json> => p.ev(`(() => Object.fromEntries([...document.querySelectorAll('#meta-groups .ms-tier')].map((sec) => {
   const all = sec.querySelector('.ms-tier-check');
   const btn = sec.querySelector('.ms-tier-toggle');
   const list = sec.querySelector('.ms-tier-items');
@@ -874,17 +1004,17 @@ const tierState = (p) => p.ev(`(() => Object.fromEntries([...document.querySelec
     turned: getComputedStyle(sec.querySelector('.ms-chevron')).transform,
   }];
 })))()`);
-const tickedIds = (p) => p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].filter((b) => b.checked).map((b) => b.dataset.id).sort()");
-const countLine = (p) => p.ev("document.getElementById('select-count').textContent");
+const tickedIds = (p: Page): Promise<Json> => p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].filter((b) => b.checked).map((b) => b.dataset.id).sort()");
+const countLine = (p: Page): Promise<Json> => p.ev("document.getElementById('select-count').textContent");
 // Whether every section shown is closed: arrow collapsed, list hidden, nothing visible.
-const allClosed = (st) => Object.values(st).every((x) => x.expanded === 'false' && x.hidden && !x.visible);
+const allClosed = (st: Json): boolean => Object.values(st).every((x: Json) => x.expanded === 'false' && x.hidden && !x.visible);
 
 // Sets each colour section's own tick box as a person would, by pressing it: once, or
 // twice when it is half-ticked and the colour must end up unticked. { red: true } ticks
 // red and unticks amber and green.
-async function setTiers(p, want) {
+async function setTiers(p: Page, want: Partial<Record<Tier, boolean>>): Promise<void> {
   for (const tier of Object.keys(await tierState(p))) {
-    const on = !!want[tier];
+    const on = !!want[tier as Tier];
     for (let i = 0; i < 2; i++) {
       const box = await p.ev(`(() => { const b = document.getElementById('m-tier-${tier}-all'); return { checked: b.checked, mixed: b.indeterminate }; })()`);
       if (!box.mixed && box.checked === on) break;
@@ -895,8 +1025,8 @@ async function setTiers(p, want) {
 
 // A small PNG built here: IHDR, the given text chunks, an optional pHYs (a green detail),
 // IDAT and IEND. Each text chunk is [type, keyword, text].
-function textPng(texts, phys) {
-  const chunk = (type, data) => {
+function textPng(texts: [string, string, string][], phys?: boolean): Buffer {
+  const chunk = (type: string, data: Buffer): Buffer => {
     const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
     const len = Buffer.alloc(4);
     len.writeUInt32BE(data.length);
@@ -912,7 +1042,7 @@ function textPng(texts, phys) {
   ihdr.set([8, 2, 0, 0, 0], 8);
   const rows = Buffer.alloc((w * 3 + 1) * h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) rows.set([x * 8, y * 8, 128], y * (w * 3 + 1) + 1 + x * 3);
-  const parts = [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr)];
+  const parts: Buffer[] = [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr)];
   for (const [type, kw, text] of texts) parts.push(chunk(type, Buffer.concat([Buffer.from(kw, 'latin1'), Buffer.from([0]), Buffer.from(text, 'latin1')])));
   if (phys) {
     const d = Buffer.alloc(9);
@@ -926,16 +1056,16 @@ function textPng(texts, phys) {
 }
 
 // The accessible name and description Chromium computes for one element.
-async function axOf(p, selector) {
+async function axOf(p: Page, selector: string): Promise<Json> {
   const { root } = await p.s('DOM.getDocument', { depth: 0 });
   const { nodeId } = await p.s('DOM.querySelector', { nodeId: root.nodeId, selector });
   const { nodes } = await p.s('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false });
-  const n = nodes.find((x) => !x.ignored) || nodes[0];
-  const prop = (name) => n.properties?.find((x) => x.name === name)?.value?.value;
+  const n = nodes.find((x: Json) => !x.ignored) || nodes[0];
+  const prop = (name: string): Json => n.properties?.find((x: Json) => x.name === name)?.value?.value;
   return { role: n.role?.value, name: n.name?.value, description: n.description?.value, checked: prop('checked'), expanded: prop('expanded') };
 }
 
-async function pressKey(p, key) {
+async function pressKey(p: Page, key: 'Space' | 'Enter'): Promise<void> {
   const k = key === 'Space' ? { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' } : { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' };
   await p.s('Input.dispatchKeyEvent', { type: 'keyDown', ...k });
   await p.s('Input.dispatchKeyEvent', { type: 'keyUp', key: k.key, code: k.code, windowsVirtualKeyCode: k.windowsVirtualKeyCode });
@@ -945,7 +1075,7 @@ async function pressKey(p, key) {
 // Presses the button with the details that are ticked now, downloads the file and proves,
 // from the engine's read-back and from the list on the page, that exactly the ticked
 // details are gone and everything else is still there.
-async function prepareExactly(p, label, fixture, src, want, removed) {
+async function prepareExactly(p: Page, label: string, fixture: string, src: InspectResult, want: string[], removed: string[]): Promise<Verified | null> {
   const ticked = await tickedIds(p);
   check(`${label}: the ticked details are exactly the ones meant`, J(ticked) === J([...want].sort()), { ticked, want: [...want].sort() });
   await p.press();
@@ -963,7 +1093,7 @@ async function prepareExactly(p, label, fixture, src, want, removed) {
 flow('tier-sections', DESKTOP, async (p) => {
   await p.load(['jpeg-everything.jpg']);
   const src = await inspect(new Uint8Array(readFileSync(join(FIX, 'jpeg-everything.jpg'))));
-  const of = (t) => src.items.filter((i) => i.tier === t).map((i) => i.id);
+  const of = (t: Tier): string[] => src.items.filter((i) => i.tier === t).map((i) => i.id);
   const n = { red: of('red').length, amber: of('amber').length, green: of('green').length };
   const total = src.items.length;
   // Decision of 2026-10-04 (Marcos, 0.0.3): only red starts ticked.
@@ -1138,7 +1268,7 @@ flow('tier-absent', DESKTOP, async (p) => {
     const n = await p.ev("document.querySelectorAll('#meta-groups .ms-check').length");
     check(`${fixture}: every detail it has is listed (${src.items.length})`, n === src.items.length, n);
     const st = await tierState(p);
-    check(`${fixture}: its sections start closed, red ticked, amber and green not`, allClosed(st) && Object.entries(st).every(([t, x]) => x.checked === (t === 'red') && !x.mixed), st);
+    check(`${fixture}: its sections start closed, red ticked, amber and green not`, allClosed(st) && Object.entries(st).every(([t, x]: [string, Json]) => x.checked === (t === 'red') && !x.mixed), st);
   }
   // A file with no red details: a PNG with only an editing software text (amber) and a
   // print resolution (green), built here so no fixture has to change.
@@ -1303,9 +1433,9 @@ flow('jpeg-rotation', DESKTOP, async (p) => {
     const v = await verifyDownload(p, files[0], { fixture: 'jpeg-orientation-6.jpg', removed: ['red', 'amber', 'green'], lossless: false, expectFormat: 'jpeg' });
     check('baked file is 480 x 640 with no rotation setting left', v.back.width === 480 && v.back.height === 640 && v.back.orientation === 1 && !Object.keys(v.ex).some((k) => /Orientation/.test(k) && !/^Composite/.test(k) && v.ex[k] !== 'Horizontal (normal)'), { w: v.back.width, h: v.back.height, o: v.back.orientation });
     const r = py(UPRIGHT_PY, join(FIX, 'jpeg-orientation-6.jpg'), v.path);
-    const isRed = (c) => c[0] > 150 && c[1] < 110 && c[2] < 110;
-    const isGreen = (c) => c[1] > 120 && c[0] < 110 && c[2] < 110;
-    const isBlue = (c) => c[2] > 150 && c[0] < 110 && c[1] < 110;
+    const isRed = (c: number[]): boolean => c[0] > 150 && c[1] < 110 && c[2] < 110;
+    const isGreen = (c: number[]): boolean => c[1] > 120 && c[0] < 110 && c[2] < 110;
+    const isBlue = (c: number[]): boolean => c[2] > 150 && c[0] < 110 && c[1] < 110;
     check('picture is upright: red top left, green top right, blue bottom centre', isRed(r.tl) && isGreen(r.tr) && isBlue(r.bc), r);
     check('pixels match the original turned upright (mean difference under 6)', r.diff !== undefined && r.diff < 6, r.diff);
   }
@@ -1439,8 +1569,8 @@ flow('png-to-jpeg', DESKTOP, async (p) => {
   if (files[0]) {
     const v = await verifyDownload(p, files[0], { fixture: 'png-transparent.png', removed: ['red'], lossless: false, expectFormat: 'jpeg' });
     const r = py(CORNERS_PY, v.path);
-    check('see-through corners come out white, not the hidden orange', r.format === 'JPEG' && r.corners.every((c) => c.every((x) => x > 245)), r);
-    check('the opaque centre is kept (white disc)', r.centre.every((x) => x > 230), r.centre);
+    check('see-through corners come out white, not the hidden orange', r.format === 'JPEG' && r.corners.every((c: number[]) => c.every((x) => x > 245)), r);
+    check('the opaque centre is kept (white disc)', r.centre.every((x: number) => x > 230), r.centre);
     check('size kept at 400 x 300', r.size[0] === 400 && r.size[1] === 300, r.size);
   }
 });
@@ -1500,10 +1630,10 @@ flow('heic', DESKTOP, async (p) => {
 flow('motion-photo', DESKTOP, async (p) => {
   await p.load(['jpeg-motion-photo.jpg']);
   const rows = await p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier, label: b.closest('.ms-item').querySelector('.ms-item-label').textContent }))");
-  const video = rows.find((r) => r.id === 'jpeg:trailing:motion-video');
-  check('the hidden video clip is offered', !!video, rows.map((r) => r.id));
+  const video = rows.find((r: Json) => r.id === 'jpeg:trailing:motion-video');
+  check('the hidden video clip is offered', !!video, rows.map((r: Json) => r.id));
   check('the hidden video is red and ticked by default', video && video.tier === 'red' && video.checked, video);
-  const xmp = rows.find((r) => r.id === 'xmp:motion');
+  const xmp = rows.find((r: Json) => r.id === 'xmp:motion');
   check('the XMP that points at the video is red and ticked', xmp && xmp.tier === 'red' && xmp.checked, xmp);
   await p.press();
   const files = await p.download();
@@ -1523,7 +1653,7 @@ flow('motion-photo', DESKTOP, async (p) => {
 // The checks a kept HDR gain map must pass in a downloaded file: found through MPF as a
 // whole JPEG with the input's pixels, the length the Container directory gives, and its
 // hdrgm description in both the photo and the gain map.
-function keptGainMap(v, fixture, label) {
+function keptGainMap(v: Verified, fixture: string, label: string): void {
   const gm = spawnSync('exiftool', ['-b', '-MPImage2', v.path], { maxBuffer: 16 * 1024 * 1024 }).stdout;
   const orig = spawnSync('exiftool', ['-b', '-MPImage2', join(FIX, fixture)], { maxBuffer: 16 * 1024 * 1024 }).stdout;
   const gmFile = join(CHECKS, `${label}-gainmap-out.jpg`);
@@ -1532,8 +1662,8 @@ function keptGainMap(v, fixture, label) {
   writeFileSync(origFile, orig);
   const whole = gm.length > 100 && gm[0] === 0xff && gm[1] === 0xd8 && gm[gm.length - 2] === 0xff && gm[gm.length - 1] === 0xd9;
   check(`${label}: the kept gain map is still found through the MPF index, as a whole JPEG`, whole, { out: gm.length, orig: orig.length }, 'engine');
-  let px = null;
-  try { px = py(SAME_PIXELS_PY, origFile, gmFile); } catch (e) { px = { error: String(e.message).slice(0, 200) }; }
+  let px: Json = null;
+  try { px = py(SAME_PIXELS_PY, origFile, gmFile); } catch (e) { px = { error: String((e as Error).message).slice(0, 200) }; }
   check(`${label}: the kept gain map has the same pixels as before (Pillow)`, px && px.same, px, 'engine');
   const text = readFileSync(v.path).toString('utf8');
   const item = /<Container:Item\b[^>]*Item:Semantic="GainMap"[^>]*>/.exec(text);
@@ -1546,25 +1676,25 @@ function keptGainMap(v, fixture, label) {
 
 const GAIN_KEEP = ['jpeg:trailing:gain-map', 'xmp:gainmap'];
 const GAIN_NOTE = 'The HDR gain map stays, so the photo keeps its brightness on HDR screens. Tick HDR gain map under Amber for a minimal file.';
-const rowsOf = (p) => p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier, group: b.closest('.ms-item').querySelector('.ms-group-word')?.textContent || '' }))");
+const rowsOf = (p: Page): Promise<Json> => p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].map(b => ({ id: b.dataset.id, checked: b.checked, tier: b.closest('.ms-item').dataset.tier, group: b.closest('.ms-item').querySelector('.ms-group-word')?.textContent || '' }))");
 
 flow('ultrahdr', DESKTOP, async (p) => {
   await p.load(['jpeg-ultrahdr-like.jpg']);
   const rows = await rowsOf(p);
-  const gain = rows.find((r) => r.id === 'jpeg:trailing:gain-map');
-  const desc = rows.find((r) => r.id === 'xmp:gainmap');
-  check('the extra HDR image (gain map) is offered, amber', gain && gain.tier === 'amber', gain || rows.map((r) => r.id));
+  const gain = rows.find((r: Json) => r.id === 'jpeg:trailing:gain-map');
+  const desc = rows.find((r: Json) => r.id === 'xmp:gainmap');
+  check('the extra HDR image (gain map) is offered, amber', gain && gain.tier === 'amber', gain || rows.map((r: Json) => r.id));
   // The gain map changes how the photo looks, not who took it, so it starts unticked; the
   // engine keeps only what it needs to render and lists everything else on its own.
   check('the gain map starts unticked', gain && !gain.checked, gain);
-  check('its XMP description (HDR gain map details) is amber and starts unticked', desc && desc.tier === 'amber' && !desc.checked, desc || rows.map((r) => r.id));
-  const others = rows.filter((r) => r.tier !== 'green' && !GAIN_KEEP.includes(r.id));
-  check('every other red detail starts ticked, and every other amber detail unticked (0.0.3)', others.length > 0 && others.every((r) => r.checked === (r.tier === 'red')), others.filter((r) => r.checked !== (r.tier === 'red')));
+  check('its XMP description (HDR gain map details) is amber and starts unticked', desc && desc.tier === 'amber' && !desc.checked, desc || rows.map((r: Json) => r.id));
+  const others = rows.filter((r: Json) => r.tier !== 'green' && !GAIN_KEEP.includes(r.id));
+  check('every other red detail starts ticked, and every other amber detail unticked (0.0.3)', others.length > 0 && others.every((r: Json) => r.checked === (r.tier === 'red')), others.filter((r: Json) => r.checked !== (r.tier === 'red')));
   // The gain map is a second JPEG with its own metadata (here an author name). That is
   // offered on its own and follows its own tier, so the gain map can stay while what it says
   // about the photo goes.
-  const inner = rows.find((r) => r.id === 'jpeg:trailing:gain-map:metadata');
-  check('the metadata inside the gain map is offered on its own, red and ticked', inner && inner.tier === 'red' && inner.checked, inner || rows.map((r) => r.id));
+  const inner = rows.find((r: Json) => r.id === 'jpeg:trailing:gain-map:metadata');
+  check('the metadata inside the gain map is offered on its own, red and ticked', inner && inner.tier === 'red' && inner.checked, inner || rows.map((r: Json) => r.id));
   const said = await p.ev("document.getElementById('announcer').textContent");
   check('the load announcement counts the red details only (amber, the gain map with it, is kept)', /of them (is|are) red and ticked for removal\.$/.test(said) && !/HDR gain map/.test(said), said);
   const amberBox = () => p.ev("(() => { const b = document.getElementById('m-tier-amber-all'); return { checked: b.checked, mixed: b.indeterminate, count: document.getElementById('m-tier-amber-count').textContent }; })()");
@@ -1632,14 +1762,14 @@ flow('ultrahdr', DESKTOP, async (p) => {
 // remove a colour profile or the HDR gain map, with the exact text, and gone when those
 // boxes are unticked. Never shown with the default red-only choice.
 const COLOUR_NOTE = 'Colours may look a little duller and bright areas less vivid on HDR screens.';
-const colourNote = (p) => p.ev(`(() => {
+const colourNote = (p: Page): Promise<Json> => p.ev(`(() => {
   const n = document.getElementById('colour-note');
   const r = n.getBoundingClientRect();
   const b = document.getElementById('go-btn').getBoundingClientRect();
   return { hidden: n.hidden, shown: r.height > 0 && getComputedStyle(n).display !== 'none', text: n.textContent, live: n.parentElement.getAttribute('aria-live'), above: r.height > 0 ? r.bottom <= b.top : null, resave: document.getElementById('mode-line').textContent };
 })()`);
 // Opens the amber section (closed to start with) so its tick boxes can be pressed.
-const openAmber = async (p) => {
+const openAmber = async (p: Page): Promise<void> => {
   if (await p.ev("document.getElementById('m-tier-amber-toggle').getAttribute('aria-expanded') !== 'true'")) await p.click('#m-tier-amber-toggle');
 };
 flow('colour-note', DESKTOP, async (p) => {
@@ -1687,10 +1817,10 @@ flow('colour-note', DESKTOP, async (p) => {
 flow('hdr-batch', DESKTOP, async (p) => {
   await p.load(['jpeg-ultrahdr-like.jpg', 'jpeg-everything.jpg']);
   const rows = await rowsOf(p);
-  const kept = rows.filter((r) => GAIN_KEEP.includes(r.id));
-  const others = rows.filter((r) => r.tier !== 'green' && !GAIN_KEEP.includes(r.id));
-  check('batch: the gain map and its description start unticked', kept.length === 2 && kept.every((r) => !r.checked), kept);
-  check('batch: every other red detail starts ticked, every other amber detail unticked', others.length > 0 && others.every((r) => r.checked === (r.tier === 'red')), others.filter((r) => r.checked !== (r.tier === 'red')));
+  const kept = rows.filter((r: Json) => GAIN_KEEP.includes(r.id));
+  const others = rows.filter((r: Json) => r.tier !== 'green' && !GAIN_KEEP.includes(r.id));
+  check('batch: the gain map and its description start unticked', kept.length === 2 && kept.every((r: Json) => !r.checked), kept);
+  check('batch: every other red detail starts ticked, every other amber detail unticked', others.length > 0 && others.every((r: Json) => r.checked === (r.tier === 'red')), others.filter((r: Json) => r.checked !== (r.tier === 'red')));
   await p.press();
   const files = await p.download();
   const names = files.map((f) => f.name).sort();
@@ -1711,11 +1841,11 @@ flow('hdr-batch', DESKTOP, async (p) => {
 flow('hdr-batch-mixed', DESKTOP, async (p) => {
   await p.load(['jpeg-ultrahdr-like.jpg', 'jpeg-uhdr-not-gainmap.jpg']);
   const rows = await rowsOf(p);
-  const desc = rows.find((r) => r.id === 'xmp:gainmap');
-  const gain = rows.find((r) => r.id === 'jpeg:trailing:gain-map');
+  const desc = rows.find((r: Json) => r.id === 'xmp:gainmap');
+  const gain = rows.find((r: Json) => r.id === 'jpeg:trailing:gain-map');
   check('mixed batch: the merged description row is red but starts unticked', desc && desc.tier === 'red' && !desc.checked, desc);
   check('mixed batch: the gain map starts unticked', gain && !gain.checked, gain);
-  const extra = rows.find((r) => r.id === 'jpeg:trailing:mpf-image');
+  const extra = rows.find((r: Json) => r.id === 'jpeg:trailing:mpf-image');
   check('mixed batch: the other second picture is red and ticked', extra && extra.tier === 'red' && extra.checked, extra);
   await p.press();
   const files = await p.download();
@@ -1763,10 +1893,10 @@ flow('hdr-planted', DESKTOP, async (p) => {
   const rows = await rowsOf(p);
   const want = [['xmp:serial', 'Who'], ['xmp:gps', 'Where'], ['jpeg:trailing:gain-map:after', 'Hidden extras']];
   for (const [id, group] of want) {
-    const r = rows.find((x) => x.id === id);
-    check(`${id} is offered red and ticked, under ${group}`, r && r.tier === 'red' && r.checked && r.group === group, r || rows.map((x) => x.id));
+    const r = rows.find((x: Json) => x.id === id);
+    check(`${id} is offered red and ticked, under ${group}`, r && r.tier === 'red' && r.checked && r.group === group, r || rows.map((x: Json) => x.id));
   }
-  check('the gain map and its description start unticked', rows.filter((r) => GAIN_KEEP.includes(r.id)).every((r) => !r.checked), rows.filter((r) => GAIN_KEEP.includes(r.id)));
+  check('the gain map and its description start unticked', rows.filter((r: Json) => GAIN_KEEP.includes(r.id)).every((r: Json) => !r.checked), rows.filter((r: Json) => GAIN_KEEP.includes(r.id)));
   await p.press();
   const files = await p.download();
   const names = files.map((f) => f.name).sort();
@@ -1784,9 +1914,9 @@ flow('hdr-apple', DESKTOP, async (p) => {
   const fixture = 'jpeg-uhdr-apple.jpg';
   await p.load([fixture]);
   const rows = await rowsOf(p);
-  const row = (id) => rows.find((r) => r.id === id);
-  check('apple: the gain map is amber and starts unticked', row('jpeg:trailing:gain-map') && row('jpeg:trailing:gain-map').tier === 'amber' && !row('jpeg:trailing:gain-map').checked, row('jpeg:trailing:gain-map') || rows.map((r) => r.id));
-  check('apple: the HDR brightness is amber and starts unticked', row('exif:apple-hdr') && row('exif:apple-hdr').tier === 'amber' && !row('exif:apple-hdr').checked, row('exif:apple-hdr') || rows.map((r) => r.id));
+  const row = (id: string): Json => rows.find((r: Json) => r.id === id);
+  check('apple: the gain map is amber and starts unticked', row('jpeg:trailing:gain-map') && row('jpeg:trailing:gain-map').tier === 'amber' && !row('jpeg:trailing:gain-map').checked, row('jpeg:trailing:gain-map') || rows.map((r: Json) => r.id));
+  check('apple: the HDR brightness is amber and starts unticked', row('exif:apple-hdr') && row('exif:apple-hdr').tier === 'amber' && !row('exif:apple-hdr').checked, row('exif:apple-hdr') || rows.map((r: Json) => r.id));
   check('apple: the rest of the maker notes is red and ticked', row('exif:makernote') && row('exif:makernote').tier === 'red' && row('exif:makernote').checked, row('exif:makernote'));
   const preview = await p.ev("document.getElementById('name-preview').textContent");
   check('apple: the expected name uses the public word', /Expected name: image\.public\.jpg\./.test(preview), preview);
@@ -1823,8 +1953,8 @@ flow('hdr-apple', DESKTOP, async (p) => {
   writeFileSync(gmFile, gm);
   writeFileSync(origFile, orig);
   check('apple: the kept gain map is a whole JPEG found through MPF', gm.length > 100 && gm[0] === 0xff && gm[1] === 0xd8 && gm[gm.length - 2] === 0xff && gm[gm.length - 1] === 0xd9, gm.length, 'engine');
-  let px = null;
-  try { px = py(SAME_PIXELS_PY, origFile, gmFile); } catch (e) { px = { error: String(e.message).slice(0, 200) }; }
+  let px: Json = null;
+  try { px = py(SAME_PIXELS_PY, origFile, gmFile); } catch (e) { px = { error: String((e as Error).message).slice(0, 200) }; }
   check('apple: the kept gain map has the same pixels (Pillow)', px && px.same, px, 'engine');
   const gk = exiftoolKeys(gmFile);
   const xmp = Object.keys(gk).filter((k) => /^XMP-/.test(k)).sort();
@@ -1836,11 +1966,11 @@ flow('hdr-apple', DESKTOP, async (p) => {
 flow('green-text', DESKTOP, async (p) => {
   await p.load(['jpeg-icc-text.jpg', 'jpeg-green-xmp.jpg']);
   const rows = await rowsOf(p);
-  const row = (id) => rows.find((r) => r.id === id);
+  const row = (id: string): Json => rows.find((r: Json) => r.id === id);
   // The group word shows only in a section that mixes kinds; here every red detail is hidden.
-  check('green text: the text inside the colour profile is red and ticked', row('icc:text') && row('icc:text').tier === 'red' && row('icc:text').checked && ['', 'Hidden extras'].includes(row('icc:text').group), row('icc:text') || rows.map((r) => r.id));
+  check('green text: the text inside the colour profile is red and ticked', row('icc:text') && row('icc:text').tier === 'red' && row('icc:text').checked && ['', 'Hidden extras'].includes(row('icc:text').group), row('icc:text') || rows.map((r: Json) => r.id));
   check('green text: the colour profile itself is green and unticked', row('icc:profile') && row('icc:profile').tier === 'green' && !row('icc:profile').checked, row('icc:profile'));
-  check('green text: unexpected text in technical XMP fields is red and ticked', row('xmp:technical-text') && row('xmp:technical-text').tier === 'red' && row('xmp:technical-text').checked, row('xmp:technical-text') || rows.map((r) => r.id));
+  check('green text: unexpected text in technical XMP fields is red and ticked', row('xmp:technical-text') && row('xmp:technical-text').tier === 'red' && row('xmp:technical-text').checked, row('xmp:technical-text') || rows.map((r: Json) => r.id));
   check('green text: the technical XMP fields that hold numbers stay green and unticked', row('xmp:technical') && row('xmp:technical').tier === 'green' && !row('xmp:technical').checked, row('xmp:technical'));
   await p.press();
   const files = await p.download();
@@ -1853,7 +1983,7 @@ flow('green-text', DESKTOP, async (p) => {
       check('green text: the colour profile stays and still opens', !!v.ex['ICC_Profile:ProfileDescription'] && v.back.items.some((i) => i.id === 'icc:profile'), Object.keys(v.ex).filter((k) => /ICC/.test(k)), 'engine');
       const a = spawnSync('exiftool', ['-b', '-ICC_Profile', join(FIX, fixture)], { maxBuffer: 1 << 24 }).stdout;
       const b = spawnSync('exiftool', ['-b', '-ICC_Profile', v.path], { maxBuffer: 1 << 24 }).stdout;
-      const tags = (x) => { const o = {}; for (let i = 0; i < x.readUInt32BE(128); i++) { const e = 132 + i * 12; const off = x.readUInt32BE(e + 4); const len = x.readUInt32BE(e + 8); o[x.toString('latin1', e, e + 4)] = x.subarray(off, off + len).toString('hex'); } return o; };
+      const tags = (x: Buffer): Record<string, string> => { const o: Record<string, string> = {}; for (let i = 0; i < x.readUInt32BE(128); i++) { const e = 132 + i * 12; const off = x.readUInt32BE(e + 4); const len = x.readUInt32BE(e + 8); o[x.toString('latin1', e, e + 4)] = x.subarray(off, off + len).toString('hex'); } return o; };
       const ta = tags(a);
       const tb = tags(b);
       const changed = Object.keys(ta).filter((k) => /^(rXYZ|gXYZ|bXYZ|rTRC|gTRC|bTRC|wtpt|chad|chrm|A2B0|B2A0)$/.test(k) && ta[k] !== tb[k]);
@@ -2094,7 +2224,7 @@ flow('share', SHARE_PHONE, async (p) => {
   check('share: the order is Save, Copy, Share, the warning, then the status line', st.order.join() === 'save,copy,share,note,status', st.order);
   check('share: no confirm step (no Continue, no Cancel) and nothing shared before a tap', !st.confirm && st.expanded === null && st.shares === 0 && st.copies === 0, st);
   const sizes = await p.ev("[...document.querySelectorAll('#results-list .ms-share button')].filter((b) => b.getClientRects().length).map((b) => Math.round(b.getBoundingClientRect().height))");
-  check('share: Share and Copy are at least 44 px tall', sizes.length === 2 && sizes.every((h) => h >= 44), sizes);
+  check('share: Share and Copy are at least 44 px tall', sizes.length === 2 && sizes.every((h: number) => h >= 44), sizes);
   await textCheck(p, 'result with Share and Copy');
   await p.layout('result with Share and Copy');
   await p.shot('5-share-buttons', { selector: '#results .ms-result-main' });
@@ -2236,7 +2366,7 @@ flow(ANDROID_APP_FLOW, ANDROID_APP, async (p) => {
   check(`android-app: Copy image, "${SHARE_TEXT.button}" and the warning show under Save, not marked data-web-only`, st.block && !st.webOnly && st.blockShown && st.copyShown && st.shareShown && st.noteShown && st.order.join() === 'save,copy,share,note,status', st);
   check('android-app: Share is pink like Save; the warning is amber, with the exact text, and Share points to it', st.primary && st.noteAmber && st.noteText === SHARE_TEXT.note && st.noteOwnsDescription, st);
   const sizes = await p.ev("[...document.querySelectorAll('#results-list .ms-share button')].filter((b) => b.getClientRects().length).map((b) => Math.round(b.getBoundingClientRect().height))");
-  check('android-app: Share and Copy are at least 44 px tall', sizes.length === 2 && sizes.every((h) => h >= 44), sizes);
+  check('android-app: Share and Copy are at least 44 px tall', sizes.length === 2 && sizes.every((h: number) => h >= 44), sizes);
   await textCheck(p, 'app result with Save, Copy and Share');
   await p.layout('app result with Save, Copy and Share');
   await p.shot('6-app-buttons', { selector: '#results .ms-result-main' });
@@ -2274,7 +2404,7 @@ flow(ANDROID_APP_FLOW, ANDROID_APP, async (p) => {
   await p.shot('6-app-copied', { selector: '#results .ms-result-main' });
 
   // The copy's end, by finger, with the stand-in's time left shortened from 2 minutes.
-  const isLine = (t) => `document.querySelector('#results-list .ms-share-status').textContent === ${J(t)}`;
+  const isLine = (t: string): string => `document.querySelector('#results-list .ms-share-status').textContent === ${J(t)}`;
   await p.ev("window.__ms.copyLife = 1500; document.querySelector('#results-list .ms-share-status').textContent = ''");
   await p.click('#results-list .ms-copy-btn');
   await p.waitFor(isLine(SHARE_TEXT.copiedApp), 20000, 'the copy line');
@@ -2348,7 +2478,7 @@ try {
     if (ONLY.length && !ONLY.includes(f.name) && f.name !== SELF_TEST) continue;
     currentFlow = f.name;
     console.log(`\n# ${f.name} (${f.view.width}x${f.view.height})`);
-    let p = null;
+    let p: Page | null = null;
     try {
       p = await openPage(f.view);
       await Promise.race([
@@ -2356,7 +2486,7 @@ try {
         sleep(300000).then(() => { throw new Error('flow took longer than 5 minutes'); }),
       ]);
     } catch (err) {
-      check(`flow ran to the end`, false, String(err.stack || err).split('\n').slice(0, 4).join(' | '), 'harness');
+      check(`flow ran to the end`, false, String((err as Error).stack || err).split('\n').slice(0, 4).join(' | '), 'harness');
       if (p) await p.shot('error', { full: true }).catch(() => {});
     } finally {
       if (p) await p.close();
@@ -2371,11 +2501,11 @@ try {
 
 console.log('\n# network, policy and errors (all flows)');
 await sleep(300);
-for (const key of Object.keys(record)) record[key] = record[key].filter((r) => r.flow !== SELF_TEST);
+for (const key of Object.keys(record) as (keyof Recorded)[]) (record[key] as Seen[]) = (record[key] as Seen[]).filter((r) => r.flow !== SELF_TEST);
 const web = record.requests.filter((r) => /^(https?|wss?):/.test(r.url));
 // android-bridge.js is not a website file; the harness serves it in the android flow only.
-const bridgeLoad = (r) => (r.flow === ANDROID_FLOW || r.flow === ANDROID_APP_FLOW) && new URL(r.url).pathname === `/${BRIDGE_FILE}`;
-const servedOk = (r) => published(r.url) || bridgeLoad(r);
+const bridgeLoad = (r: Recorded['requests'][number]): boolean => (r.flow === ANDROID_FLOW || r.flow === ANDROID_APP_FLOW) && new URL(r.url).pathname === `/${BRIDGE_FILE}`;
+const servedOk = (r: Recorded['requests'][number]): boolean => published(r.url) || bridgeLoad(r);
 const offsite = web.filter((r) => new URL(r.url).origin !== ORIGIN);
 check('no request to any other origin, at any time', !offsite.length, offsite.map((r) => `${r.flow}: ${r.url}`));
 const after = web.filter((r) => r.phase === 'after-load');
@@ -2391,7 +2521,7 @@ const badStatus = record.responses.filter((r) => r.status >= 400);
 check('no failed responses (404 and so on)', !badStatus.length, badStatus.map((r) => `${r.status} ${r.url}`));
 const failed = record.failed.filter((r) => !/^blob:/.test(r.url || ''));
 check('no failed or blocked loads', !failed.length, failed);
-const serverLines = existsSync(serveLog) ? readFileSync(serveLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+const serverLines: Json[] = existsSync(serveLog) ? readFileSync(serveLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
 const serverBad = serverLines.filter((l) => l.status >= 400 || l.host.split(':')[0] !== HOST);
 check(`the server saw only good requests for ${HOST} (${serverLines.length} requests)`, serverLines.length > 0 && !serverBad.length, serverBad);
 const unstamped = loadSet.filter((p) => /\.(js|css)$/.test(p)).filter((p) => !web.some((r) => new URL(r.url).pathname === p && /[?&]v=/.test(r.url)));
@@ -2448,11 +2578,11 @@ if (failures.length) {
   // The same finding often shows up in several flows (the same fixture is used more than
   // once), so failures are grouped by what was found, with the flows listed.
   console.log('\nFailures, grouped:');
-  const groups = new Map();
+  const groups = new Map<string, Result & { flows: string[] }>();
   for (const f of failures) {
     const key = `${f.category}|${f.name.replace(/^[^:]+\.(jpg|png|webp|heic): /, '')}|${typeof f.detail === 'string' ? f.detail : J(f.detail)}`;
     if (!groups.has(key)) groups.set(key, { ...f, flows: [] });
-    groups.get(key).flows.push(f.flow);
+    groups.get(key)!.flows.push(f.flow);
   }
   for (const g of groups.values()) {
     console.log(`  [${g.category}] ${g.name.replace(/^[^:]+\.(jpg|png|webp|heic): /, '')}  (${[...new Set(g.flows)].join(', ')})`);

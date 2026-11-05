@@ -22,7 +22,7 @@ It binds to 127.0.0.1 on a free port (or --port) and prints one line when ready:
 
 With --tls it makes a throwaway self-signed certificate for metadata.stormberry.as with
 openssl and serves HTTPS, so a browser can load the page under its real name and scheme
-(map the name to this port and trust the printed SPKI hash; tests/e2e.mjs does this).
+(map the name to this port and trust the printed SPKI hash; tests/e2e.ts does this).
 
 One JSON line per request goes to stderr, or to --log FILE. Only GET and HEAD are served.
 

@@ -121,7 +121,7 @@ MS_AUDIT_DIR=/tmp/ms-audit MS_FIXTURE_DIR=/tmp/ms-core-fixtures node tests/audit
 node tests/ui-smoke.ts --out /tmp/ms-ui
 
 # 5. End to end, as on the live site
-node tests/e2e.mjs --out /tmp/ms-e2e --keep
+node tests/e2e.ts --out /tmp/ms-e2e --keep
 
 # 6. Cache stamps are current
 python3 bump_assets.py --check
