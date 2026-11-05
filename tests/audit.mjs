@@ -16,7 +16,7 @@
 // Sections:
 //   registry     every fixture in tests/fixtures/out, checked against out/canaries.tsv
 //   core         every picture the engine tests generated (MS_FIXTURE_DIR), checked against
-//                the PLANT values in tests/core-fixtures.mjs
+//                the PLANT values in tests/core-fixtures.ts
 //   adversarial  hand-built pictures that hide data where a scrubber might not look
 //   reencode     buildExif() and insertExif() with every non-red detail kept (the page's
 //                starting selection, which ticks red only since 0.0.3), as used after a
@@ -699,7 +699,7 @@ async function sectionCore(records) {
   }
   const prev = process.env.MS_FIXTURE_DIR;
   process.env.MS_FIXTURE_DIR = CORE_FIX;
-  const { PLANT } = await import(pathToFileURL(join(HERE, 'core-fixtures.mjs')).href);
+  const { PLANT } = await import(pathToFileURL(join(HERE, 'core-fixtures.ts')).href);
   if (prev === undefined) delete process.env.MS_FIXTURE_DIR;
   // Copyright is red: it names the photographer (decision of 2026-10-01, see README).
   // The computer name is red: it often names the owner (decision of 2026-10-02).
@@ -1819,7 +1819,7 @@ async function sectionAdversarial(records) {
   {
     const prev = process.env.MS_FIXTURE_DIR;
     process.env.MS_FIXTURE_DIR = CORE_FIX;
-    const F = await import(pathToFileURL(join(HERE, 'core-fixtures.mjs')).href);
+    const F = await import(pathToFileURL(join(HERE, 'core-fixtures.ts')).href);
     const { privacyProbes } = await import(pathToFileURL(join(HERE, 'probes.mjs')).href);
     if (prev === undefined) delete process.env.MS_FIXTURE_DIR; else process.env.MS_FIXTURE_DIR = prev;
     for (const p of privacyProbes(F)) {

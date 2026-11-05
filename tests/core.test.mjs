@@ -1,6 +1,6 @@
 // Engine tests for src/scrub-core.js. Run from the repository root with: npm test
 //
-// Every picture is generated here (see core-fixtures.mjs). Each format is checked the same
+// Every picture is generated here (see core-fixtures.ts). Each format is checked the same
 // way: inspect() finds the planted items with the right tiers; scrubbing the red items
 // removes them (checked with exiftool and by searching the bytes for planted strings);
 // scrubbing every item leaves nothing but structure; decoded pixels never change; and
@@ -24,7 +24,7 @@ import { describeC2pa } from '../src/core/c2pa.js';
 import { IPTC_ITEMS } from '../src/core/iptc.js';
 import { TIFF_ITEMS } from '../src/core/tiff.js';
 import { XMP_ITEMS } from '../src/core/xmp.js';
-import * as F from './core-fixtures.mjs';
+import * as F from './core-fixtures.ts';
 
 const { PLANT } = F;
 

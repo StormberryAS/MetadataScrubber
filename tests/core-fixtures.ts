@@ -2,6 +2,11 @@
 // generated noise from ImageMagick, and every name, serial number and place is invented
 // (the GPS position is a public landmark). Files are written to a scratch folder and never
 // committed. Set MS_FIXTURE_DIR to choose the folder.
+//
+// TypeScript since 1 November 2026 (TS-STEP-1). Node 24 runs this file directly (it removes
+// the types and runs the rest as it is), so there is no compiled copy; tests/tsconfig.json
+// type-checks it (strict) when tools/build-ts.sh runs. Only types were added to the old
+// tests/core-fixtures.mjs: the code is the same, statement for statement.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -10,14 +15,236 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import zlib from 'node:zlib';
 
+/** Bytes as a byte array or a list of byte values. */
+export type Bytes = Uint8Array | readonly number[];
+/** One piece for u8 and the other builders: text (Latin-1 in u8), or bytes. */
+export type Part = string | Bytes;
+/**
+ * A TIFF directory entry for tiffBlock: [tag, type, count, value]. The value is bytes as they
+ * are, text (written with a closing NUL), the numbers of a type 3, 4 or 5 tag, "PTR:<dir>" (the
+ * offset of another directory), "SHARED:<key>" (the offset of a value that several tags share),
+ * or anything (null or "x") for the MakerNote tag 0x927c when a makernote builder is given. A
+ * count of 0 means "work it out from the value".
+ */
+export type TiffValue = Uint8Array | string | readonly number[] | null;
+export type TiffEntry = readonly [tag: number, type: number, count: number, value: TiffValue];
+/** A TIFF directory entry with its value already as bytes: [tag, type, count, bytes]. */
+export type IfdTag = readonly [tag: number, type: number, count: number, data: Uint8Array];
+/** An MP entry of an MPF index: [attribute, size, offset, dependent image 1, dependent image 2]. */
+export type MpfEntry = readonly [attribute: number, size: number, offset: number, d1?: number, d2?: number];
+/** An ICC tag: [signature, the tag's bytes], or [signature, text] in the "more" lists. */
+export type IccTagBytes = readonly [sig: string, data: Uint8Array];
+export type IccText = readonly [sig: string, text: string];
+
+export interface TiffOptions {
+  le?: boolean;
+  ifd0?: readonly TiffEntry[];
+  exif?: readonly TiffEntry[];
+  gps?: readonly TiffEntry[];
+  /** Writes the MakerNote, given its offset from the TIFF header and the byte order. */
+  makernote?: ((at: number, le: boolean) => Buffer) | null;
+  shared?: Readonly<Record<string, string>> | null;
+  thumbnail?: Uint8Array | null;
+}
+
+export interface WebpChunk {
+  type: string;
+  data: Buffer;
+  /** The whole chunk: header, data and the pad byte. */
+  raw: Buffer;
+}
+
+export interface MpfOptions {
+  le?: boolean;
+  entries: readonly MpfEntry[];
+  ids?: Bytes | null;
+  b004?: number | null;
+  attr?: readonly IfdTag[] | null;
+  tail?: Part | null;
+}
+
+export interface IsoOptions {
+  full?: boolean;
+  channels?: number;
+  common?: boolean;
+  flags?: number | null;
+  minVersion?: number;
+}
+
+/** The gain map picture of gainMapJpeg: its size and colour, or bytes to use instead. */
+export interface GainPicture {
+  size?: string;
+  colour?: boolean;
+  base?: Uint8Array;
+}
+
+/** The MPF index of gainMapJpeg (see mpfPayload), and the gain map entry's type and offset. */
+export interface GainMpf {
+  le?: boolean;
+  ids?: Bytes | null;
+  b004?: number | null;
+  attr?: readonly IfdTag[] | null;
+  tail?: Part | null;
+  type?: number;
+  offset?: number;
+}
+
+/** The options of gainMapJpeg; the comment above the function says what each one does. */
+export interface GainMapOptions {
+  photoAttrs?: string;
+  photoNs?: string;
+  version?: string;
+  itemAttrs?: string;
+  itemBody?: string;
+  gainMime?: string;
+  extraLi?: string;
+  dirExtra?: string;
+  noVersion?: boolean;
+  photoSegs?: readonly Part[];
+  gainFields?: string;
+  gainAttrs?: string;
+  gainBody?: string;
+  gainToolkit?: string;
+  noGainXmp?: boolean;
+  photoIso?: readonly Part[];
+  gainIso?: readonly Part[];
+  gainSegs?: readonly Part[];
+  mpf?: GainMpf;
+  exif?: boolean;
+  lead?: number;
+  after?: Part;
+  padding?: readonly [primary?: number, gain?: number];
+  gain?: GainPicture;
+  photoXmp?: boolean;
+  exifTiff?: Part;
+  gainXmp?: { ns: string; attrs?: string; body?: string };
+  companion?: boolean;
+}
+
+export interface IccProfileOptions {
+  desc?: string;
+  cprt?: string;
+  more?: readonly IccText[];
+}
+
+export interface IccProfileV4Options {
+  desc?: string;
+  cprt?: string;
+  dmnd?: string | null;
+  more?: readonly IccText[];
+  /** More language records for desc: [language and country code, text]. */
+  records?: readonly IccText[];
+}
+
+export interface IccBuildOptions {
+  tags?: readonly IccTagBytes[];
+  /** Text written over the header at the given offsets. */
+  header?: Readonly<Record<number, string>>;
+  size?: number | null;
+}
+
+/** Apple's two HDR numbers as [numerator, denominator], and the planted text. */
+export interface AppleNoteOptions {
+  maker33?: readonly [number, number];
+  maker48?: readonly [number, number] | null;
+  text?: string;
+}
+
+export interface AppleHdrJpegOptions extends GainMapOptions {
+  auxType?: string;
+  note?: AppleNoteOptions;
+}
+
+export interface HeicOptions {
+  ilocVersion?: number;
+  offSize?: number;
+  lenSize?: number;
+  baseSize?: number;
+  idxSize?: number;
+  infeVersion?: number;
+  wideIds?: boolean;
+  ipmaLarge?: boolean;
+  iccBytes?: Uint8Array | null;
+}
+
+export interface AppleHdrHeicOptions {
+  auxType?: string;
+  auxTail?: Uint8Array | null;
+  gainBody?: string;
+  note?: AppleNoteOptions;
+  photoXmp?: string | null;
+  pad?: number;
+  noGain?: boolean;
+  names?: Readonly<Record<number, string>>;
+  extraProps?: readonly Uint8Array[];
+  auxHidden?: boolean;
+  hdlrName?: string;
+  ftypMinor?: Part | null;
+  brands?: readonly string[];
+  exifHead?: string;
+}
+
+/** A box of an ISO base media file: its type, start, data start and end. */
+interface IsoBoxAt {
+  type: string;
+  start: number;
+  ds: number;
+  end: number;
+}
+
+/** An item of appleHdrHeic. */
+interface HeicItem {
+  id: number;
+  type: string;
+  data: Uint8Array;
+  hidden?: boolean;
+}
+
+/**
+ * libheif's view of one file. A file libheif cannot read has only `error`, and then the other
+ * fields are missing; the tests read files libheif reads, so they are typed as present.
+ */
+export interface HeifView {
+  primary: string | null;
+  aux: { type: string; size: [number, number]; pixels: string | null }[];
+  top: number;
+  error?: string;
+}
+
+/** A colour profile as exiftool extracts it, and what Pillow's colour engine says of it. */
+export interface IccView {
+  bytes: Buffer;
+  ok: boolean;
+  desc?: string;
+  cprt?: string;
+  error?: string;
+}
+
+/** One ICC tag: where it is, its length and type, and its bytes. */
+export interface IccTag {
+  off: number;
+  len: number;
+  type: string;
+  data: Buffer;
+}
+
+/** One line of exiftool's output. */
+export interface ExifRow {
+  group: string;
+  tag: string;
+  value: string;
+}
+
 export const FIX = process.env.MS_FIXTURE_DIR || join(tmpdir(), 'metadatascrubber-core-fixtures');
 mkdirSync(FIX, { recursive: true });
 
-export const path = (name) => join(FIX, name);
-export const read = (name) => new Uint8Array(readFileSync(path(name)));
-export const write = (name, bytes) => { writeFileSync(path(name), bytes); return path(name); };
+export const path = (name: string): string => join(FIX, name);
+export const read = (name: string): Uint8Array => new Uint8Array(readFileSync(path(name)));
+export const write = (name: string, bytes: string | Uint8Array): string => { writeFileSync(path(name), bytes); return path(name); };
 
-export function sh(cmd, args, binary = false) {
+export function sh(cmd: string, args: readonly string[], binary?: false): string;
+export function sh(cmd: string, args: readonly string[], binary: true): Buffer;
+export function sh(cmd: string, args: readonly string[], binary = false): string | Buffer {
   return execFileSync(cmd, args, { encoding: binary ? 'buffer' : 'utf8', maxBuffer: 256 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
@@ -62,43 +289,43 @@ export const PLANT = {
 const GPS_ARGS = ['-GPSLatitude=48.8584', '-GPSLatitudeRef=N', '-GPSLongitude=2.2945', '-GPSLongitudeRef=E',
   '-GPSAltitude=35', '-GPSAltitudeRef=0', '-GPSAreaInformation=GPS-AREA-PLANT'];
 
-export function exiftoolWrite(file, args) {
+export function exiftoolWrite(file: string, args: readonly string[]): void {
   sh('exiftool', ['-q', '-q', '-overwrite_original', '-m', ...args, file]);
 }
 
 // ======================================================================================
 // Byte builders
 
-export const u8 = (...parts) => {
+export const u8 = (...parts: Part[]): Uint8Array => {
   const bufs = parts.map((p) => (typeof p === 'string' ? Buffer.from(p, 'latin1') : Buffer.from(p)));
   return new Uint8Array(Buffer.concat(bufs));
 };
-const be16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16BE(v); return b; };
-const be32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
-const le32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
-const be64 = (v) => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(v)); return b; };
+const be16 = (v: number): Buffer => { const b = Buffer.alloc(2); b.writeUInt16BE(v); return b; };
+const be32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
+const le32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
+const be64 = (v: number | bigint): Buffer => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(v)); return b; };
 
-export function jpegSeg(marker, payload) {
+export function jpegSeg(marker: number, payload: Bytes): Uint8Array {
   const p = Buffer.from(payload);
   return u8([0xff, marker], be16(p.length + 2), p);
 }
 
 // Inserts segments after the leading APPn/COM segments of a JPEG.
-export function jpegInsert(jpeg, ...segs) {
+export function jpegInsert(jpeg: Bytes, ...segs: Part[]): Uint8Array {
   const b = Buffer.from(jpeg);
   let p = 2;
   while (b[p] === 0xff && ((b[p + 1] >= 0xe0 && b[p + 1] <= 0xef) || b[p + 1] === 0xfe)) p += 2 + b.readUInt16BE(p + 2);
   return u8(b.subarray(0, p), ...segs, b.subarray(p));
 }
 
-export function pngChunk(type, data) {
+export function pngChunk(type: string, data: Part): Uint8Array {
   const d = Buffer.from(data);
   const body = Buffer.concat([Buffer.from(type, 'latin1'), d]);
   return u8(be32(d.length), body, be32(zlib.crc32(body)));
 }
 
 // Inserts chunks before the first chunk of the given type.
-export function pngInsertBefore(png, type, ...chunks) {
+export function pngInsertBefore(png: Bytes, type: string, ...chunks: Part[]): Uint8Array {
   const b = Buffer.from(png);
   let p = 8;
   while (p < b.length) {
@@ -109,19 +336,19 @@ export function pngInsertBefore(png, type, ...chunks) {
   return u8(b.subarray(0, p), ...chunks, b.subarray(p));
 }
 
-export function webpChunk(type, data) {
+export function webpChunk(type: string, data: Part): Uint8Array {
   const d = Buffer.from(data);
   return u8(type, le32(d.length), d, d.length & 1 ? [0] : []);
 }
 
-export function webpRebuild(chunks) {
+export function webpRebuild(chunks: readonly Part[]): Uint8Array {
   const body = Buffer.concat(chunks.map((c) => Buffer.from(c)));
   return u8('RIFF', le32(body.length + 4), 'WEBP', body);
 }
 
-export function webpChunks(webp) {
+export function webpChunks(webp: Bytes): WebpChunk[] {
   const b = Buffer.from(webp);
-  const out = [];
+  const out: WebpChunk[] = [];
   let p = 12;
   while (p + 8 <= b.length) {
     const n = b.readUInt32LE(p + 4);
@@ -133,47 +360,49 @@ export function webpChunks(webp) {
 
 // Small hand-written TIFF writer, independent of the engine.
 // dirs: { ifd0: [[tag, type, count, Buffer|number[]]], exif: [...], gps: [...], ifd1: [...] }
-export function tiffBlock({ le = false, ifd0 = [], exif = [], gps = [], makernote = null, shared = null, thumbnail = null }) {
-  const w16 = (v) => { const b = Buffer.alloc(2); le ? b.writeUInt16LE(v) : b.writeUInt16BE(v); return b; };
-  const w32 = (v) => { const b = Buffer.alloc(4); le ? b.writeUInt32LE(v >>> 0) : b.writeUInt32BE(v >>> 0); return b; };
-  const buf = [];
+export function tiffBlock({ le = false, ifd0 = [], exif = [], gps = [], makernote = null, shared = null, thumbnail = null }: TiffOptions): Uint8Array {
+  const w16 = (v: number): Buffer => { const b = Buffer.alloc(2); le ? b.writeUInt16LE(v) : b.writeUInt16BE(v); return b; };
+  const w32 = (v: number): Buffer => { const b = Buffer.alloc(4); le ? b.writeUInt32LE(v >>> 0) : b.writeUInt32BE(v >>> 0); return b; };
+  const buf: Buffer[] = [];
   let size = 8;
-  const put = (b) => { const at = size; buf.push(b); size += b.length; if (b.length & 1) { buf.push(Buffer.alloc(1)); size++; } return at; };
+  const put = (b: Buffer): number => { const at = size; buf.push(b); size += b.length; if (b.length & 1) { buf.push(Buffer.alloc(1)); size++; } return at; };
   const header = Buffer.concat([Buffer.from(le ? 'II' : 'MM', 'latin1'), w16(42), w32(8)]);
-  const dirs = { ifd0: [...ifd0], exif: [...exif], gps: [...gps] };
+  const dirs: Record<string, TiffEntry[]> = { ifd0: [...ifd0], exif: [...exif], gps: [...gps] };
   if (exif.length || makernote) dirs.ifd0.push([0x8769, 4, 1, 'PTR:exif']);
   if (gps.length) dirs.ifd0.push([0x8825, 4, 1, 'PTR:gps']);
   const order = ['ifd0', 'exif', 'gps'].filter((d) => dirs[d].length);
   for (const d of order) dirs[d].sort((a, b) => a[0] - b[0]);
   // Reserve directory space first, so offsets are known.
-  const at = {};
+  const at: Record<string, number> = {};
   let cursor = 8;
   for (const d of order) { at[d] = cursor; cursor += 2 + dirs[d].length * 12 + 4; }
   if (thumbnail) { at.ifd1 = cursor; cursor += 2 + 2 * 12 + 4; }
   size = cursor;
-  const dirBytes = {};
-  const sharedAt = {};
+  const dirBytes: Record<string, Buffer> = {};
+  const sharedAt: Record<string, number> = {};
   // Returns [count, 4-byte value field].
-  const valueOf = (e) => {
+  const valueOf = (e: TiffEntry): [number, Buffer] => {
     const [tag, type, count, val] = e;
     if (typeof val === 'string' && val.startsWith('PTR:')) return [1, w32(at[val.slice(4)])];
     if (typeof val === 'string' && val.startsWith('SHARED:')) {
       const key = val.slice(7);
-      if (sharedAt[key] === undefined) sharedAt[key] = put(Buffer.from(shared[key], 'latin1'));
+      if (sharedAt[key] === undefined) sharedAt[key] = put(Buffer.from(shared![key], 'latin1'));
       return [count, w32(sharedAt[key])];
     }
     if (tag === 0x927c && makernote) {
       const mn = makernote(size, le);
       return [mn.length, w32(put(mn))];
     }
-    let data;
+    // A type 3, 4 or 5 value is a list of numbers, and any other one is bytes (null is only
+    // ever the MakerNote's, which returned above): the casts say so, and change nothing.
+    let data: Buffer;
     if (Buffer.isBuffer(val)) data = val;
     else if (typeof val === 'string') data = Buffer.from(val + '\0', 'latin1');
-    else if (type === 3) data = Buffer.concat(val.map((v) => w16(v)));
-    else if (type === 4) data = Buffer.concat(val.map((v) => w32(v)));
-    else if (type === 5) data = Buffer.concat(val.map((v) => w32(v)));
-    else data = Buffer.from(val);
-    const unit = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1 }[type];
+    else if (type === 3) data = Buffer.concat((val as readonly number[]).map((v) => w16(v)));
+    else if (type === 4) data = Buffer.concat((val as readonly number[]).map((v) => w32(v)));
+    else if (type === 5) data = Buffer.concat((val as readonly number[]).map((v) => w32(v)));
+    else data = Buffer.from(val as Bytes);
+    const unit = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1 }[type as 1 | 2 | 3 | 4 | 5 | 7];
     const n = count || data.length / unit;
     if (data.length <= 4) return [n, Buffer.concat([data, Buffer.alloc(4 - data.length)])];
     return [n, w32(put(data))];
@@ -203,9 +432,9 @@ export function tiffBlock({ le = false, ifd0 = [], exif = [], gps = [], makernot
 
 // A Canon-style maker note: an IFD whose value offsets count from the TIFF header, which is
 // exactly why kept maker notes must never move.
-export function canonMakernote(at, le) {
-  const w16 = (v) => { const b = Buffer.alloc(2); le ? b.writeUInt16LE(v) : b.writeUInt16BE(v); return b; };
-  const w32 = (v) => { const b = Buffer.alloc(4); le ? b.writeUInt32LE(v >>> 0) : b.writeUInt32BE(v >>> 0); return b; };
+export function canonMakernote(at: number, le: boolean): Buffer {
+  const w16 = (v: number): Buffer => { const b = Buffer.alloc(2); le ? b.writeUInt16LE(v) : b.writeUInt16BE(v); return b; };
+  const w32 = (v: number): Buffer => { const b = Buffer.alloc(4); le ? b.writeUInt32LE(v >>> 0) : b.writeUInt32BE(v >>> 0); return b; };
   const imageType = Buffer.from('Fake Canon Image Type\0', 'latin1');
   const owner = Buffer.alloc(32);
   owner.write('MAKERNOTE-OWNER-PLANT', 'latin1');
@@ -223,7 +452,7 @@ export function canonMakernote(at, le) {
 }
 
 // Synthetic MP4: just enough boxes for a reader to recognise a video.
-export function fakeMp4(secret = 'VIDEO-PLANT-SECRET', size = 3000) {
+export function fakeMp4(secret = 'VIDEO-PLANT-SECRET', size = 3000): Uint8Array {
   const ftyp = u8(be32(24), 'ftypmp42', be32(0), 'isommp42');
   const free = u8(be32(8 + secret.length), 'free', secret);
   const mdat = u8(be32(8 + size), 'mdat', randomBytes(size));
@@ -231,7 +460,7 @@ export function fakeMp4(secret = 'VIDEO-PLANT-SECRET', size = 3000) {
 }
 
 // Synthetic JUMBF box labelled c2pa, as carried by Content Credentials.
-export function fakeJumbf(secret = 'FakeCam C2PA PLANT') {
+export function fakeJumbf(secret = 'FakeCam C2PA PLANT'): Uint8Array {
   const json = Buffer.from(`{"claim_generator":"${secret}"}`, 'latin1');
   const jsonBox = u8(be32(8 + json.length), 'json', json);
   const uuid = Buffer.from('6332706100110010800000aa00389b71', 'hex');
@@ -240,17 +469,17 @@ export function fakeJumbf(secret = 'FakeCam C2PA PLANT') {
   return u8(be32(8 + jumd.length + jsonBox.length), 'jumb', jumd, jsonBox);
 }
 
-export function magick(args) {
+export function magick(args: readonly string[]): void {
   sh('magick', args);
 }
 
 // ======================================================================================
 // Fixture recipes (memoised; each writes into FIX and returns the file name)
 
-const done = new Map();
-const once = (name, fn) => () => {
+const done = new Map<string, string>();
+const once = (name: string, fn: () => string) => (): string => {
   if (!done.has(name)) done.set(name, fn());
-  return done.get(name);
+  return done.get(name)!;
 };
 
 export const icc = '/usr/share/color/icc/colord/AdobeRGB1998.icc';
@@ -334,7 +563,7 @@ export const jpegMakernote = once('makernote.jpg', () => {
   return 'makernote.jpg';
 });
 
-const XMP_WRAP = (body, ns = '') => `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+const XMP_WRAP = (body: string, ns = ''): string => `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="FakeXMP Core 1.0">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="" ${ns}>
@@ -353,21 +582,21 @@ export const jpegMotion = once('motion.jpg', () => {
   const iso = jpegSeg(0xe2, u8('urn:iso:std:iso:ts:21496:-1\0', [0, 0, 0, 0]));
   const gain = jpegInsert(read('motion-gain.jpg'), jpegSeg(0xe1, u8('http://ns.adobe.com/xap/1.0/\0', Buffer.from(gainXmp, 'utf8'))), iso);
   const video = fakeMp4();
-  const primaryXmp = (gl, vl) => XMP_WRAP(`   <Container:Directory>
+  const primaryXmp = (gl: number, vl: number): string => XMP_WRAP(`   <Container:Directory>
     <rdf:Seq>
      <rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="Primary" Item:Mime="image/jpeg"/></rdf:li>
      <rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="GainMap" Item:Mime="image/jpeg" Item:Length="${String(gl).padStart(8, '0')}"/></rdf:li>
      <rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="MotionPhoto" Item:Mime="video/mp4" Item:Length="${String(vl).padStart(8, '0')}"/></rdf:li>
     </rdf:Seq>
    </Container:Directory>`, `xmlns:GCamera="http://ns.google.com/photos/1.0/camera/" xmlns:Container="http://ns.google.com/photos/1.0/container/" xmlns:Item="http://ns.google.com/photos/1.0/container/item/" xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" GCamera:MotionPhoto="1" GCamera:MotionPhotoVersion="1" GCamera:MotionPhotoPresentationTimestampUs="1500000" hdrgm:Version="1.0" xmp:CreateDate="2026-09-14T10:15:23" dc:format="image/jpeg"`);
-  const mpf = (primarySize, gainOffset, gainSize) => u8('MPF\0', 'MM', [0, 42], be32(8), be16(3),
+  const mpf = (primarySize: number, gainOffset: number, gainSize: number): Uint8Array => u8('MPF\0', 'MM', [0, 42], be32(8), be16(3),
     be16(0xb000), be16(7), be32(4), '0100',
     be16(0xb001), be16(4), be32(1), be32(2),
     be16(0xb002), be16(7), be32(32), be32(50),
     be32(0),
     be32(0x20030000), be32(primarySize), be32(0), be16(0), be16(0),
     be32(0), be32(gainSize), be32(gainOffset), be16(0), be16(0));
-  const build = (mp) => jpegInsert(read('motion-primary.jpg'),
+  const build = (mp: Uint8Array): Uint8Array => jpegInsert(read('motion-primary.jpg'),
     jpegSeg(0xe1, u8('http://ns.adobe.com/xap/1.0/\0', Buffer.from(primaryXmp(gain.length, video.length), 'utf8'))),
     jpegSeg(0xe2, mp), iso);
   let primary = build(mpf(0, 0, 0));
@@ -384,14 +613,14 @@ export const jpegMotion = once('motion.jpg', () => {
 
 // A TIFF directory at `off` (from the TIFF header) with out-of-line values right after it.
 // tags: [[tag, type, count, Buffer]].
-function tiffIfd(le, tags, off, next) {
-  const w16 = (v) => { const b = Buffer.alloc(2); if (le) b.writeUInt16LE(v); else b.writeUInt16BE(v); return b; };
-  const w32 = (v) => { const b = Buffer.alloc(4); if (le) b.writeUInt32LE(v >>> 0); else b.writeUInt32BE(v >>> 0); return b; };
-  const head = [w16(tags.length)];
-  const values = [];
+function tiffIfd(le: boolean, tags: readonly IfdTag[], off: number, next: number): Buffer {
+  const w16 = (v: number): Buffer => { const b = Buffer.alloc(2); if (le) b.writeUInt16LE(v); else b.writeUInt16BE(v); return b; };
+  const w32 = (v: number): Buffer => { const b = Buffer.alloc(4); if (le) b.writeUInt32LE(v >>> 0); else b.writeUInt32BE(v >>> 0); return b; };
+  const head: Uint8Array[] = [w16(tags.length)];
+  const values: Uint8Array[] = [];
   let at = off + 2 + 12 * tags.length + 4;
   for (const [tag, type, count, data] of tags) {
-    let field;
+    let field: Uint8Array;
     if (data.length <= 4) field = Buffer.concat([data, Buffer.alloc(4 - data.length)]);
     else { field = w32(at); values.push(data); at += data.length; if (data.length & 1) { values.push(Buffer.alloc(1)); at++; } }
     head.push(w16(tag), w16(type), w32(count), field);
@@ -402,16 +631,16 @@ function tiffIfd(le, tags, off, next) {
 
 // 'MPF\0' and an MP header, MP Index IFD (B000, B001, B002, optional B003 and B004), the MP
 // entry table, an optional MP Attribute IFD, then `tail`. entries: [attribute, size, offset].
-export function mpfPayload({ le = false, entries, ids = null, b004 = null, attr = null, tail = null }) {
-  const w16 = (v) => { const b = Buffer.alloc(2); if (le) b.writeUInt16LE(v); else b.writeUInt16BE(v); return b; };
-  const w32 = (v) => { const b = Buffer.alloc(4); if (le) b.writeUInt32LE(v >>> 0); else b.writeUInt32BE(v >>> 0); return b; };
+export function mpfPayload({ le = false, entries, ids = null, b004 = null, attr = null, tail = null }: MpfOptions): Uint8Array {
+  const w16 = (v: number): Buffer => { const b = Buffer.alloc(2); if (le) b.writeUInt16LE(v); else b.writeUInt16BE(v); return b; };
+  const w32 = (v: number): Buffer => { const b = Buffer.alloc(4); if (le) b.writeUInt32LE(v >>> 0); else b.writeUInt32BE(v >>> 0); return b; };
   const table = Buffer.concat(entries.map(([a, size, off, d1 = 0, d2 = 0]) => Buffer.concat([w32(a), w32(size), w32(off), w16(d1), w16(d2)])));
-  const tags = [[0xb000, 7, 4, Buffer.from('0100')], [0xb001, 4, 1, w32(entries.length)], [0xb002, 7, table.length, table]];
+  const tags: IfdTag[] = [[0xb000, 7, 4, Buffer.from('0100')], [0xb001, 4, 1, w32(entries.length)], [0xb002, 7, table.length, table]];
   if (ids) tags.push([0xb003, 7, ids.length, Buffer.from(ids)]);
   if (b004 !== null) tags.push([0xb004, 4, 1, w32(b004)]);
   const indexLen = tiffIfd(le, tags, 8, 0).length;
   const attrAt = attr ? 8 + indexLen : 0;
-  const body = [tiffIfd(le, tags, 8, attrAt)];
+  const body: Buffer[] = [tiffIfd(le, tags, 8, attrAt)];
   if (attr) body.push(tiffIfd(le, attr, attrAt, 0));
   return u8('MPF\0', le ? 'II' : 'MM', w16(42), w32(8), ...body, tail ? Buffer.from(tail) : []);
 }
@@ -419,11 +648,11 @@ export function mpfPayload({ le = false, entries, ids = null, b004 = null, attr 
 export const ISO_ID = 'urn:iso:std:iso:ts:21496:-1\0';
 // An ISO 21496-1 block after the identifier: version-only, or full with one or three
 // channels, with or without a common denominator.
-export function isoBlock({ full = true, channels = 1, common = false, flags = null, minVersion = 0 } = {}) {
+export function isoBlock({ full = true, channels = 1, common = false, flags = null, minVersion = 0 }: IsoOptions = {}): Uint8Array {
   const head = u8(be16(minVersion), be16(0));
   if (!full) return head;
   const f = flags !== null ? flags : (channels === 3 ? 0x80 : 0) | (common ? 0x08 : 0);
-  const parts = [head, [f]];
+  const parts: Part[] = [head, [f]];
   if (common) {
     parts.push(be32(64), be32(0), be32(147));
     for (let c = 0; c < channels; c++) parts.push(be32(0), be32(147), be32(64), be32(1), be32(1));
@@ -468,13 +697,13 @@ const HDRGM_NS = 'xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"';
 //                           an ordinary photo, and the audit would judge what is planted in
 //                           it by the photo's rules (a technical XMP field or a colour profile
 //                           is green there), which is not what such a test is about
-export function gainMapJpeg(name, opts = {}) {
+export function gainMapJpeg(name: string, opts: GainMapOptions = {}): string {
   if (!existsSync(path('hdr-photo.jpg'))) {
     magick(['-size', '320x240', 'plasma:fractal', '-seed', '71', '-depth', '8', '-strip', '-quality', '90', path('hdr-photo.jpg')]);
     magick(['-size', '80x60', 'gradient:gray20-gray90', '-depth', '8', '-strip', '-quality', '80', path('hdr-gain.jpg')]);
   }
-  const g = opts.gain || {};
-  let gainBase;
+  const g: GainPicture = opts.gain || {};
+  let gainBase: Uint8Array;
   if (g.base) gainBase = g.base;
   else if (g.size || g.colour) {
     const file = path(`hdr-gain-${g.size || '80x60'}-${g.colour ? 'c' : 'g'}.jpg`);
@@ -485,7 +714,7 @@ export function gainMapJpeg(name, opts = {}) {
   const gx = opts.gainXmp;
   const gainXmp = (gx ? XMP_WRAP(gx.body || '', `${gx.ns} ${gx.attrs || ''}`) : XMP_WRAP(opts.gainBody || '', `${HDRGM_NS} ${fields}${opts.gainAttrs ? ` ${opts.gainAttrs}` : ''}`))
     .replace(' x:xmptk="FakeXMP Core 1.0"', opts.gainToolkit ? ` x:xmptk="${opts.gainToolkit}"` : '');
-  const gainSegs = [];
+  const gainSegs: Part[] = [];
   if (!opts.noGainXmp) gainSegs.push(jpegSeg(0xe1, u8('http://ns.adobe.com/xap/1.0/\0', Buffer.from(gainXmp, 'utf8'))));
   for (const p of opts.gainIso || []) gainSegs.push(jpegSeg(0xe2, u8(ISO_ID, p)));
   gainSegs.push(...(opts.gainSegs || []));
@@ -494,7 +723,7 @@ export function gainMapJpeg(name, opts = {}) {
   const lead = Buffer.alloc(opts.lead || 0);
   const gainLen = gain.length + after.length;
   const [padP, padG] = opts.padding || [];
-  const pad = (v) => (v === undefined ? '' : ` Item:Padding="${v}"`);
+  const pad = (v: number | undefined): string => (v === undefined ? '' : ` Item:Padding="${v}"`);
   const photoXmp = XMP_WRAP(`   <Container:Directory>
     <rdf:Seq>
      <rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="Primary" Item:Mime="image/jpeg"${pad(padP)}/></rdf:li>
@@ -502,13 +731,13 @@ export function gainMapJpeg(name, opts = {}) {
     </rdf:Seq>${opts.dirExtra || ''}
    </Container:Directory>`, `${HDRGM_NS} xmlns:Container="http://ns.google.com/photos/1.0/container/" xmlns:Item="http://ns.google.com/photos/1.0/container/item/"${opts.photoNs ? ` ${opts.photoNs}` : ''}${opts.noVersion ? '' : ` hdrgm:Version="${opts.version ?? '1.0'}"`}${opts.photoAttrs ? ` ${opts.photoAttrs}` : ''}`)
     .replace(' x:xmptk="FakeXMP Core 1.0"', '');
-  const m = opts.mpf || {};
-  const head = opts.photoXmp === false ? [] : [jpegSeg(0xe1, u8('http://ns.adobe.com/xap/1.0/\0', Buffer.from(photoXmp, 'utf8')))];
+  const m: GainMpf = opts.mpf || {};
+  const head: Part[] = opts.photoXmp === false ? [] : [jpegSeg(0xe1, u8('http://ns.adobe.com/xap/1.0/\0', Buffer.from(photoXmp, 'utf8')))];
   if (opts.exifTiff) head.push(jpegSeg(0xe1, u8('Exif\0\0', opts.exifTiff)));
   if (opts.exif) head.push(jpegSeg(0xe1, u8('Exif\0\0', tiffBlock({ ifd0: [[0x013b, 2, 0, PLANT.artist]] }))));
   for (const p of opts.photoIso || []) head.push(jpegSeg(0xe2, u8(ISO_ID, p)));
   head.push(...(opts.photoSegs || []));
-  const build = (primLen, gainOff) => jpegInsert(read('hdr-photo.jpg'), ...head, jpegSeg(0xe2, mpfPayload({
+  const build = (primLen: number, gainOff: number): Uint8Array => jpegInsert(read('hdr-photo.jpg'), ...head, jpegSeg(0xe2, mpfPayload({
     le: m.le, ids: m.ids, b004: m.b004 ?? null, attr: m.attr, tail: m.tail,
     entries: [[0x20030000, primLen, 0], [m.type ?? 0, gainLen, m.offset ?? gainOff]],
   })));
@@ -522,15 +751,15 @@ export function gainMapJpeg(name, opts = {}) {
 
 // A small ICC profile (version 2, display class, RGB) with a description and a copyright
 // text tag, and optionally more text tags: { desc, cprt, more: [[sig, text]] }.
-export function iccProfile({ desc = 'sRGB test', cprt = 'No copyright, use freely', more = [] } = {}) {
-  const descTag = (t) => u8('desc', be32(0), be32(t.length + 1), t, [0], be32(0), be32(0), [0, 0, 0], Buffer.alloc(67));
-  const textTag = (t) => u8('text', be32(0), t, [0]);
+export function iccProfile({ desc = 'sRGB test', cprt = 'No copyright, use freely', more = [] }: IccProfileOptions = {}): Uint8Array {
+  const descTag = (t: string): Uint8Array => u8('desc', be32(0), be32(t.length + 1), t, [0], be32(0), be32(0), [0, 0, 0], Buffer.alloc(67));
+  const textTag = (t: string): Uint8Array => u8('text', be32(0), t, [0]);
   const xyz = u8('XYZ ', be32(0), be32(0xf6d6), be32(0x10000), be32(0xd32d));
-  const tags = [['desc', descTag(desc)], ['cprt', textTag(cprt)], ['wtpt', xyz], ...more.map(([sig, t]) => [sig, textTag(t)])];
+  const tags: IccTagBytes[] = [['desc', descTag(desc)], ['cprt', textTag(cprt)], ['wtpt', xyz], ...more.map(([sig, t]): IccTagBytes => [sig, textTag(t)])];
   const tableLen = 4 + 12 * tags.length;
   let off = 128 + tableLen;
   const table = [be32(tags.length)];
-  const data = [];
+  const data: Uint8Array[] = [];
   for (const [sig, d] of tags) {
     const padded = u8(d, Buffer.alloc((4 - (d.length % 4)) % 4));
     table.push(Buffer.from(sig, 'latin1'), be32(off), be32(d.length));
@@ -547,12 +776,12 @@ export function iccProfile({ desc = 'sRGB test', cprt = 'No copyright, use freel
   return u8(head, ...table, ...data);
 }
 // The JPEG APP2 segment that carries a whole (small) ICC profile.
-export const iccSegment = (profile) => jpegSeg(0xe2, u8('ICC_PROFILE\0', [1, 1], profile));
+export const iccSegment = (profile: Bytes): Uint8Array => jpegSeg(0xe2, u8('ICC_PROFILE\0', [1, 1], profile));
 
 // A version 4 profile with mluc text tags, an XYZ white point and a parametric curve:
 // { desc, cprt, dmnd, more: [[sig, text]], records: more language records for desc }.
-export function iccProfileV4({ desc = 'Display P3', cprt = 'Copyright Apple Inc., 2017', dmnd = null, more = [], records = [] } = {}) {
-  const mluc = (list) => {
+export function iccProfileV4({ desc = 'Display P3', cprt = 'Copyright Apple Inc., 2017', dmnd = null, more = [], records = [] }: IccProfileV4Options = {}): Uint8Array {
+  const mluc = (list: readonly IccText[]): Uint8Array => {
     const head = [Buffer.from('mluc', 'latin1'), be32(0), be32(list.length), be32(12)];
     let off = 16 + 12 * list.length;
     const strs = [];
@@ -566,17 +795,21 @@ export function iccProfileV4({ desc = 'Display P3', cprt = 'Copyright Apple Inc.
   };
   const xyz = u8('XYZ ', be32(0), be32(0xf6d6), be32(0x10000), be32(0xd32d));
   const para = u8('para', be32(0), [0, 0, 0, 0], be32(0x26666));
-  const tags = [['desc', mluc([['enUS', desc], ...records])], ['cprt', mluc([['enUS', cprt]])], ['wtpt', xyz], ['rTRC', para], ['gTRC', para], ['bTRC', para]];
+  const tags: IccTagBytes[] = [['desc', mluc([['enUS', desc], ...records])], ['cprt', mluc([['enUS', cprt]])], ['wtpt', xyz], ['rTRC', para], ['gTRC', para], ['bTRC', para]];
   if (dmnd !== null) tags.push(['dmnd', mluc([['enUS', dmnd]])]);
   for (const [sig, t] of more) tags.push([sig, mluc([['enUS', t]])]);
   const tableLen = 4 + 12 * tags.length;
   let off = 128 + tableLen;
   const table = [be32(tags.length)];
-  const data = [];
-  const placed = new Map();
+  const data: Uint8Array[] = [];
+  const placed = new Map<string, number>();
   for (const [sig, d] of tags) {
+    // d is a Uint8Array (from u8), not a Buffer, so toString ignores 'hex' and gives the byte
+    // values joined by commas. That key is as unique as the hex one, so the shared tags are the
+    // same; the call stays as it was, and only the type checker is told about it.
+    // @ts-expect-error: Uint8Array.prototype.toString takes no argument.
     const key = d.toString('hex');
-    if (placed.has(key)) { table.push(Buffer.from(sig, 'latin1'), be32(placed.get(key)), be32(d.length)); continue; }
+    if (placed.has(key)) { table.push(Buffer.from(sig, 'latin1'), be32(placed.get(key)!), be32(d.length)); continue; }
     const padded = u8(d, Buffer.alloc((4 - (d.length % 4)) % 4));
     table.push(Buffer.from(sig, 'latin1'), be32(off), be32(d.length));
     placed.set(key, off);
@@ -596,25 +829,25 @@ export function iccProfileV4({ desc = 'Display P3', cprt = 'Copyright Apple Inc.
 // A version 4 RGB display profile assembled from raw tags: { tags: [[sig, bytes]], header:
 // { offset: bytes } written over the header, size: a declared size other than the real one }.
 // Tags with the same bytes share their data, as real profiles do for the three curves.
-export const iccMluc = (t, code = 'enUS') => {
+export const iccMluc = (t: string, code = 'enUS'): Uint8Array => {
   const s16 = Buffer.from(t, 'utf16le').swap16();
   return u8('mluc', be32(0), be32(1), be32(12), code, be32(s16.length), be32(28), s16);
 };
-export const iccXyz = (...v) => u8('XYZ ', be32(0), ...v.map((x) => be32(Math.round(x * 65536) >>> 0)));
-export const ICC_BASE_TAGS = () => [
+export const iccXyz = (...v: number[]): Uint8Array => u8('XYZ ', be32(0), ...v.map((x) => be32(Math.round(x * 65536) >>> 0)));
+export const ICC_BASE_TAGS = (): IccTagBytes[] => [
   ['desc', iccMluc('Display P3')], ['cprt', iccMluc('Copyright Apple Inc., 2017')], ['wtpt', iccXyz(0.9642, 1, 0.8249)],
   ['rXYZ', iccXyz(0.5151, 0.2412, -0.0011)], ['gXYZ', iccXyz(0.292, 0.6922, 0.0419)], ['bXYZ', iccXyz(0.1571, 0.0666, 0.7841)],
   ['rTRC', u8('para', be32(0), [0, 0, 0, 0], be32(0x23333))], ['gTRC', u8('para', be32(0), [0, 0, 0, 0], be32(0x23333))], ['bTRC', u8('para', be32(0), [0, 0, 0, 0], be32(0x23333))],
 ];
-export function iccBuild({ tags = ICC_BASE_TAGS(), header = {}, size = null } = {}) {
+export function iccBuild({ tags = ICC_BASE_TAGS(), header = {}, size = null }: IccBuildOptions = {}): Uint8Array {
   const tableLen = 4 + 12 * tags.length;
   let off = 128 + tableLen;
   const table = [be32(tags.length)];
-  const data = [];
-  const placed = new Map();
+  const data: Uint8Array[] = [];
+  const placed = new Map<string, number>();
   for (const [sig, d] of tags) {
     const key = Buffer.from(d).toString('hex');
-    if (placed.has(key)) { table.push(Buffer.from(sig, 'latin1'), be32(placed.get(key)), be32(d.length)); continue; }
+    if (placed.has(key)) { table.push(Buffer.from(sig, 'latin1'), be32(placed.get(key)!), be32(d.length)); continue; }
     const padded = u8(d, Buffer.alloc((4 - (d.length % 4)) % 4));
     table.push(Buffer.from(sig, 'latin1'), be32(off), be32(d.length));
     placed.set(key, off);
@@ -633,13 +866,13 @@ export function iccBuild({ tags = ICC_BASE_TAGS(), header = {}, size = null } = 
 
 // Apple's MakerNote ("Apple iOS", version 1, big-endian, offsets from its own start) with
 // the two HDR numbers (tags 33 and 48) and a text tag holding `text`.
-export function appleMakerNote({ maker33 = [10200, 10000], maker48 = [64, 10000], text = PLANT.appleNote } = {}) {
+export function appleMakerNote({ maker33 = [10200, 10000], maker48 = [64, 10000], text = PLANT.appleNote }: AppleNoteOptions = {}): Uint8Array {
   const t = Buffer.from(`${text}\0`, 'latin1');
-  const entries = [[0x0001, 9, 1, be32(14)], [0x000b, 2, t.length, t], [0x0021, 10, 1, u8(be32(maker33[0]), be32(maker33[1]))]];
+  const entries: IfdTag[] = [[0x0001, 9, 1, be32(14)], [0x000b, 2, t.length, t], [0x0021, 10, 1, u8(be32(maker33[0]), be32(maker33[1]))]];
   if (maker48) entries.push([0x0030, 10, 1, u8(be32(maker48[0]), be32(maker48[1]))]);
   const head = 14 + 2 + 12 * entries.length + 4;
-  const parts = [Buffer.from('Apple iOS\0\0\x01MM', 'latin1'), be16(entries.length)];
-  const values = [];
+  const parts: Uint8Array[] = [Buffer.from('Apple iOS\0\0\x01MM', 'latin1'), be16(entries.length)];
+  const values: Uint8Array[] = [];
   let at = head;
   for (const [tag, type, count, data] of entries) {
     parts.push(be16(tag), be16(type), be32(count));
@@ -656,7 +889,7 @@ const APPLE_GAIN_NS = 'xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" xm
 // HDRGainMapVersion, as iPhones write it. Options: auxType (the apdi value), gainBody
 // (more elements), note (appleMakerNote options), photoXmp (true: give the photo an hdrgm
 // XMP too).
-export function appleHdrJpeg(name, { auxType = 'urn:com:apple:photo:2020:aux:hdrgainmap', gainBody = '', note = {}, ...rest } = {}) {
+export function appleHdrJpeg(name: string, { auxType = 'urn:com:apple:photo:2020:aux:hdrgainmap', gainBody = '', note = {}, ...rest }: AppleHdrJpegOptions = {}): string {
   const mn = appleMakerNote(note);
   const tiff = tiffBlock({ ifd0: [[0x010f, 2, 0, 'Apple'], [0x0112, 3, 1, [1]]], exif: [[0x927c, 7, 0, 'x'], [0xa001, 3, 1, [1]]], makernote: () => Buffer.from(mn) });
   return gainMapJpeg(name, {
@@ -724,8 +957,8 @@ export const pngFull = once('full.png', () => {
     `-XMP-dc:Creator=${PLANT.xmpCreator}`, `-XMP-photoshop:City=${PLANT.xmpCity}`, '-XMP-xmp:CreateDate=2026:09:14 10:15:23',
     `-XMP-xmpMM:DocumentID=${PLANT.xmpDocId}`, `-IPTC:By-line=${PLANT.iptcByline}`, '-IPTC:Credit=Iptc credit line',
     `-ICC_Profile<=${icc}`]);
-  const z = (kw, text) => pngChunk('zTXt', u8(kw, [0, 0], zlib.deflateSync(Buffer.from(text, 'latin1'))));
-  const itxtZ = (kw, text) => pngChunk('iTXt', u8(kw, [0, 1, 0], 'en', [0], [0], zlib.deflateSync(Buffer.from(text, 'utf8'))));
+  const z = (kw: string, text: string): Uint8Array => pngChunk('zTXt', u8(kw, [0, 0], zlib.deflateSync(Buffer.from(text, 'latin1'))));
+  const itxtZ = (kw: string, text: string): Uint8Array => pngChunk('iTXt', u8(kw, [0, 1, 0], 'en', [0], [0], zlib.deflateSync(Buffer.from(text, 'utf8'))));
   let b = read('full-base.png');
   b = pngInsertBefore(b, 'IDAT', z('Comment', 'ZTXT-PLANT-COMMENT'), itxtZ('Warning', 'ITXT-PLANT-WARNING'),
     pngChunk('prVt', 'PRVT-PLANT-SECRET'), pngChunk('caBX', fakeJumbf()), pngChunk('tIME', [0x07, 0xea, 9, 14, 10, 15, 23]));
@@ -784,8 +1017,8 @@ export const heicExiftool = once('exiftool.heic', () => {
 // Hand-assembled HEIC files: thumbnail item, EXIF in idat, XMP in two extents, ICC colour
 // property, and the different iloc versions and field sizes.
 
-function boxList(b, s, e) {
-  const out = [];
+function boxList(b: Buffer, s: number, e: number): IsoBoxAt[] {
+  const out: IsoBoxAt[] = [];
   let p = s;
   while (p + 8 <= e) {
     const size = b.readUInt32BE(p);
@@ -796,11 +1029,12 @@ function boxList(b, s, e) {
 }
 
 // Pulls the coded picture and its properties out of a simple ImageMagick HEIC.
-function extractHeic(file) {
+function extractHeic(file: string): { data: Buffer; props: { box: Buffer; essential: boolean }[] } {
   const b = readFileSync(file);
-  const meta = boxList(b, 0, b.length).find((x) => x.type === 'meta');
+  // ImageMagick's HEIC always has these boxes; a missing one throws, as it did before.
+  const meta = boxList(b, 0, b.length).find((x) => x.type === 'meta')!;
   const kids = boxList(b, meta.ds + 4, meta.end);
-  const iloc = kids.find((x) => x.type === 'iloc');
+  const iloc = kids.find((x) => x.type === 'iloc')!;
   const d = iloc.ds;
   const ver = b[d];
   const offSize = b[d + 4] >> 4;
@@ -808,29 +1042,29 @@ function extractHeic(file) {
   const baseSize = b[d + 5] >> 4;
   // Version 0 or 1, one item: count(2) id(2) [method(2)] data_reference(2), then base offset.
   let p = d + 8 + 2 + (ver === 1 ? 2 : 0) + 2;
-  const readN = (n) => { const v = n === 4 ? b.readUInt32BE(p) : n === 8 ? Number(b.readBigUInt64BE(p)) : 0; p += n; return v; };
+  const readN = (n: number): number => { const v = n === 4 ? b.readUInt32BE(p) : n === 8 ? Number(b.readBigUInt64BE(p)) : 0; p += n; return v; };
   const base = readN(baseSize);
   const n = b.readUInt16BE(p); p += 2;
-  const parts = [];
+  const parts: Buffer[] = [];
   for (let i = 0; i < n; i++) { const off = readN(offSize); const len = readN(lenSize); parts.push(b.subarray(base + off, base + off + len)); }
-  const iprp = kids.find((x) => x.type === 'iprp');
+  const iprp = kids.find((x) => x.type === 'iprp')!;
   const ik = boxList(b, iprp.ds, iprp.end);
   const props = boxList(b, ik[0].ds, ik[0].end).map((x) => b.subarray(x.start, x.end));
   const ipma = ik[1];
   const flags = b[ipma.ds + 3];
   let q = ipma.ds + 8 + 2;
   const k = b[q++];
-  const assoc = [];
+  const assoc: number[] = [];
   for (let i = 0; i < k; i++) {
     if (flags & 1) { assoc.push(b.readUInt16BE(q)); q += 2; } else assoc.push(b[q++]);
   }
   return { data: Buffer.concat(parts), props: assoc.map((a) => ({ box: props[(a & 0x7f) - 1], essential: !!(a & 0x80) })) };
 }
 
-const box = (type, ...parts) => { const body = u8(...parts); return u8(be32(8 + body.length), type, body); };
-const fullbox = (type, v, flags, ...parts) => box(type, [v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255], ...parts);
+const box = (type: string, ...parts: Part[]): Uint8Array => { const body = u8(...parts); return u8(be32(8 + body.length), type, body); };
+const fullbox = (type: string, v: number, flags: number, ...parts: Part[]): Uint8Array => box(type, [v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255], ...parts);
 
-export function buildHeic(name, { ilocVersion = 1, offSize = 4, lenSize = 4, baseSize = 4, idxSize = 0, infeVersion = 2, wideIds = false, ipmaLarge = false, iccBytes: iccIn = null }) {
+export function buildHeic(name: string, { ilocVersion = 1, offSize = 4, lenSize = 4, baseSize = 4, idxSize = 0, infeVersion = 2, wideIds = false, ipmaLarge = false, iccBytes: iccIn = null }: HeicOptions): { name: string; thumbRange: number[]; primRange: number[] } {
   magick(['-size', '160x120', 'plasma:fractal', '-seed', '131', '-depth', '8', path('heic-primary.heic')]);
   magick(['-size', '48x36', 'plasma:fractal', '-seed', '132', '-depth', '8', path('heic-thumb.heic')]);
   const prim = extractHeic(path('heic-primary.heic'));
@@ -849,22 +1083,22 @@ export function buildHeic(name, { ilocVersion = 1, offSize = 4, lenSize = 4, bas
   const xmpB = xmp.subarray(300);
   const filler = randomBytes(37);
 
-  const idw = (v) => (wideIds ? be32(v) : be16(v));
-  const nfield = (n, v) => (n === 0 ? Buffer.alloc(0) : n === 4 ? be32(v) : be64(v));
-  const infe = (id, type, extra = []) => fullbox('infe', infeVersion, 0, infeVersion === 3 ? be32(id) : be16(id), be16(0), type, [0], ...extra);
+  const idw = (v: number): Buffer => (wideIds ? be32(v) : be16(v));
+  const nfield = (n: number, v: number): Buffer => (n === 0 ? Buffer.alloc(0) : n === 4 ? be32(v) : be64(v));
+  const infe = (id: number, type: string, extra: Part[] = []): Uint8Array => fullbox('infe', infeVersion, 0, infeVersion === 3 ? be32(id) : be16(id), be16(0), type, [0], ...extra);
 
-  const metaFor = (pos) => {
+  const metaFor = (pos: Record<string, number>): Uint8Array => {
     const hdlr = fullbox('hdlr', 0, 0, be32(0), 'pict', Buffer.alloc(12), [0]);
     const pitm = fullbox('pitm', wideIds ? 1 : 0, 0, idw(1));
     const iinfV = wideIds ? 1 : 0;
     const iinf = fullbox('iinf', iinfV, 0, iinfV ? be32(4) : be16(4),
       infe(1, 'hvc1'), infe(2, 'hvc1'), infe(3, 'Exif'), infe(4, 'mime', ['application/rdf+xml', [0]]));
     const refV = wideIds ? 1 : 0;
-    const ref = (type, from, to) => box(type, idw(from), be16(1), idw(to));
+    const ref = (type: string, from: number, to: number): Uint8Array => box(type, idw(from), be16(1), idw(to));
     const iref = fullbox('iref', refV, 0, ref('thmb', 2, 1), ref('cdsc', 3, 1), ref('cdsc', 4, 1));
     const props = [...prim.props.map((x) => x.box), colr, ...thumb.props.map((x) => x.box)];
     const ipco = box('ipco', ...props);
-    const assocEntry = (idx, ess) => (ipmaLarge ? be16((ess ? 0x8000 : 0) | idx) : [(ess ? 0x80 : 0) | idx]);
+    const assocEntry = (idx: number, ess: boolean): Part => (ipmaLarge ? be16((ess ? 0x8000 : 0) | idx) : [(ess ? 0x80 : 0) | idx]);
     const primAssoc = prim.props.map((x, i) => assocEntry(i + 1, x.essential));
     primAssoc.push(assocEntry(prim.props.length + 1, false));
     const thumbAssoc = thumb.props.map((x, i) => assocEntry(prim.props.length + 2 + i, x.essential));
@@ -873,10 +1107,10 @@ export function buildHeic(name, { ilocVersion = 1, offSize = 4, lenSize = 4, bas
       idw(1), [primAssoc.length], ...primAssoc, idw(2), [thumbAssoc.length], ...thumbAssoc);
     const iprp = box('iprp', ipco, ipma);
     const v = ilocVersion;
-    const itemHead = (id, method) => [v < 2 ? be16(id) : be32(id), ...(v >= 1 ? [be16(method)] : []), be16(0)];
-    const extent = (off, len, idx = 1) => [...(v >= 1 && idxSize ? [nfield(idxSize, idx)] : []), nfield(offSize, off), nfield(lenSize, len)];
+    const itemHead = (id: number, method: number): Buffer[] => [v < 2 ? be16(id) : be32(id), ...(v >= 1 ? [be16(method)] : []), be16(0)];
+    const extent = (off: number, len: number, idx = 1): Buffer[] => [...(v >= 1 && idxSize ? [nfield(idxSize, idx)] : []), nfield(offSize, off), nfield(lenSize, len)];
     const base = baseSize ? pos.mdat : 0;
-    const rel = (x) => (baseSize ? x - pos.mdat : x);
+    const rel = (x: number): number => (baseSize ? x - pos.mdat : x);
     const items = [
       [...itemHead(1, 0), nfield(baseSize, base), be16(1), ...extent(rel(pos.prim), prim.data.length)],
       [...itemHead(2, 0), nfield(baseSize, base), be16(1), ...extent(rel(pos.thumb), thumb.data.length)],
@@ -891,8 +1125,8 @@ export function buildHeic(name, { ilocVersion = 1, offSize = 4, lenSize = 4, bas
     return fullbox('meta', 0, 0, ...kids);
   };
   const ftyp = box('ftyp', 'heic', be32(0), 'mif1', 'heic', 'miaf');
-  const mdatParts = (start) => {
-    const pos = { mdat: start };
+  const mdatParts = (start: number): Record<string, number> => {
+    const pos: Record<string, number> = { mdat: start };
     let p = start + 8;
     pos.prim = p; p += prim.data.length;
     pos.xmpA = p; p += xmpA.length;
@@ -922,10 +1156,10 @@ export function buildHeic(name, { ilocVersion = 1, offSize = 4, lenSize = 4, bas
 // (property boxes attached to the picture, not essential), auxHidden (false: the gain map's
 // item entry is not marked hidden), hdlrName (text after hdlr's reserved fields), ftypMinor
 // and brands (ftyp), exifHead (the six bytes before the TIFF header of the EXIF item).
-export function appleHdrHeic(name, {
+export function appleHdrHeic(name: string, {
   auxType = 'urn:com:apple:photo:2020:aux:hdrgainmap', auxTail = null, gainBody = '', note = {}, photoXmp = null, pad = 0, noGain = false,
   names = {}, extraProps = [], auxHidden = true, hdlrName = '', ftypMinor = null, brands = ['mif1', 'heic', 'miaf'], exifHead = 'Exif\0\0',
-} = {}) {
+}: AppleHdrHeicOptions = {}): string {
   if (!existsSync(path('heic-apple-primary.heic'))) magick(['-size', '160x120', 'plasma:fractal', '-seed', '151', '-depth', '8', path('heic-apple-primary.heic')]);
   if (!existsSync(path('heic-apple-gain.heic'))) magick(['-size', '80x60', 'gradient:gray20-gray90', '-depth', '8', path('heic-apple-gain.heic')]);
   const prim = extractHeic(path('heic-apple-primary.heic'));
@@ -945,7 +1179,7 @@ export function appleHdrHeic(name, {
 </x:xmpmeta>
 `, 'utf8');
   const auxC = fullbox('auxC', 0, 0, auxType, [0], ...(auxTail ? [auxTail] : []));
-  const items = [
+  const items: HeicItem[] = [
     { id: 1, type: 'hvc1', data: prim.data },
     { id: 2, type: 'Exif', data: exifPayload, hidden: true },
     { id: 3, type: 'mime', data: photo, hidden: true },
@@ -954,22 +1188,22 @@ export function appleHdrHeic(name, {
   const props = [...prim.props.map((x) => x.box), ...gain.props.map((x) => x.box), auxC, ...extraProps];
   const primAssoc = [...prim.props.map((x, i) => [(x.essential ? 0x80 : 0) | (i + 1)]), ...extraProps.map((x, i) => [prim.props.length + gain.props.length + 2 + i])];
   const gainAssoc = [...gain.props.map((x, i) => [(x.essential ? 0x80 : 0) | (prim.props.length + i + 1)]), [prim.props.length + gain.props.length + 1]];
-  const ref = (type, from, to) => box(type, be16(from), be16(1), be16(to));
-  const infe = (it) => fullbox('infe', 2, it.hidden ? 1 : 0, be16(it.id), be16(0), it.type, names[it.id] || '', [0], ...(it.type === 'mime' ? ['application/rdf+xml', [0]] : []));
-  const metaFor = (pos) => {
+  const ref = (type: string, from: number, to: number): Uint8Array => box(type, be16(from), be16(1), be16(to));
+  const infe = (it: HeicItem): Uint8Array => fullbox('infe', 2, it.hidden ? 1 : 0, be16(it.id), be16(0), it.type, names[it.id] || '', [0], ...(it.type === 'mime' ? ['application/rdf+xml', [0]] : []));
+  const metaFor = (pos: Record<string, number>): Uint8Array => {
     const hdlr = fullbox('hdlr', 0, 0, be32(0), 'pict', Buffer.alloc(12), hdlrName, [0]);
     const pitm = fullbox('pitm', 0, 0, be16(1));
     const iinf = fullbox('iinf', 0, 0, be16(items.length), ...items.map(infe));
     const iref = fullbox('iref', 0, 0, ...(noGain ? [] : [ref('auxl', 4, 1)]), ref('cdsc', 2, 1), ref('cdsc', 3, 1), ...(noGain ? [] : [ref('cdsc', 5, 4)]));
     const ipco = box('ipco', ...props);
-    const ipmaEntries = [[1, primAssoc], ...(noGain ? [] : [[4, gainAssoc]])];
+    const ipmaEntries: [number, number[][]][] = [[1, primAssoc], ...(noGain ? [] : [[4, gainAssoc] as [number, number[][]]])];
     const ipma = fullbox('ipma', 0, 0, be32(ipmaEntries.length), ...ipmaEntries.map(([id, a]) => u8(be16(id), [a.length], ...a)));
     const iprp = box('iprp', ipco, ipma);
     const iloc = fullbox('iloc', 1, 0, [0x44, 0x40], be16(items.length), ...items.map((it) => u8(be16(it.id), be16(0), be16(0), be32(pos.mdat), be16(1), be32(pos[it.id] - pos.mdat), be32(it.data.length))));
     return fullbox('meta', 0, 0, hdlr, pitm, iinf, iref, iprp, iloc);
   };
   const ftyp = box('ftyp', 'heic', ftypMinor === null ? be32(0) : ftypMinor, ...brands);
-  const layout = (start) => { const pos = { mdat: start }; let p = start + 8; for (const it of items) { pos[it.id] = p; p += it.data.length; } return pos; };
+  const layout = (start: number): Record<string, number> => { const pos: Record<string, number> = { mdat: start }; let p = start + 8; for (const it of items) { pos[it.id] = p; p += it.data.length; } return pos; };
   const meta = metaFor(layout(ftyp.length + metaFor(layout(0)).length));
   const out = u8(ftyp, meta, box('mdat', ...items.map((it) => it.data)));
   write(name, out);
@@ -981,7 +1215,7 @@ export { box as isoBox, fullbox as isoFullBox };
 // libheif's view of HEIC files (python3 ctypes over libheif.so.1): { file: { primary,
 // aux: [{ type, size, pixels }], top } }, pixels being hashes of the decoded planes and top
 // the number of top-level images (pictures a viewer offers on their own).
-export function heifInfo(files) {
+export function heifInfo(files: readonly string[]): Record<string, HeifView> {
   const script = path('heif-info.py');
   if (!existsSync(script)) {
     writeFileSync(script, `import ctypes, sys, hashlib, json
@@ -1044,7 +1278,7 @@ print(json.dumps(out))
   return JSON.parse(sh('python3', [script, ...files]));
 }
 
-export function decodeHashes(files) {
+export function decodeHashes(files: readonly string[]): string[] {
   const script = path('pixel-hash.py');
   if (!existsSync(script)) {
     writeFileSync(script, `import sys, json, hashlib
@@ -1058,7 +1292,7 @@ print(json.dumps(out))
 `);
   }
   const pil = files.filter((f) => !/\.heic$/i.test(f));
-  const res = pil.length ? JSON.parse(sh('python3', [script, ...pil])) : {};
+  const res: Record<string, string> = pil.length ? JSON.parse(sh('python3', [script, ...pil])) : {};
   for (const f of files.filter((x) => /\.heic$/i.test(x))) {
     res[f] = 'magick:' + createHash('sha256').update(sh('magick', [f, '-depth', '8', 'rgba:-'], true)).digest('hex');
   }
@@ -1067,7 +1301,7 @@ print(json.dumps(out))
 
 // The ICC profile of a file as exiftool extracts it, and whether Pillow's colour engine
 // (LittleCMS) opens it: { bytes, ok, desc, cprt, error }.
-export function iccOf(file) {
+export function iccOf(file: string): IccView {
   const bytes = sh('exiftool', ['-b', '-ICC_Profile', file], true);
   if (!bytes.length) return { bytes, ok: false, error: 'no profile' };
   const tmp = `${file}.icc`;
@@ -1081,9 +1315,9 @@ print(json.dumps({'desc': ImageCms.getProfileDescription(p).strip(), 'cprt': Ima
 }
 
 // The tags of an ICC profile: { sig: { off, len, type, data } }.
-export function iccTags(p) {
+export function iccTags(p: Bytes): Record<string, IccTag> {
   const b = Buffer.from(p);
-  const out = {};
+  const out: Record<string, IccTag> = {};
   for (let i = 0; i < b.readUInt32BE(128); i++) {
     const e = 132 + i * 12;
     const off = b.readUInt32BE(e + 4);
@@ -1094,7 +1328,7 @@ export function iccTags(p) {
 }
 
 // exiftool's view of a file as [{ group, tag, value }].
-export function exifRead(file) {
+export function exifRead(file: string): ExifRow[] {
   const out = sh('exiftool', ['-a', '-u', '-G1', '-ee', '-s', '-n', file]);
   return out.split('\n').filter(Boolean).map((line) => {
     const m = /^\[([^\]]+)\]\s+(\S+)\s*:\s?(.*)$/.exec(line);
@@ -1102,7 +1336,7 @@ export function exifRead(file) {
   });
 }
 
-export function validate(file) {
+export function validate(file: string): string[] {
   const out = sh('exiftool', ['-validate', '-warning', '-error', '-a', '-G1', '-s', file]);
   return out.split('\n')
     .filter((l) => /^\[ExifTool\]\s+(Warning|Error)\b/.test(l))
