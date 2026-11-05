@@ -305,7 +305,8 @@ const be32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32BE
 const le32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
 const be64 = (v: number | bigint): Buffer => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(v)); return b; };
 
-export function jpegSeg(marker: number, payload: Bytes): Uint8Array {
+/** A JPEG marker segment. Text in the payload is written as UTF-8 (Buffer.from), not Latin-1. */
+export function jpegSeg(marker: number, payload: Part): Uint8Array {
   const p = Buffer.from(payload);
   return u8([0xff, marker], be16(p.length + 2), p);
 }

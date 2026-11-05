@@ -5,6 +5,12 @@
 // removes them (checked with exiftool and by searching the bytes for planted strings);
 // scrubbing every item leaves nothing but structure; decoded pixels never change; and
 // exiftool -validate reports nothing new.
+//
+// TypeScript (TS-STEP-1, 1 November 2026): Node 24 runs this file directly (npm test), and
+// tests/tsconfig.json type-checks it (strict) when tools/build-ts.sh runs. The engine is imported
+// through "#src/", which Node maps to the served ./src/ (see "imports" in package.json), so the
+// tests test what ships. Only types were added to the JavaScript it was: a non-null assertion (!)
+// marks a value the test has just made sure of, or one whose absence fails the test anyway.
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -13,33 +19,38 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 
-import * as core from '../src/scrub-core.js';
-import { parseTiff, removeTiffKeys } from '../src/core/tiff.js';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, rewriteXmp } from '../src/core/xmp.js';
-import { walkJpeg } from '../src/core/jpeg.js';
-import { parseHeif } from '../src/core/heic.js';
-import { cleanIcc, inspectIcc, md5 } from '../src/core/icc.js';
-import { ItemSet } from '../src/core/taxonomy.js';
-import { describeC2pa } from '../src/core/c2pa.js';
-import { IPTC_ITEMS } from '../src/core/iptc.js';
-import { TIFF_ITEMS } from '../src/core/tiff.js';
-import { XMP_ITEMS } from '../src/core/xmp.js';
+import * as core from '#src/scrub-core.js';
+import { parseTiff, removeTiffKeys } from '#src/core/tiff.js';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, rewriteXmp } from '#src/core/xmp.js';
+import { walkJpeg } from '#src/core/jpeg.js';
+import { parseHeif } from '#src/core/heic.js';
+import { cleanIcc, inspectIcc, md5 } from '#src/core/icc.js';
+import { ItemSet } from '#src/core/taxonomy.js';
+import { describeC2pa } from '#src/core/c2pa.js';
+import { IPTC_ITEMS } from '#src/core/iptc.js';
+import { TIFF_ITEMS } from '#src/core/tiff.js';
+import { XMP_ITEMS } from '#src/core/xmp.js';
 import * as F from './core-fixtures.ts';
+import type { InspectResult, ScrubResult } from '#src/scrub-core.js';
+import type { Item, Tier } from '#src/core/taxonomy.js';
+import type { HeifItem, HeifModel } from '#src/core/heic.js';
+import type { IccInfo } from '#src/core/icc.js';
+import type { ParsedXmp, XmpAdded } from '#src/core/xmp.js';
 
 const { PLANT } = F;
 
-const contains = (bytes, s) => Buffer.from(bytes).includes(Buffer.from(s, 'latin1'));
-const ids = (info) => info.items.map((i) => i.id);
-const tierOf = (info, id) => info.items.find((i) => i.id === id)?.tier;
-const reds = (info) => info.items.filter((i) => i.tier === 'red').map((i) => i.id);
-const hasTag = (rows, group, tag) => rows.some((r) => (group instanceof RegExp ? group.test(r.group) : r.group === group) && r.tag === tag);
+const contains = (bytes: Uint8Array, s: string): boolean => Buffer.from(bytes).includes(Buffer.from(s, 'latin1'));
+const ids = (info: InspectResult): string[] => info.items.map((i) => i.id);
+const tierOf = (info: InspectResult, id: string): Tier | undefined => info.items.find((i) => i.id === id)?.tier;
+const reds = (info: InspectResult): string[] => info.items.filter((i) => i.tier === 'red').map((i) => i.id);
+const hasTag = (rows: readonly F.ExifRow[], group: string | RegExp, tag: string): boolean => rows.some((r) => (group instanceof RegExp ? group.test(r.group) : r.group === group) && r.tag === tag);
 
 const PNG_IHDR = new Set(['ImageWidth', 'ImageHeight', 'BitDepth', 'ColorType', 'Compression', 'Filter', 'Interlace']);
 const RIFF_STRUCT = new Set(['WebP_Flags', 'ImageWidth', 'ImageHeight', 'VP8Version', 'HorizontalScale', 'VerticalScale',
   'AlphaPreprocessing', 'AlphaFiltering', 'AlphaCompression']);
 
 // exiftool rows that are metadata rather than structure.
-function metadataLeft(rows, format) {
+function metadataLeft(rows: readonly F.ExifRow[], format: string): F.ExifRow[] {
   return rows.filter((r) => {
     if (r.group === 'ExifTool' || r.group === 'System') return false;
     if (r.group === 'File') return r.tag === 'Comment' || r.tag === 'CurrentIPTCDigest' || (r.tag === 'ExifByteOrder' && format !== 'heic');
@@ -51,7 +62,7 @@ function metadataLeft(rows, format) {
   });
 }
 
-async function scrubTo(outName, bytes, removeIds) {
+async function scrubTo(outName: string, bytes: Uint8Array, removeIds: Iterable<string>): Promise<ScrubResult> {
   const before = Buffer.from(bytes);
   const res = await core.scrub(bytes, removeIds);
   assert.ok(before.equals(Buffer.from(bytes)), 'the input buffer must not be changed');
@@ -59,13 +70,13 @@ async function scrubTo(outName, bytes, removeIds) {
   return res;
 }
 
-function noNewWarnings(inName, outName) {
+function noNewWarnings(inName: string, outName: string): void {
   const before = new Set(F.validate(F.path(inName)));
   const after = F.validate(F.path(outName)).filter((w) => !before.has(w));
   assert.deepEqual(after, [], `exiftool -validate reports new problems for ${outName}`);
 }
 
-function samePixels(...names) {
+function samePixels(...names: string[]): void {
   const hashes = F.decodeHashes(names.map((n) => F.path(n)));
   for (const h of hashes) assert.ok(h, 'picture must decode');
   assert.equal(new Set(hashes).size, 1, `decoded pixels differ between ${names.join(', ')}`);
@@ -74,11 +85,11 @@ function samePixels(...names) {
 // XMP is only ever kept in the canonical form, so a kept JPEG (a gain map, say) is the same
 // as its source apart from its XMP, whose properties are the same.
 const XMP_HEAD = 'http://ns.adobe.com/xap/1.0/\0';
-function sameButXmp(a, b) {
-  const parts = (x) => {
-    const w = walkJpeg(x);
+function sameButXmp(a: Uint8Array, b: Uint8Array): boolean {
+  const parts = (x: Uint8Array) => {
+    const w = walkJpeg(x)!;
     const segs = w.segs.filter((s) => !(s.kind === 'seg' && s.marker === 0xe1 && Buffer.from(x.subarray(s.dataStart, s.dataStart + XMP_HEAD.length)).toString('latin1') === XMP_HEAD));
-    const xmp = w.segs.filter((s) => !segs.includes(s)).map((s) => canonicalXmp(parseXmp(Buffer.from(x.subarray(s.dataStart + XMP_HEAD.length, s.end)).toString('utf8')), true));
+    const xmp = w.segs.filter((s) => !segs.includes(s)).map((s) => canonicalXmp(parseXmp(Buffer.from(x.subarray(s.dataStart! + XMP_HEAD.length, s.end)).toString('utf8')), true));
     return { body: Buffer.concat(segs.map((s) => Buffer.from(x.subarray(s.start, s.end)))), xmp };
   };
   const pa = parts(a);
@@ -88,13 +99,13 @@ function sameButXmp(a, b) {
 
 // An HEIC whose XMP was written again: the same boxes, nothing damaged, and every item that
 // is not XMP holds what it held (or zeros, for what was removed).
-function heicIntact(inBytes, outBytes, label) {
+function heicIntact(inBytes: Uint8Array, outBytes: Uint8Array, label: string): HeifModel {
   const a = parseHeif(inBytes);
   const o = parseHeif(outBytes);
   assert.deepEqual(o.warnings, [], `${label}: the output reads without warnings`);
   assert.equal(o.top.map((x) => x.type).join(), a.top.map((x) => x.type).join(), `${label}: the same top-level boxes`);
   assert.equal(o.metaKids.map((x) => x.type).join(), a.metaKids.map((x) => x.type).join(), `${label}: the same boxes in meta`);
-  const read = (b, it) => Buffer.concat((it.ranges || []).map(([s, e]) => Buffer.from(b.subarray(s, e))));
+  const read = (b: Uint8Array, it: HeifItem): Buffer => Buffer.concat((it.ranges || []).map(([s, e]) => Buffer.from(b.subarray(s, e))));
   for (const it of a.items.values()) {
     const it2 = o.items.get(it.id);
     assert.ok(it2, `${label}: item ${it.id} is still there`);
@@ -110,7 +121,14 @@ function heicIntact(inBytes, outBytes, label) {
 }
 
 // Shared checks for one fixture: red only, then everything.
-async function standardChecks(name, format, { redStrings = [], keptStrings = [], redTags = [], keptTags = [] }) {
+type GroupTag = readonly [group: string, tag: string];
+interface Expected {
+  redStrings?: readonly string[];
+  keptStrings?: readonly string[];
+  redTags?: readonly GroupTag[];
+  keptTags?: readonly GroupTag[];
+}
+async function standardChecks(name: string, format: string, { redStrings = [], keptStrings = [], redTags = [], keptTags = [] }: Expected) {
   const input = F.read(name);
   const info = await core.inspect(input);
   assert.equal(info.format, format);
@@ -167,8 +185,8 @@ describe('contract basics', () => {
   });
 
   test('GROUPS and TIERS are complete', () => {
-    assert.deepEqual(core.GROUPS.map((g) => g.id), ['where', 'who', 'when', 'device', 'hidden', 'technical']);
-    assert.deepEqual(core.GROUPS.map((g) => g.label), ['Where', 'Who', 'When', 'Device', 'Hidden extras', 'Technical']);
+    assert.deepEqual(core.GROUPS.map((g: { id: string }) => g.id), ['where', 'who', 'when', 'device', 'hidden', 'technical']);
+    assert.deepEqual(core.GROUPS.map((g: { label: string }) => g.label), ['Where', 'Who', 'When', 'Device', 'Hidden extras', 'Technical']);
     for (const t of ['red', 'amber', 'green']) assert.ok(core.TIERS[t].label && core.TIERS[t].description);
   });
 
@@ -199,12 +217,12 @@ describe('contract basics', () => {
     for (const n of [F.jpegFull(), F.jpegMotion(), F.pngFull(), F.webpFull(), F.heicExiftool()]) {
       const info = await core.inspect(F.read(n));
       for (const i of info.items) {
-        for (const field of ['label', 'note']) {
+        for (const field of ['label', 'note'] as const) {
           const v = i[field] || '';
           assert.ok(!v.includes('\u2014') && !v.includes('-' + '-'), `${i.id} ${field}: ${v}`);
         }
         assert.ok(i.value.length <= 80, `${i.id} value too long`);
-        assert.ok(core.GROUPS.some((g) => g.id === i.group), `${i.id} group`);
+        assert.ok(core.GROUPS.some((g: { id: string }) => g.id === i.group), `${i.id} group`);
         assert.ok(core.TIERS[i.tier], `${i.id} tier`);
       }
       assert.equal(new Set(ids(info)).size, info.items.length, 'ids must be unique');
@@ -220,10 +238,10 @@ describe('TIFF engine, in place', () => {
       ifd0: [[0x010f, 2, 0, 'MakeAAAA'], [0x0131, 2, 0, 'SoftwareBBBB'], [0x013b, 2, 0, 'ArtistCCCC']],
     });
     const before = Buffer.from(t);
-    const m = parseTiff(t);
-    const ifd0 = m.ifds.ifd0;
-    const artist = ifd0.entries.find((e) => e.tag === 0x013b);
-    const software = ifd0.entries.find((e) => e.tag === 0x0131);
+    const m = parseTiff(t)!;
+    const ifd0 = m.ifds.ifd0!;
+    const artist = ifd0.entries.find((e) => e.tag === 0x013b)!;
+    const software = ifd0.entries.find((e) => e.tag === 0x0131)!;
     const res = removeTiffKeys(m, new Set(['software']));
     assert.equal(res.empty, false);
     const after = Buffer.from(t);
@@ -235,34 +253,34 @@ describe('TIFF engine, in place', () => {
     assert.ok(after.subarray(software.valueOffset, software.valueOffset + software.size).every((x) => x === 0), 'value zeroed');
     assert.ok(after.subarray(artist.valueOffset, artist.valueOffset + artist.size).equals(before.subarray(artist.valueOffset, artist.valueOffset + artist.size)), 'kept value untouched');
     assert.ok(!contains(after, 'SoftwareBBBB'));
-    const again = parseTiff(t);
-    assert.deepEqual(again.ifds.ifd0.entries.map((e) => e.tag), [0x010f, 0x013b]);
+    const again = parseTiff(t)!;
+    assert.deepEqual(again.ifds.ifd0!.entries.map((e) => e.tag), [0x010f, 0x013b]);
   });
 
   test('a value shared by a kept tag is not zeroed', () => {
     const t = F.tiffBlock({ ifd0: [[0x013b, 2, 22, 'SHARED:n'], [0x010e, 2, 22, 'SHARED:n']], shared: { n: 'Shared Name Plant 22\0\0' } });
-    const m = parseTiff(t);
+    const m = parseTiff(t)!;
     removeTiffKeys(m, new Set(['owner']));
-    const m2 = parseTiff(t);
-    assert.deepEqual(m2.ifds.ifd0.entries.map((e) => e.tag), [0x010e]);
+    const m2 = parseTiff(t)!;
+    assert.deepEqual(m2.ifds.ifd0!.entries.map((e) => e.tag), [0x010e]);
     assert.ok(contains(t, 'Shared Name Plant 22'));
   });
 
   test('removing the GPS item zeroes the whole GPS directory and drops its pointer', () => {
     const t = F.tiffBlock({ ifd0: [[0x010f, 2, 0, 'Make']], gps: [[0x0001, 2, 2, 'N'], [0x001c, 7, 14, Buffer.from('GPS-AREA-PLANT', 'latin1')]] });
-    const m = parseTiff(t);
-    const gps = m.ifds.gps;
+    const m = parseTiff(t)!;
+    const gps = m.ifds.gps!;
     removeTiffKeys(m, new Set(['gps']));
     assert.ok(Buffer.from(t).subarray(gps.offset, gps.offset + 2 + gps.count * 12 + 4).every((x) => x === 0));
     assert.ok(!contains(t, 'GPS-AREA-PLANT'));
-    const m2 = parseTiff(t);
+    const m2 = parseTiff(t)!;
     assert.equal(m2.ifds.gps, undefined);
-    assert.deepEqual(m2.ifds.ifd0.entries.map((e) => e.tag), [0x010f]);
+    assert.deepEqual(m2.ifds.ifd0!.entries.map((e) => e.tag), [0x010f]);
   });
 
   test('removing everything reports an empty block', () => {
     const t = F.tiffBlock({ ifd0: [[0x010f, 2, 0, 'Make']], exif: [[0x9003, 2, 0, '2026:09:14 10:15:23']] });
-    const m = parseTiff(t);
+    const m = parseTiff(t)!;
     assert.equal(removeTiffKeys(m, new Set(['camera', 'datetime'])).empty, true);
   });
 });
@@ -282,10 +300,10 @@ describe('XMP scanner', () => {
     assert.ok(p.ok);
     const keys = p.props.map((x) => x.key);
     assert.deepEqual(keys, ['exif:GPSLatitude', 'exif:GPSLongitude', 'xmp:CreateDate', 'dc:creator', 'dc:title', 'xml:hidden']);
-    assert.equal(p.props.find((x) => x.key === 'dc:creator').value, 'Alice & Bob');
+    assert.equal(p.props.find((x) => x.key === 'dc:creator')!.value, 'Alice & Bob');
     // A prefix is a name the writer chooses: an unusual one for a known namespace is hidden
     // text of its own, and a rewrite writes the usual prefix.
-    assert.equal(p.props.find((x) => x.kind === 'hidden').value, 'prefix e for exif');
+    assert.equal(p.props.find((x) => x.kind === 'hidden')!.value, 'prefix e for exif');
   });
 
   test('rewrites a fresh packet from the kept properties and verifies it', () => {
@@ -306,7 +324,7 @@ describe('XMP scanner', () => {
 </rdf:RDF></x:xmpmeta>`;
     const set = new ItemSet();
     addXmpItems(set, parseXmp(t), {}, {}, t.length);
-    const tier = (id) => set.items.find((i) => i.id === id)?.tier;
+    const tier = (id: string) => set.items.find((i) => i.id === id)?.tier;
     assert.equal(tier('xmp:gps'), 'red');
     assert.equal(tier('xmp:serial'), 'red');
     assert.equal(tier('xmp:place'), 'red');
@@ -335,10 +353,11 @@ describe('XMP scanner', () => {
 <rdf:Description rdf:about="" xmlns:a="http://example.com/one/" a:Thing="2026"/>
 <rdf:Description rdf:about="" xmlns:a="http://example.com/two/"><a:title>T</a:title></rdf:Description>
 </rdf:RDF></x:xmpmeta>`);
-    const items = [{ id: 'xmp:gps', props: [0] }, { id: 'xmp:dates', props: [1] }, { id: 'xmp:description', props: [2] }];
-    const plan = planXmp(p, items, new Set(['xmp:gps']));
+    const items: Pick<XmpAdded, 'id' | 'props'>[] = [{ id: 'xmp:gps', props: [0] }, { id: 'xmp:dates', props: [1] }, { id: 'xmp:description', props: [2] }];
+    // planXmp reads key only to find an unreadable packet or hidden text; these items are neither.
+    const plan = planXmp(p, items as XmpAdded[], new Set(['xmp:gps']));
     assert.equal(plan.action, 'drop');
-    assert.match(plan.warning, /could not be edited safely/);
+    assert.match(plan.warning!, /could not be edited safely/);
   });
 });
 
@@ -364,13 +383,13 @@ describe('JPEG', () => {
       'jpeg:app9:acmecam': 'red', 'jpeg:trailing:unknown': 'red', 'irb:thumbnail': 'red',
     };
     for (const [id, tier] of Object.entries(expect)) assert.equal(tierOf(info, id), tier, id);
-    const v = (id) => info.items.find((i) => i.id === id).value;
+    const v = (id: string) => info.items.find((i) => i.id === id)!.value;
     assert.equal(v('exif:gps'), '48.8584 N, 2.2945 E, altitude 35 m');
     assert.equal(v('exif:orientation'), 'Turned 90° clockwise');
     assert.equal(v('exif:datetime'), '2026-09-14 10:15:23');
     assert.equal(v('exif:camera'), PLANT.model);
     // The computer name is its own red item (decision of 2026-10-02); editing software stays amber.
-    const item = (id) => info.items.find((i) => i.id === id);
+    const item = (id: string) => info.items.find((i) => i.id === id)!;
     assert.deepEqual([item('exif:computer').label, item('exif:computer').group, v('exif:computer')], ['Computer name', 'who', PLANT.computer]);
     assert.deepEqual([item('exif:software').label, item('exif:software').group, v('exif:software')], ['Editing software', 'device', PLANT.software]);
     assert.match(v('exif:thumbnail'), /^160 × 120 pixels/);
@@ -380,10 +399,10 @@ describe('JPEG', () => {
     assert.equal(tierOf(info, 'icc:text'), 'red');
     assert.match(v('jpeg:app9:acmecam'), /^ACMECAM/);
     assert.equal(v('exif:exposure'), '1/125 s, f/1.9, ISO 100, 6.8 mm');
-    const c2pa = info.items.find((i) => i.id === 'jpeg:c2pa');
+    const c2pa = info.items.find((i) => i.id === 'jpeg:c2pa')!;
     assert.equal(c2pa.label, 'Content Credentials (C2PA)');
-    assert.match(c2pa.note, /proof of where the image came from/);
-    assert.equal(info.items.find((i) => i.id === 'exif:thumbnail').note, 'Can still show the original, uncropped photo after cropping.');
+    assert.match(c2pa.note!, /proof of where the image came from/);
+    assert.equal(info.items.find((i) => i.id === 'exif:thumbnail')!.note, 'Can still show the original, uncropped photo after cropping.');
   });
 
   test('full fixture: red only, everything, pixels and validity', async () => {
@@ -410,7 +429,7 @@ describe('JPEG', () => {
 
   test('a comment holding FF D9 bytes does not end the walk early', async () => {
     const b = F.read(F.jpegFull());
-    const w = walkJpeg(b);
+    const w = walkJpeg(b)!;
     const eoi = w.segs.find((s) => s.kind === 'eoi');
     assert.ok(eoi);
     assert.equal(Buffer.from(b).subarray(eoi.end).toString('latin1').startsWith(PLANT.trailing), true);
@@ -419,7 +438,7 @@ describe('JPEG', () => {
   test('progressive JPEG with little-endian EXIF and trailing data', async () => {
     const name = F.jpegProgressive();
     const b = F.read(name);
-    assert.ok(walkJpeg(b).segs.filter((s) => s.kind === 'sos').length > 1, 'several scans');
+    assert.ok(walkJpeg(b)!.segs.filter((s) => s.kind === 'sos').length > 1, 'several scans');
     const info = await core.inspect(b);
     assert.equal(tierOf(info, 'jpeg:trailing:unknown'), 'red');
     await standardChecks(name, 'jpeg', {
@@ -429,14 +448,14 @@ describe('JPEG', () => {
       keptTags: [['IFD0', 'Make'], ['ExifIFD', 'DateTimeOriginal'], ['File', 'ExifByteOrder']],
     });
     const out = F.read('progressive.out-red.jpg');
-    assert.equal(walkJpeg(out).segs.filter((s) => s.kind === 'sos').length, walkJpeg(b).segs.filter((s) => s.kind === 'sos').length);
+    assert.equal(walkJpeg(out)!.segs.filter((s) => s.kind === 'sos').length, walkJpeg(b)!.segs.filter((s) => s.kind === 'sos').length);
     assert.equal(out[out.length - 2], 0xff);
     assert.equal(out[out.length - 1], 0xd9, 'file now ends at EOI');
   });
 
   test('restart markers survive and pixels stay identical', async () => {
     const name = F.jpegRestart();
-    const count = (buf) => { let n = 0; for (let i = 0; i + 1 < buf.length; i++) if (buf[i] === 0xff && buf[i + 1] >= 0xd0 && buf[i + 1] <= 0xd7) n++; return n; };
+    const count = (buf: Uint8Array): number => { let n = 0; for (let i = 0; i + 1 < buf.length; i++) if (buf[i] === 0xff && buf[i + 1] >= 0xd0 && buf[i + 1] <= 0xd7) n++; return n; };
     const b = F.read(name);
     assert.ok(count(b) > 10);
     await standardChecks(name, 'jpeg', {
@@ -451,11 +470,11 @@ describe('JPEG', () => {
     const b = F.read(name);
     const info = await core.inspect(b);
     assert.equal(tierOf(info, 'exif:makernote'), 'red');
-    assert.equal(info.items.find((i) => i.id === 'exif:makernote').label, 'Manufacturer notes (may include serial numbers)');
+    assert.equal(info.items.find((i) => i.id === 'exif:makernote')!.label, 'Manufacturer notes (may include serial numbers)');
     // Keep the maker note, remove GPS, the owner name (shared bytes) and the preview.
     await scrubTo('makernote.keep.jpg', b, ['exif:gps', 'exif:owner', 'exif:thumbnail']);
     const rows = F.exifRead(F.path('makernote.keep.jpg'));
-    const val = (g, t) => rows.find((r) => r.group === g && r.tag === t)?.value;
+    const val = (g: string, t: string) => rows.find((r) => r.group === g && r.tag === t)?.value;
     assert.equal(val('Canon', 'OwnerName'), 'MAKERNOTE-OWNER-PLANT');
     assert.equal(val('Canon', 'CanonImageType'), 'Fake Canon Image Type');
     assert.equal(val('IFD0', 'ImageDescription'), 'Shared Name Plant 22', 'shared value kept for the kept tag');
@@ -480,7 +499,7 @@ describe('JPEG', () => {
     const b = F.read(name);
     const info = await core.inspect(b);
     assert.equal(tierOf(info, 'jpeg:trailing:motion-video'), 'red');
-    assert.equal(info.items.find((i) => i.id === 'jpeg:trailing:motion-video').label, 'Hidden video clip (Motion Photo)');
+    assert.equal(info.items.find((i) => i.id === 'jpeg:trailing:motion-video')!.label, 'Hidden video clip (Motion Photo)');
     assert.equal(tierOf(info, 'jpeg:trailing:gain-map'), 'amber');
     assert.equal(tierOf(info, 'xmp:motion'), 'red', 'descriptor follows the video tier');
     assert.equal(tierOf(info, 'xmp:gainmap'), 'amber', 'descriptor follows the gain map tier');
@@ -496,12 +515,12 @@ describe('JPEG', () => {
     assert.ok(!rows.some((r) => r.tag === 'MotionPhotoVideo'));
     assert.ok(hasTag(rows, 'XMP-hdrgm', 'Version'));
     // The MPF index must still point at the gain map, byte for byte.
-    const start = Number(rows.find((r) => r.group === 'MPImage2' && r.tag === 'MPImageStart').value);
-    const len = Number(rows.find((r) => r.group === 'MPImage2' && r.tag === 'MPImageLength').value);
+    const start = Number(rows.find((r) => r.group === 'MPImage2' && r.tag === 'MPImageStart')!.value);
+    const len = Number(rows.find((r) => r.group === 'MPImage2' && r.tag === 'MPImageLength')!.value);
     // The same gain map, its XMP written in the canonical form.
     const gain = F.read('motion-gain-only.jpg');
     assert.ok(sameButXmp(out.subarray(start, start + len), gain), 'MPF offset fixed after the primary shrank');
-    const primaryLen = Number(rows.find((r) => r.group === 'MPImage1' && r.tag === 'MPImageLength').value);
+    const primaryLen = Number(rows.find((r) => r.group === 'MPImage1' && r.tag === 'MPImageLength')!.value);
     assert.equal(primaryLen, start, 'MPF primary size updated');
     samePixels(name, 'motion.out-red.jpg');
     noNewWarnings(name, 'motion.out-red.jpg');
@@ -517,14 +536,14 @@ describe('JPEG', () => {
 
     await standardChecks(name, 'jpeg', { redStrings: ['VIDEO-PLANT-SECRET'], redTags: [['XMP-GCamera', 'MotionPhoto']] });
     const all = F.read('motion.out-all.jpg');
-    const w = walkJpeg(all);
+    const w = walkJpeg(all)!;
     assert.equal(w.eoiEnd, all.length, 'nothing after the image');
   });
 
   test('Samsung trailer', async () => {
     const name = F.jpegSamsung();
     const info = await core.inspect(F.read(name));
-    const item = info.items.find((i) => i.id === 'jpeg:trailing:samsung');
+    const item = info.items.find((i) => i.id === 'jpeg:trailing:samsung')!;
     assert.equal(item.tier, 'red');
     assert.equal(item.label, 'Hidden video clip and Samsung extra data');
     await standardChecks(name, 'jpeg', { redStrings: ['SAMSUNG-VIDEO-PLANT', 'SEFH', 'SEFT', 'MotionPhoto_Data'] });
@@ -535,7 +554,7 @@ describe('JPEG', () => {
     const b = F.read(name);
     const info = await core.inspect(b);
     assert.equal(tierOf(info, 'xmp:extended'), 'red');
-    assert.match(info.items.find((i) => i.id === 'xmp:extended').value, /a second picture/);
+    assert.match(info.items.find((i) => i.id === 'xmp:extended')!.value, /a second picture/);
     const { back } = await standardChecks(name, 'jpeg', {
       redStrings: ['EXTXMP-PLANT-SECRET', 'http://ns.adobe.com/xmp/extension/', PLANT.xmpCreator, 'HasExtendedXMP'],
       redTags: [['XMP-dc', 'Creator'], ['XMP-GImage', 'Data']],
@@ -548,7 +567,7 @@ describe('JPEG', () => {
     const base = F.read(F.jpegRestart());
     const bad = F.jpegInsert(base, F.jpegSeg(0xe1, F.u8('http://ns.adobe.com/xap/1.0/\0', '<x:xmpmeta><rdf:RDF><rdf:Description BROKEN-PLANT="1"></x:xmpmeta>')));
     const info = await core.inspect(bad);
-    const item = info.items.find((i) => i.id === 'xmp:packet');
+    const item = info.items.find((i) => i.id === 'xmp:packet')!;
     assert.equal(item.tier, 'red');
     const res = await core.scrub(bad, ['xmp:packet']);
     assert.ok(!contains(res.bytes, 'BROKEN-PLANT'));
@@ -562,7 +581,7 @@ describe('JPEG edge cases', () => {
     F.magick(['-size', '96x64', 'plasma:fractal', '-seed', '151', '-depth', '8', '-quality', '90', F.path('edge-base.jpg')]);
     return F.read('edge-base.jpg');
   };
-  const replaceApp0 = (b, seg) => {
+  const replaceApp0 = (b: Uint8Array, seg: Uint8Array): Uint8Array => {
     const buf = Buffer.from(b);
     assert.equal(buf[3], 0xe0);
     const end = 4 + buf.readUInt16BE(4);
@@ -598,9 +617,9 @@ describe('JPEG edge cases', () => {
   test('MPF large thumbnail is treated as a red preview, and its index goes with it', async () => {
     const primary0 = base();
     const second = readFileSync(F.path('thumb.jpg'));
-    const be32 = (v) => { const x = Buffer.alloc(4); x.writeUInt32BE(v); return x; };
-    const be16 = (v) => { const x = Buffer.alloc(2); x.writeUInt16BE(v); return x; };
-    const mpf = (size, off, size2) => F.u8('MPF\0', 'MM', [0, 42], be32(8), be16(3),
+    const be32 = (v: number): Buffer => { const x = Buffer.alloc(4); x.writeUInt32BE(v); return x; };
+    const be16 = (v: number): Buffer => { const x = Buffer.alloc(2); x.writeUInt16BE(v); return x; };
+    const mpf = (size: number, off: number, size2: number): Uint8Array => F.u8('MPF\0', 'MM', [0, 42], be32(8), be16(3),
       be16(0xb000), be16(7), be32(4), '0100', be16(0xb001), be16(4), be32(1), be32(2), be16(0xb002), be16(7), be32(32), be32(50), be32(0),
       be32(0x20030000), be32(size), be32(0), be16(0), be16(0), be32(0x00010001), be32(size2), be32(off), be16(0), be16(0));
     let p = F.jpegInsert(primary0, F.jpegSeg(0xe2, mpf(0, 0, 0)));
@@ -612,7 +631,7 @@ describe('JPEG edge cases', () => {
     assert.equal(tierOf(info, 'jpeg:trailing:preview'), 'red');
     await scrubTo('mpf-preview.out.jpg', b, reds(info));
     const out = F.read('mpf-preview.out.jpg');
-    assert.equal(walkJpeg(out).eoiEnd, out.length);
+    assert.equal(walkJpeg(out)!.eoiEnd, out.length);
     assert.ok(!Buffer.from(out).includes(Buffer.from('MPF\0', 'latin1')));
     samePixels('mpf-preview.jpg', 'mpf-preview.out.jpg');
   });
@@ -664,9 +683,9 @@ describe('PNG', () => {
       'png:chunk:prvt': 'red', 'png:c2pa': 'red', 'png:trailing': 'red',
     };
     for (const [id, tier] of Object.entries(expect)) assert.equal(tierOf(info, id), tier, id);
-    assert.equal(info.items.find((i) => i.id === 'png:comment').value, 'ZTXT-PLANT-COMMENT', 'zTXt inflated');
-    assert.equal(info.items.find((i) => i.id === 'png:notes').value, 'ITXT-PLANT-WARNING', 'compressed iTXt inflated');
-    assert.equal(info.items.find((i) => i.id === 'png:c2pa').source, 'C2PA');
+    assert.equal(info.items.find((i) => i.id === 'png:comment')!.value, 'ZTXT-PLANT-COMMENT', 'zTXt inflated');
+    assert.equal(info.items.find((i) => i.id === 'png:notes')!.value, 'ITXT-PLANT-WARNING', 'compressed iTXt inflated');
+    assert.equal(info.items.find((i) => i.id === 'png:c2pa')!.source, 'C2PA');
   });
 
   test('full fixture: red only, everything, pixels and validity', async () => {
@@ -698,7 +717,7 @@ describe('PNG', () => {
     const b = F.read(name);
     const info = await core.inspect(b);
     assert.equal(tierOf(info, 'png:exif-text:gps'), 'red');
-    assert.equal(info.items.find((i) => i.id === 'png:exif-text:gps').value, '48.8584 N, 2.2945 E');
+    assert.equal(info.items.find((i) => i.id === 'png:exif-text:gps')!.value, '48.8584 N, 2.2945 E');
     assert.equal(tierOf(info, 'png:exif-text:owner'), 'red');
     assert.ok(ids(info).some((id) => /^exif:serial/.test(id)), 'serial read from the compressed raw exif profile');
     assert.ok(ids(info).includes('iptc:byline') && ids(info).includes('iptc:place'));
@@ -746,7 +765,7 @@ describe('WebP', () => {
       const b = Buffer.from(F.read(n));
       assert.equal(b.readUInt32LE(4), b.length - 8, 'RIFF size');
       const chunks = F.webpChunks(b);
-      const flags = chunks.find((c) => c.type === 'VP8X').data[0];
+      const flags = chunks.find((c) => c.type === 'VP8X')!.data[0];
       assert.equal(!!(flags & 0x20), chunks.some((c) => c.type === 'ICCP'), 'ICC flag');
       assert.equal(!!(flags & 0x08), chunks.some((c) => c.type === 'EXIF'), 'EXIF flag');
       assert.equal(!!(flags & 0x04), chunks.some((c) => c.type === 'XMP '), 'XMP flag');
@@ -762,7 +781,7 @@ describe('HEIC', () => {
     const b = F.read(name);
     const info = await core.inspect(b);
     assert.equal(info.orientation, 1, 'HEIC viewers ignore the EXIF rotation flag');
-    assert.match(info.items.find((i) => i.id === 'exif:orientation').note, /does not turn the picture/);
+    assert.match(info.items.find((i) => i.id === 'exif:orientation')!.note!, /does not turn the picture/);
     for (const [id, tier] of Object.entries({ 'exif:gps': 'red', 'exif:owner': 'red', 'exif:serial': 'red', 'exif:camera': 'amber', 'xmp:creator': 'red', 'xmp:place': 'red', 'xmp:dates': 'amber' })) {
       assert.equal(tierOf(info, id), tier, id);
     }
@@ -777,7 +796,7 @@ describe('HEIC', () => {
     for (const n of ['exiftool.out-red.heic', 'exiftool.out-all.heic']) heicIntact(b, F.read(n), n);
   });
 
-  const variants = [
+  const variants: [name: string, opts: F.HeicOptions, label: string][] = [
     ['custom-v1.heic', { ilocVersion: 1 }, 'iloc v1, EXIF in idat, XMP in two extents'],
     ['custom-v0.heic', { ilocVersion: 0, baseSize: 0 }, 'iloc v0 without base offsets'],
     ['custom-v2.heic', { ilocVersion: 2, offSize: 8, lenSize: 8, baseSize: 8, idxSize: 4, infeVersion: 3, wideIds: true, ipmaLarge: true }, 'iloc v2, 64-bit fields, extent indices, infe v3'],
@@ -803,12 +822,12 @@ describe('HEIC', () => {
       for (const n of [`${base}.out-red.heic`, `${base}.out-all.heic`]) {
         const out = Buffer.from(F.read(n));
         const o = heicIntact(b, out, n);
-        const at = (id) => Buffer.concat(o.items.get(id).ranges.map(([s, e]) => out.subarray(s, e)));
+        const at = (id: number) => Buffer.concat(o.items.get(id)!.ranges!.map(([s, e]) => out.subarray(s, e)));
         assert.ok(at(2).every((x) => x === 0), 'preview data zeroed');
         assert.ok(at(1).equals(Buffer.from(b).subarray(...built.primRange)), 'picture data untouched');
         // The XMP, spread over two extents with padding after it, is one extent now, in the
         // canonical form with no padding (or an empty packet, when all of it went).
-        assert.equal(o.items.get(4).ranges.length, 1, 'the XMP item has one extent');
+        assert.equal(o.items.get(4)!.ranges!.length, 1, 'the XMP item has one extent');
         const x = at(4).toString('utf8');
         if (n.includes('out-all')) assert.equal(x, '<x:xmpmeta xmlns:x="adobe:ns:meta/"/>');
         // HEIC XMP is written without the packet wrapper, as Apple writes it.
@@ -826,14 +845,14 @@ describe('buildExif and insertExif', () => {
   test('builds a fresh block with only kept simple tags and Orientation 1', async () => {
     const payload = core.buildExif(F.read(F.jpegFull()), keep);
     assert.ok(payload instanceof Uint8Array);
-    const m = parseTiff(payload);
-    const tags = (n) => (m.ifds[n] ? m.ifds[n].entries.map((e) => e.tag) : []);
+    const m = parseTiff(payload)!;
+    const tags = (n: string) => (m.ifds[n] ? m.ifds[n].entries.map((e) => e.tag) : []);
     assert.ok(tags('ifd0').includes(0x010f) && tags('ifd0').includes(0x0110) && tags('ifd0').includes(0x8298));
     assert.ok(!tags('ifd0').includes(0x013b), 'artist not kept');
     assert.ok(tags('ifd0').includes(0x0131) && !tags('ifd0').includes(0x013c), 'editing software kept, computer name not');
     assert.ok(!tags('exif').includes(0x927c) && !m.ifds.ifd1, 'no maker note, no preview');
     assert.ok(tags('gps').includes(2));
-    const o = m.ifds.ifd0.entries.find((e) => e.tag === 0x0112);
+    const o = m.ifds.ifd0!.entries.find((e) => e.tag === 0x0112)!;
     assert.equal(m.r16(o.entryPos + 8), 1);
     assert.equal(core.buildExif(F.read(F.jpegFull()), ['xmp:creator', 'jpeg:comment']), null);
     assert.equal(core.buildExif(F.read(F.webpSimple()), keep), null);
@@ -848,7 +867,7 @@ describe('buildExif and insertExif', () => {
       const outName = make.replace('fresh', 'fresh.exif');
       F.write(outName, out);
       const rows = F.exifRead(F.path(outName));
-      const val = (t) => rows.find((r) => r.tag === t)?.value;
+      const val = (t: string) => rows.find((r) => r.tag === t)?.value;
       assert.equal(val('Make'), PLANT.make);
       assert.equal(val('Orientation'), '1');
       assert.ok(hasTag(rows, 'GPS', 'GPSLatitude'));
@@ -860,7 +879,7 @@ describe('buildExif and insertExif', () => {
       if (format === 'webp') {
         const b = Buffer.from(out);
         assert.equal(b.readUInt32LE(4), b.length - 8);
-        assert.ok(F.webpChunks(b).find((c) => c.type === 'VP8X').data[0] & 0x08);
+        assert.ok(F.webpChunks(b).find((c) => c.type === 'VP8X')!.data[0] & 0x08);
       }
     });
   }
@@ -871,15 +890,31 @@ describe('buildExif and insertExif', () => {
 // in a moment; tests/audit.mjs covers the same ground far more widely.
 
 describe('Hardening', () => {
-  const H = (s) => `HARD-${s}-PLANT`;
-  const le16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16LE(v); return b; };
-  const le32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
-  const be32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
+  const H = (s: string): string => `HARD-${s}-PLANT`;
+  const le16 = (v: number): Buffer => { const b = Buffer.alloc(2); b.writeUInt16LE(v); return b; };
+  const le32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
+  const be32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
   // Little-endian TIFF with free layout: dirs [{ name, entries: [{ tag, type, data | raw | ptr | blob, count }], next }].
-  function tiffLE(dirs, blobs = {}) {
-    const unit = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 129: 1 };
-    const dataOf = (e) => (e.data === undefined ? null : typeof e.data === 'string' ? Buffer.from(`${e.data}\0`, 'utf8') : Buffer.from(e.data));
-    const at = {};
+  interface DirEntry {
+    tag: number;
+    type: number;
+    count?: number;
+    /** The value: text (written as UTF-8 with a closing NUL) or bytes. */
+    data?: string | Uint8Array;
+    /** The name of the directory whose offset is the value. */
+    ptr?: string;
+    /** The name of the blob whose offset is the value. */
+    blob?: string;
+  }
+  interface Dir {
+    name: string;
+    entries: readonly DirEntry[];
+    next?: string;
+  }
+  function tiffLE(dirs: readonly Dir[], blobs: Readonly<Record<string, Uint8Array>> = {}): Buffer {
+    const unit: Readonly<Record<number, number>> = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 129: 1 };
+    const dataOf = (e: DirEntry): Buffer | null => (e.data === undefined ? null : typeof e.data === 'string' ? Buffer.from(`${e.data}\0`, 'utf8') : Buffer.from(e.data));
+    const at: Record<string, number> = {};
     let p = 8;
     for (const d of dirs) {
       at[d.name] = p;
@@ -899,8 +934,8 @@ describe('Hardening', () => {
         out.writeUInt16LE(e.tag, q); out.writeUInt16LE(e.type, q + 2); out.writeUInt32LE((e.count ?? (v ? v.length / (unit[e.type] || 1) : 1)) >>> 0, q + 4);
         if (e.ptr) out.writeUInt32LE(at[e.ptr], q + 8);
         else if (e.blob) out.writeUInt32LE(at[`blob:${e.blob}`], q + 8);
-        else if (v.length <= 4) v.copy(out, q + 8);
-        else { out.writeUInt32LE(data, q + 8); v.copy(out, data); data += v.length + (v.length & 1); }
+        else if (v!.length <= 4) v!.copy(out, q + 8);
+        else { out.writeUInt32LE(data, q + 8); v!.copy(out, data); data += v!.length + (v!.length & 1); }
         q += 12;
       }
       out.writeUInt32LE(d.next ? at[d.next] : 0, q);
@@ -908,21 +943,21 @@ describe('Hardening', () => {
     for (const [k, v] of Object.entries(blobs)) Buffer.from(v).copy(out, at[`blob:${k}`]);
     return out;
   }
-  const exifSeg = (t) => F.jpegSeg(0xe1, F.u8('Exif\0\0', t));
-  const xmpSeg = (text) => F.jpegSeg(0xe1, F.u8('http://ns.adobe.com/xap/1.0/\0', Buffer.from(text, 'utf8')));
-  const GPS = (area) => [
+  const exifSeg = (t: Uint8Array): Uint8Array => F.jpegSeg(0xe1, F.u8('Exif\0\0', t));
+  const xmpSeg = (text: string): Uint8Array => F.jpegSeg(0xe1, F.u8('http://ns.adobe.com/xap/1.0/\0', Buffer.from(text, 'utf8')));
+  const GPS = (area: string): DirEntry[] => [
     { tag: 0x0001, type: 2, data: 'N' }, { tag: 0x0002, type: 5, count: 3, data: Buffer.concat([le32(59), le32(1), le32(54), le32(1), le32(5008), le32(100)]) },
     { tag: 0x0003, type: 2, data: 'E' }, { tag: 0x0004, type: 5, count: 3, data: Buffer.concat([le32(10), le32(1), le32(45), le32(1), le32(792), le32(100)]) },
     { tag: 0x001c, type: 7, data: Buffer.from(`ASCII\0\0\0${area}`, 'latin1') },
   ];
-  let base;
-  const baseJpeg = () => {
+  let base: Uint8Array | undefined;
+  const baseJpeg = (): Uint8Array => {
     if (!base) { F.magick(['-size', '64x48', 'plasma:fractal', '-seed', '171', '-strip', '-quality', '88', F.path('hard-base.jpg')]); base = F.read('hard-base.jpg'); }
     return base;
   };
   // Scrubs with the default and with everything. Files are written for the checks that
   // need them (pixels, exiftool), except for damaged inputs that no tool can open anyway.
-  async function defaultAndAll(name, b, { write = true } = {}) {
+  async function defaultAndAll(name: string, b: Uint8Array, { write = true }: { write?: boolean } = {}) {
     const info = await core.inspect(b);
     const red = await core.scrub(b, reds(info));
     const all = await core.scrub(b, ids(info));
@@ -949,8 +984,8 @@ describe('Hardening', () => {
     const b = F.jpegInsert(baseJpeg(), exifSeg(F.u8(tiff, Buffer.from(`old ${H('ORPHAN')}`))));
     const { info, red, backRed } = await defaultAndAll('hard-exif.jpg', b);
     for (const [id, tier] of Object.entries({ 'exif:owner': 'red', 'exif:gps': 'red', 'exif:thumbnail': 'red', 'exif:leftover': 'red' })) assert.equal(tierOf(info, id), tier, id);
-    assert.match(info.items.find((i) => i.id === 'exif:owner').value, /HARD-UTF8/);
-    assert.match(info.items.find((i) => i.id === 'exif:thumbnail').value, /plus 1 more preview/);
+    assert.match(info.items.find((i) => i.id === 'exif:owner')!.value, /HARD-UTF8/);
+    assert.match(info.items.find((i) => i.id === 'exif:thumbnail')!.value, /plus 1 more preview/);
     for (const s of ['UTF8', 'GPSAREA', 'PREVIEW1', 'PREVIEW2', 'ORPHAN']) assert.ok(!contains(red, H(s)), `${s} must be erased, not just unlinked`);
     assert.ok(!Buffer.from(red).includes(Buffer.concat([le32(59), le32(1), le32(54), le32(1)])), 'GPS rationals erased');
     assert.deepEqual(reds(backRed), []);
@@ -991,11 +1026,11 @@ describe('Hardening', () => {
 <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmp:CreatorTool="Hardedit 2.0" tiff:HostComputer="${H('XMPHOST')}"/>
 </rdf:RDF></x:xmpmeta><?xpacket end="w"?>`;
     const { info, red, backRed } = await defaultAndAll('hard-computer.jpg', F.jpegInsert(baseJpeg(), exifSeg(tiff), xmpSeg(text)));
-    const item = (i, id) => i.items.find((x) => x.id === id);
+    const item = (i: InspectResult, id: string): Item | undefined => i.items.find((x) => x.id === id);
     for (const id of ['exif:computer', 'xmp:computer']) assert.deepEqual([item(info, id)?.tier, item(info, id)?.group, item(info, id)?.label], ['red', 'who', 'Computer name'], id);
     for (const id of ['exif:software', 'xmp:software']) assert.deepEqual([item(info, id)?.tier, item(info, id)?.label], ['amber', 'Editing software'], id);
-    assert.equal(item(info, 'exif:computer').value, H('EXIFHOST'));
-    assert.equal(item(info, 'exif:software').value, 'Hardedit 1.0');
+    assert.equal(item(info, 'exif:computer')!.value, H('EXIFHOST'));
+    assert.equal(item(info, 'exif:software')!.value, 'Hardedit 1.0');
     for (const s of ['EXIFHOST', 'XMPHOST']) assert.ok(!contains(red, H(s)), s);
     assert.ok(contains(red, 'Hardedit 1.0') && contains(red, 'Hardedit 2.0'), 'editing software is kept');
     assert.deepEqual(reds(backRed), []);
@@ -1004,7 +1039,7 @@ describe('Hardening', () => {
 
     F.magick(['-size', '64x48', 'plasma:fractal', '-seed', '174', '-strip', `PNG24:${F.path('hard-computer-base.png')}`]);
     const png = F.read('hard-computer-base.png');
-    const t = (k, v) => F.pngChunk('tEXt', F.u8(k, [0], v));
+    const t = (k: string, v: string): Uint8Array => F.pngChunk('tEXt', F.u8(k, [0], v));
     const p = F.u8(png.subarray(0, png.length - 12), t('Host Computer', H('PNGHOST')), t('exif:HostComputer', H('PNGEXIFHOST')),
       t('Software', 'Hardedit 3.0'), png.subarray(png.length - 12));
     const r = await defaultAndAll('hard-computer.png', p);
@@ -1045,7 +1080,7 @@ describe('Hardening', () => {
     F.magick(['-size', '64x48', 'plasma:fractal', '-seed', '172', '-strip', `PNG24:${F.path('hard-base.png')}`]);
     const png = F.read('hard-base.png');
     const head = png.subarray(0, png.length - 12);
-    const text = (k, v) => F.pngChunk('tEXt', F.u8(k, [0], v));
+    const text = (k: string, v: string): Uint8Array => F.pngChunk('tEXt', F.u8(k, [0], v));
     const cases = {
       'hard-iend.png': F.u8(head, F.pngChunk('IEND', Buffer.from(H('IEND')))),
       'hard-badtype.png': F.u8(head, be32(4), 'tE1t', 'abcd', be32(0), text('Author', H('AFTERBAD')), png.subarray(png.length - 12)),
@@ -1076,12 +1111,12 @@ describe('Hardening', () => {
   });
 
   test('Content Credentials that repeat the computer name are red', async () => {
-    const box = (type, body) => Buffer.concat([be32(8 + body.length), Buffer.from(type), body]);
+    const box = (type: string, body: Buffer): Buffer => Buffer.concat([be32(8 + body.length), Buffer.from(type), body]);
     const json = JSON.stringify({ 'tiff:HostComputer': H('C2PAHOST') });
     const jumb = box('jumb', Buffer.concat([box('jumd', Buffer.concat([Buffer.from('6332706100110010800000aa00389b71', 'hex'), Buffer.from([3]), Buffer.from('c2pa\0')])), box('json', Buffer.from(json))]));
     const b = F.jpegInsert(baseJpeg(), F.jpegSeg(0xeb, F.u8('JP', [0, 1], [0, 0, 0, 1], jumb)));
     const { info, red } = await defaultAndAll('hard-c2pa-host.jpg', b);
-    const item = info.items.find((i) => i.id === 'jpeg:c2pa');
+    const item = info.items.find((i) => i.id === 'jpeg:c2pa')!;
     assert.equal(item.tier, 'red');
     assert.match(item.value, /computer name/);
     assert.ok(!contains(red, H('C2PAHOST')));
@@ -1089,11 +1124,11 @@ describe('Hardening', () => {
 
   test('Content Credentials that repeat the position or a serial are red', async () => {
     const json = JSON.stringify({ 'exif:GPSLatitude': '59,54.8346N', 'exif:BodySerialNumber': H('C2PASERIAL') });
-    const box = (type, body) => Buffer.concat([be32(8 + body.length), Buffer.from(type), body]);
+    const box = (type: string, body: Buffer): Buffer => Buffer.concat([be32(8 + body.length), Buffer.from(type), body]);
     const jumb = box('jumb', Buffer.concat([box('jumd', Buffer.concat([Buffer.from('6332706100110010800000aa00389b71', 'hex'), Buffer.from([3]), Buffer.from('c2pa\0')])), box('json', Buffer.from(json))]));
     const b = F.jpegInsert(baseJpeg(), F.jpegSeg(0xeb, F.u8('JP', [0, 1], [0, 0, 0, 1], jumb)));
     const { info, red } = await defaultAndAll('hard-c2pa.jpg', b);
-    const item = info.items.find((i) => i.id === 'jpeg:c2pa');
+    const item = info.items.find((i) => i.id === 'jpeg:c2pa')!;
     assert.equal(item.tier, 'red');
     assert.match(item.value, /location, serial number/);
     assert.ok(!contains(red, H('C2PASERIAL')));
@@ -1124,22 +1159,27 @@ const HDRGM_TAGS = new Set(['Version', 'GainMapMin', 'GainMapMax', 'Gamma', 'Off
 // details: what a user gets who ticks Amber and leaves the gain map unticked (the page's
 // starting selection before 0.0.3; since 0.0.3 the page ticks red only, which the
 // red-only checks cover). It is the stricter test: amber must go too, the gain map stays.
-function redAmberIds(info) {
+function redAmberIds(info: InspectResult): string[] {
   const hdr = info.items.some((i) => (i.id === 'jpeg:trailing:gain-map' || i.id === 'heic:gain-map') && i.tier === 'amber');
   return info.items.filter((i) => i.tier !== 'green' && !(hdr && GAIN_OWN.has(i.id))).map((i) => i.id);
 }
 
 // The images an MPF index lists, read straight from the bytes: [{ index, offset, size }]
 // with absolute offsets, or null without an index.
-function mpfImages(bytes) {
+interface MpfImage {
+  index: number;
+  size: number;
+  offset: number;
+}
+function mpfImages(bytes: Uint8Array): MpfImage[] | null {
   const b = Buffer.from(bytes);
-  const w = walkJpeg(bytes);
+  const w = walkJpeg(bytes)!;
   const s = w.segs.find((x) => x.kind === 'seg' && x.marker === 0xe2 && b.toString('latin1', x.dataStart, x.dataStart + 4) === 'MPF\0');
   if (!s) return null;
-  const t = s.dataStart + 4;
+  const t = s.dataStart! + 4;
   const le = b.toString('latin1', t, t + 2) === 'II';
-  const r16 = (o) => (le ? b.readUInt16LE(o) : b.readUInt16BE(o));
-  const r32 = (o) => (le ? b.readUInt32LE(o) : b.readUInt32BE(o));
+  const r16 = (o: number): number => (le ? b.readUInt16LE(o) : b.readUInt16BE(o));
+  const r32 = (o: number): number => (le ? b.readUInt32LE(o) : b.readUInt32BE(o));
   const ifd = t + r32(t + 4);
   for (let i = 0; i < r16(ifd); i++) {
     const e = ifd + 2 + i * 12;
@@ -1151,21 +1191,26 @@ function mpfImages(bytes) {
 }
 
 // The Container directory entries of the photo XMP: [{ semantic, length, padding }].
-function directoryEntries(bytes) {
+interface DirectoryEntry {
+  semantic: string | null;
+  length: number | null;
+  padding: number | null;
+}
+function directoryEntries(bytes: Uint8Array): DirectoryEntry[] {
   const text = Buffer.from(bytes).toString('utf8');
   return [...text.matchAll(/<Container:Item\b([^>]*)>/g)].map((m) => {
-    const at = (n) => { const x = new RegExp(`Item:${n}="([^"]*)"`).exec(m[1]); return x ? x[1] : null; };
+    const at = (n: string): string | null => { const x = new RegExp(`Item:${n}="([^"]*)"`).exec(m[1]); return x ? x[1] : null; };
     return { semantic: at('Semantic'), length: at('Length') === null ? null : Number(at('Length')), padding: at('Padding') === null ? null : Number(at('Padding')) };
   });
 }
 
 // The kept gain map is still found through MPF as a whole JPEG, the directory gives its
 // length, its pixels are those of the input's gain map and its hdrgm values are unchanged.
-function gainMapRenders(inName, outName) {
+function gainMapRenders(inName: string, outName: string): void {
   const out = F.read(outName);
   const imgs = mpfImages(out);
   assert.ok(imgs && imgs.length === 2, `${outName}: an MPF index with two images`);
-  assert.equal(imgs[0].size, walkJpeg(out).eoiEnd, `${outName}: MPF size of the photo`);
+  assert.equal(imgs[0].size, walkJpeg(out)!.eoiEnd, `${outName}: MPF size of the photo`);
   const g = imgs[1];
   const sub = out.subarray(g.offset, g.offset + g.size);
   assert.ok(sub[0] === 0xff && sub[1] === 0xd8 && sub[2] === 0xff, `${outName}: the gain map entry starts with SOI`);
@@ -1180,13 +1225,13 @@ function gainMapRenders(inName, outName) {
   let gInName = `${inName}.gain.jpg`;
   if (!existsSync(F.path(gInName))) {
     const src = F.read(inName);
-    const gi = mpfImages(src)[1];
+    const gi = mpfImages(src)![1];
     gInName = `${inName}.out-gain-in.jpg`;
     F.write(gInName, src.subarray(gi.offset, gi.offset + gi.size));
   }
   const hashes = F.decodeHashes([F.path(gInName), gOut]);
   assert.ok(hashes[0] && hashes[0] === hashes[1], `${outName}: the gain map's pixels are unchanged`);
-  const hdrgm = (file) => F.exifRead(file).filter((r) => r.group === 'XMP-hdrgm' && HDRGM_TAGS.has(r.tag)).map((r) => `${r.tag}=${r.value}`).sort();
+  const hdrgm = (file: string): string[] => F.exifRead(file).filter((r) => r.group === 'XMP-hdrgm' && HDRGM_TAGS.has(r.tag)).map((r) => `${r.tag}=${r.value}`).sort();
   const before = hdrgm(F.path(gInName)).filter((x) => !/CANARY|PLANT/.test(x));
   assert.deepEqual(hdrgm(gOut), before, `${outName}: the gain map's hdrgm values are unchanged`);
 }
@@ -1195,8 +1240,8 @@ const P = PLANT.hdr;
 const P2 = PLANT.hdr2;
 const PA = PLANT.hdrAmber;
 const CREATOR = `<dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Seq><rdf:li>${P}</rdf:li></rdf:Seq></dc:creator>`;
-const int32 = (le, v) => { const x = Buffer.alloc(4); if (le) x.writeUInt32LE(v); else x.writeUInt32BE(v); return x; };
-const mpfExtras = (le) => ({
+const int32 = (le: boolean, v: number): Buffer => { const x = Buffer.alloc(4); if (le) x.writeUInt32LE(v); else x.writeUInt32BE(v); return x; };
+const mpfExtras = (le: boolean): F.GainMpf => ({
   le, b004: 2,
   ids: F.u8(P.padEnd(32, '0'), [0], '0'.repeat(32), [0]),
   attr: [[0xb101, 4, 1, int32(le, 1)], [0xb2ee, 2, P2.length + 1, Buffer.from(`${P2}\0`, 'latin1')]],
@@ -1206,7 +1251,8 @@ const mpfExtras = (le) => ({
 const hiddenJpeg = () => { F.magick(['-size', '16x16', 'xc:gray', '-strip', F.path('hdr-hidden.jpg')]); return F.jpegInsert(F.read('hdr-hidden.jpg'), F.jpegSeg(0xfe, `Ingrid ${P}`)); };
 
 // name, builder options, the details that must be offered for what was hidden
-const GAIN_VARIANTS = [
+type GainVariant = [name: string, opts: F.GainMapOptions, expect: string[]];
+const GAIN_VARIANTS: GainVariant[] = [
   ['hdrgm-extra', { photoAttrs: `hdrgm:CameraSerialNumber="${P}" hdrgm:GPSLatitude="59,24.5N ${P2}"` }, ['xmp:serial', 'xmp:gps']],
   ['item-label', { itemAttrs: `Item:Label="${P}" Item:URI="${P2}"` }, ['xmp:container-extra']],
   ['dir-child', { dirExtra: `<Container:Note>${P}</Container:Note>`, itemBody: `<Item:Comment>${P2}</Item:Comment>` }, ['xmp:container-extra']],
@@ -1236,19 +1282,19 @@ const GAIN_VARIANTS = [
   ['iso-only-tail', { noVersion: true, noGainXmp: true, gainIso: [F.isoBlock({ channels: 1 })], photoIso: [F.u8(F.isoBlock({ full: false }), ` ${P}`)] }, ['jpeg:isogain:extra']],
   ['everything', { exif: true, photoAttrs: `hdrgm:CameraSerialNumber="${P2}"`, mpf: { ...mpfExtras(true), tail: ' tail' }, photoIso: [F.u8(F.isoBlock({ full: false }), 'xx')], gainBody: CREATOR, after: 'after' }, ['exif:owner', 'xmp:serial', 'jpeg:mpf:ids', 'jpeg:mpf:extra', 'jpeg:isogain:extra', 'jpeg:trailing:gain-map:metadata', 'jpeg:trailing:gain-map:after']],
 ];
-const buildVariant = ([name, opts]) => F.gainMapJpeg(`gm-${name}.jpg`, opts.after === 'JPEG' ? { ...opts, after: hiddenJpeg() } : opts);
+const buildVariant = ([name, opts]: GainVariant): string => F.gainMapJpeg(`gm-${name}.jpg`, opts.after === 'JPEG' ? { ...opts, after: hiddenJpeg() } : opts);
 
 describe('HDR gain map kept', () => {
   test('only the fields a gain map needs are allowlisted, each with a value of the right form', async () => {
-    const packet = (attrs, body = '', ns = '') => parseXmp(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" xmlns:Container="http://ns.google.com/photos/1.0/container/" xmlns:Item="http://ns.google.com/photos/1.0/container/item/" ${ns} ${attrs}>${body}</rdf:Description></rdf:RDF></x:xmpmeta>`);
-    const keysOf = (parsed) => {
+    const packet = (attrs: string, body = '', ns = ''): ParsedXmp => parseXmp(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" xmlns:Container="http://ns.google.com/photos/1.0/container/" xmlns:Item="http://ns.google.com/photos/1.0/container/item/" ${ns} ${attrs}>${body}</rdf:Description></rdf:RDF></x:xmpmeta>`);
+    const keysOf = (parsed: ParsedXmp): Record<string, string> => {
       const set = new ItemSet();
-      const out = {};
+      const out: Record<string, string> = {};
       for (const it of addXmpItems(set, parsed, { gainMapTier: 'amber' }, {}, 0)) for (const i of it.props) out[parsed.props[i].key + (parsed.props[i].kind === 'sub' ? '(sub)' : '')] = it.key;
       return out;
     };
     const dir = '<Container:Directory><rdf:Seq><rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="Primary" Item:Mime="image/jpeg"/></rdf:li><rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="GainMap" Item:Mime="image/jpeg" Item:Length="1000" Item:Padding="0"/></rdf:li></rdf:Seq></Container:Directory>';
-    const seq = (n) => `<hdrgm:Gamma><rdf:Seq>${'<rdf:li>1</rdf:li>'.repeat(n)}</rdf:Seq></hdrgm:Gamma>`;
+    const seq = (n: number): string => `<hdrgm:Gamma><rdf:Seq>${'<rdf:li>1</rdf:li>'.repeat(n)}</rdf:Seq></hdrgm:Gamma>`;
     const all = keysOf(packet('hdrgm:Version="1.0" hdrgm:GainMapMin="-0.5" hdrgm:GainMapMax="2.3" hdrgm:OffsetSDR="0.015625" hdrgm:OffsetHDR=".015625" hdrgm:HDRCapacityMin="0" hdrgm:HDRCapacityMax="2.3e0" hdrgm:BaseRenditionIsHDR="False" HDRGainMap:HDRGainMapVersion="65536" HDRGainMap:HDRGainMapHeadroom="3.5"', seq(3) + dir));
     assert.deepEqual([...new Set(Object.values(all))], ['gainmap'], JSON.stringify(all));
     assert.equal(keysOf(packet('hdrgm:Version="1.0"', seq(2)))['hdrgm:Gamma'], 'gainmap-other', 'an rdf:Seq of two');
@@ -1283,7 +1329,7 @@ describe('HDR gain map kept', () => {
       assert.ok(contains(b, P) || contains(b, P2) || contains(b, PA) || label === 'after-jpeg' || label === 'everything', `${label}: plant present`);
       const info = await core.inspect(b);
       assert.equal(tierOf(info, 'jpeg:trailing:gain-map'), 'amber', `${label}: the gain map is plausible and amber`);
-      for (const id of expect) assert.ok(['red', 'amber'].includes(tierOf(info, id)), `${label}: ${id} offered (${ids(info).join(' ')})`);
+      for (const id of expect) assert.ok(['red', 'amber'].includes(tierOf(info, id)!), `${label}: ${id} offered (${ids(info).join(' ')})`);
       const out = `gm-${label}.out-start.jpg`;
       const res = await scrubTo(out, b, redAmberIds(info));
       assert.ok(!res.warnings.some((w) => /gain map/i.test(w)), `${label}: ${res.warnings.join(' / ')}`);
@@ -1319,9 +1365,9 @@ describe('HDR gain map kept', () => {
     const info = await core.inspect(b);
     await scrubTo('gm-numbers.out.jpg', b, redAmberIds(info));
     const out = F.read('gm-numbers.out.jpg');
-    const g = mpfImages(out)[1];
+    const g = mpfImages(out)![1];
     assert.ok(g.size < F.read(`${name}.gain.jpg`).length, 'the gain map was cleaned');
-    assert.equal(directoryEntries(out).find((e) => e.semantic === 'GainMap').length, g.size);
+    assert.equal(directoryEntries(out).find((e) => e.semantic === 'GainMap')!.length, g.size);
     gainMapRenders(name, 'gm-numbers.out.jpg');
     noNewWarnings(name, 'gm-numbers.out.jpg');
 
@@ -1331,8 +1377,8 @@ describe('HDR gain map kept', () => {
     assert.ok(!ids(pinfo).some((id) => /after|padding/.test(id)), `zero bytes are not hidden data: ${ids(pinfo).join(' ')}`);
     await scrubTo('gm-padding.out.jpg', pb, redAmberIds(pinfo));
     const po = F.read('gm-padding.out.jpg');
-    const pg = mpfImages(po)[1];
-    assert.equal(pg.offset - walkJpeg(po).eoiEnd, 32, 'the zero bytes before the gain map stay');
+    const pg = mpfImages(po)![1];
+    assert.equal(pg.offset - walkJpeg(po)!.eoiEnd, 32, 'the zero bytes before the gain map stay');
     assert.deepEqual(directoryEntries(po).map((e) => [e.semantic, e.padding]), [['Primary', 32], ['GainMap', 0]]);
     gainMapRenders(pad, 'gm-padding.out.jpg');
   });
@@ -1359,9 +1405,9 @@ describe('HDR gain map kept', () => {
     const b = F.read(name);
     await scrubTo('gm-iso-cut.out.jpg', b, redAmberIds(await core.inspect(b)));
     const out = F.read('gm-iso-cut.out.jpg');
-    const isoSegs = (bytes) => walkJpeg(bytes).segs.filter((s) => s.kind === 'seg' && s.marker === 0xe2 && Buffer.from(bytes.subarray(s.dataStart, s.dataStart + 28)).toString('latin1') === F.ISO_ID).map((s) => Buffer.from(bytes.subarray(s.dataStart, s.end)));
+    const isoSegs = (bytes: Uint8Array): Buffer[] => walkJpeg(bytes)!.segs.filter((s) => s.kind === 'seg' && s.marker === 0xe2 && Buffer.from(bytes.subarray(s.dataStart, s.dataStart + 28)).toString('latin1') === F.ISO_ID).map((s) => Buffer.from(bytes.subarray(s.dataStart, s.end)));
     assert.deepEqual(isoSegs(out), [Buffer.from(F.u8(F.ISO_ID, block))], 'photo segment cut to the block');
-    const g = mpfImages(out)[1];
+    const g = mpfImages(out)![1];
     assert.deepEqual(isoSegs(out.subarray(g.offset, g.offset + g.size)), [Buffer.from(F.u8(F.ISO_ID, block))], 'gain map segment cut to the block');
     assert.ok(!contains(out, 'SURPLUS'));
     gainMapRenders(name, 'gm-iso-cut.out.jpg');
@@ -1397,7 +1443,7 @@ describe('HDR gain map kept', () => {
   });
 
   test('a second picture that is not plausibly a gain map is red, with its description', async () => {
-    const cases = [
+    const cases: [label: string, opts: F.GainMapOptions][] = [
       ['colour full size, no gain map data', { noGainXmp: true, gain: { size: '320x240', colour: true } }],
       ['larger than the photo', { gain: { size: '400x300' } }],
       ['only a version-only ISO segment', { noGainXmp: true, gainIso: [F.isoBlock({ full: false })] }],
@@ -1417,16 +1463,16 @@ describe('HDR gain map kept', () => {
     await scrubTo('motion.gm-red.jpg', b, reds(info));
     const red = F.read('motion.gm-red.jpg');
     assert.deepEqual(directoryEntries(red).map((e) => e.semantic), ['Primary', 'GainMap']);
-    assert.equal(directoryEntries(red)[1].length, mpfImages(red)[1].size);
+    assert.equal(directoryEntries(red)[1].length, mpfImages(red)![1].size);
     await scrubTo('motion.gm-start.jpg', b, redAmberIds(info));
     const start = F.read('motion.gm-start.jpg');
     assert.deepEqual(directoryEntries(start).map((e) => e.semantic), ['Primary', 'GainMap']);
-    assert.equal(directoryEntries(start)[1].length, mpfImages(start)[1].size, 'length of the cleaned gain map');
+    assert.equal(directoryEntries(start)[1].length, mpfImages(start)![1].size, 'length of the cleaned gain map');
     await scrubTo('motion.gm-none.jpg', b, ['jpeg:trailing:gain-map']);
     const none = F.read('motion.gm-none.jpg');
     const d = directoryEntries(none);
     assert.deepEqual(d.map((e) => e.semantic), ['Primary', 'MotionPhoto'], 'the video keeps its directory');
-    assert.equal(d[1].length, none.length - walkJpeg(none).eoiEnd, 'the video length');
+    assert.equal(d[1].length, none.length - walkJpeg(none)!.eoiEnd, 'the video length');
   });
 
   test('a gain map that cannot be kept safely is removed, with a warning', async () => {
@@ -1445,7 +1491,7 @@ describe('HDR gain map kept', () => {
   });
 
   test('the photo keeps what points a reader to the kept gain map', async () => {
-    const xmpOf = (bytes) => Buffer.from(bytes).toString('utf8');
+    const xmpOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('utf8');
     // A malformed hdrgm:Version goes as an unrecognised field and is written again as 1.0.
     let out = F.read('gm-version-text.out-start.jpg');
     assert.match(xmpOf(out), /hdrgm:Version="1\.0"/, 'hdrgm:Version written again');
@@ -1466,9 +1512,9 @@ describe('HDR gain map kept', () => {
     assert.deepEqual(directoryEntries(out).map((e) => e.semantic), ['Primary', 'GainMap']);
     // An ISO 21496-1 only picture: the photo's segment is cut to its version, not dropped.
     out = F.read('gm-iso-only-tail.out-start.jpg');
-    const iso = walkJpeg(out).segs.filter((x) => x.kind === 'seg' && x.marker === 0xe2 && Buffer.from(out.subarray(x.dataStart, x.dataStart + 28)).toString('latin1') === F.ISO_ID);
+    const iso = walkJpeg(out)!.segs.filter((x) => x.kind === 'seg' && x.marker === 0xe2 && Buffer.from(out.subarray(x.dataStart, x.dataStart + 28)).toString('latin1') === F.ISO_ID);
     assert.equal(iso.length, 1, 'one ISO segment in the photo');
-    assert.deepEqual(Buffer.from(out.subarray(iso[0].dataStart + 28, iso[0].end)), Buffer.from([0, 0, 0, 0]));
+    assert.deepEqual(Buffer.from(out.subarray(iso[0].dataStart! + 28, iso[0].end)), Buffer.from([0, 0, 0, 0]));
   });
 
   test('the HDR gain map details and the gain map go together', async () => {
@@ -1493,14 +1539,14 @@ describe('HDR gain map kept', () => {
     assert.equal(tierOf(info, 'jpeg:trailing:gain-map'), 'amber');
     await scrubTo('gm-long.out.jpg', b, redAmberIds(info));
     const out = F.read('gm-long.out.jpg');
-    const g = mpfImages(out)[1];
+    const g = mpfImages(out)![1];
     const text = Buffer.from(out.subarray(g.offset, g.offset + g.size)).toString('latin1');
     for (const f of [`hdrgm:GainMapMax="${float}"`, 'hdrgm:HDRCapacityMax="2.32192809"', 'hdrgm:GainMapMin="0.0000152587890625"']) assert.ok(text.includes(f), f);
     gainMapRenders(name, 'gm-long.out.jpg');
     // A double's seventeen digits, or a number outside the field's range, can spell text:
     // the field is then a red detail and goes, while the gain map stays. A number in range
     // is written again with the nine digits a reader keeps of it.
-    for (const [n, value, again] of [['digits', '2.321928094887362', 'hdrgm:GainMapMax="2.32192809"'], ['range', '65115116114105100.32072111108109', null]]) {
+    for (const [n, value, again] of [['digits', '2.321928094887362', 'hdrgm:GainMapMax="2.32192809"'], ['range', '65115116114105100.32072111108109', null]] as [string, string, string | null][]) {
       const odd = F.gainMapJpeg(`gm-number-${n}.jpg`, { gainFields: `hdrgm:Version="1.0" hdrgm:GainMapMax="${value}" hdrgm:HDRCapacityMax="2.3"` });
       const i2 = await core.inspect(F.read(odd));
       assert.equal(tierOf(i2, 'jpeg:trailing:gain-map:metadata'), 'red', `${n}: ${ids(i2).join(' ')}`);
@@ -1517,14 +1563,14 @@ describe('HDR gain map kept', () => {
     const name = F.gainMapJpeg('gm-icc-same.jpg', { photoSegs: [F.iccSegment(own)], gainSegs: [F.iccSegment(own)] });
     const info = await core.inspect(F.read(name));
     assert.equal(tierOf(info, 'jpeg:trailing:gain-map:colour'), 'green');
-    assert.equal(info.items.find((i) => i.id === 'icc:profile').value, 'sRGB IEC61966-2.1');
+    assert.equal(info.items.find((i) => i.id === 'icc:profile')!.value, 'sRGB IEC61966-2.1');
     assert.ok(!ids(info).includes('icc:text') && !ids(info).includes('jpeg:trailing:gain-map:colour-text'), 'well-known text only');
     const other = await core.inspect(F.read('gm-gm-icc-text.jpg'));
     // A profile other than the photo's is green too: an ISO 21496-1 gain map may be applied
     // in its own colour space. Its text is the red detail, rewritten in place by default.
-    const colour = other.items.find((i) => i.id === 'jpeg:trailing:gain-map:colour');
+    const colour = other.items.find((i) => i.id === 'jpeg:trailing:gain-map:colour')!;
     assert.equal(colour.tier, 'green');
-    const text = other.items.find((i) => i.id === 'jpeg:trailing:gain-map:colour-text');
+    const text = other.items.find((i) => i.id === 'jpeg:trailing:gain-map:colour-text')!;
     assert.equal(text.tier, 'red');
     assert.ok(text.value.includes(`copyright: Copyright Ingrid ${PA}`), text.value);
     const out = F.read('gm-gm-icc-text.out-start.jpg');
@@ -1541,16 +1587,16 @@ describe('HDR gain map kept', () => {
     await scrubTo('motion-samsung.start.jpg', b, redAmberIds(info));
     const start = F.read('motion-samsung.start.jpg');
     assert.deepEqual(directoryEntries(start).map((e) => e.semantic), ['Primary', 'GainMap'], 'the trailer went, and its entry with it');
-    assert.equal(directoryEntries(start)[1].length, mpfImages(start)[1].size);
-    assert.equal(start.length, mpfImages(start)[1].offset + mpfImages(start)[1].size, 'nothing after the gain map');
+    assert.equal(directoryEntries(start)[1].length, mpfImages(start)![1].size);
+    assert.equal(start.length, mpfImages(start)![1].offset + mpfImages(start)![1].size, 'nothing after the gain map');
     // Kept, the trailer keeps its entry as it was: it still counts from the end of the file.
     await scrubTo('motion-samsung.keep.jpg', b, redAmberIds(info).filter((id) => id !== 'jpeg:trailing:samsung'));
     const keep = F.read('motion-samsung.keep.jpg');
     const d = directoryEntries(keep);
     assert.deepEqual(d.map((e) => e.semantic), ['Primary', 'GainMap', 'MotionPhoto']);
     const sef = Buffer.from(keep).indexOf(Buffer.from([0, 0, 0x30, 0x0a, 16, 0, 0, 0]));
-    assert.equal(keep.length - d[2].length, sef, 'the video entry still starts at the trailer');
-    assert.equal(d[1].length, mpfImages(keep)[1].size);
+    assert.equal(keep.length - d[2].length!, sef, 'the video entry still starts at the trailer');
+    assert.equal(d[1].length, mpfImages(keep)![1].size);
   });
 
   test('rebuilding the multi-picture index for its IDs also leaves out its unexplained data', async () => {
@@ -1565,12 +1611,12 @@ describe('HDR gain map kept', () => {
     for (const v of GAIN_VARIANTS) {
       const info = await core.inspect(F.read(`gm-${v[0]}.jpg`));
       for (const i of info.items) {
-        for (const field of ['label', 'note']) {
+        for (const field of ['label', 'note'] as const) {
           const t = i[field] || '';
           assert.ok(!t.includes('—') && !t.includes('-' + '-'), `${i.id} ${field}: ${t}`);
         }
         assert.ok(i.value.length <= 80, `${i.id} value too long`);
-        assert.ok(core.GROUPS.some((g) => g.id === i.group) && core.TIERS[i.tier], i.id);
+        assert.ok(core.GROUPS.some((g: { id: string }) => g.id === i.group) && core.TIERS[i.tier], i.id);
       }
       assert.equal(new Set(ids(info)).size, info.items.length, 'ids must be unique');
     }
@@ -1587,8 +1633,11 @@ const TEXT_TYPES = new Set(['desc', 'text', 'mluc', 'dict', 'utf8', 'utf16', 'zu
 // The tags a colour engine reads to convert colours (ICC.1, sections 9.2 and 10).
 const COLOUR_TAGS = new Set(['rXYZ', 'gXYZ', 'bXYZ', 'rTRC', 'gTRC', 'bTRC', 'kTRC', 'wtpt', 'bkpt', 'chad', 'chrm', 'lumi', 'cicp',
   'A2B0', 'A2B1', 'A2B2', 'B2A0', 'B2A1', 'B2A2', 'D2B0', 'D2B1', 'D2B2', 'D2B3', 'B2D0', 'B2D1', 'B2D2', 'B2D3', 'gamt', 'meas', 'view', 'tech']);
+// What inspectIcc returns, with the fields of a readable profile also named (as undefined) on
+// an unreadable one, so a test may read them before it checks ok: a wider type, not a cast.
+type IccRead = IccInfo | { ok: false; clean?: undefined; extra?: undefined; free?: undefined };
 // Every colour tag keeps its offset and its bytes; only private tags may go.
-function colourTagsSame(before, after, label) {
+function colourTagsSame(before: Uint8Array, after: Uint8Array, label: string): void {
   const a = F.iccTags(before);
   const b = F.iccTags(after);
   for (const [sig, t] of Object.entries(a)) {
@@ -1598,24 +1647,24 @@ function colourTagsSame(before, after, label) {
     assert.ok(Buffer.from(b[sig].data).equals(Buffer.from(t.data)), `${label}: colour tag ${sig} byte for byte the same`);
   }
 }
-const withByte = (p, at, v) => { const c = Buffer.from(p); c[at] = v; return new Uint8Array(c); };
-const createHashHex = (b) => createHash('md5').update(b).digest('hex');
+const withByte = (p: Uint8Array, at: number, v: number): Uint8Array => { const c = Buffer.from(p); c[at] = v; return new Uint8Array(c); };
+const createHashHex = (b: Uint8Array): string => createHash('md5').update(b).digest('hex');
 // Whether Pillow's colour engine (LittleCMS) opens a profile file.
-function spawnSyncPy(file) {
+function spawnSyncPy(file: string): { ok: boolean; error?: string } {
   const r = spawnSync('python3', ['-c', 'import sys\nfrom PIL import ImageCms\nImageCms.ImageCmsProfile(sys.argv[1])', file], { encoding: 'utf8' });
   return r.status === 0 ? { ok: true } : { ok: false, error: r.stderr.trim().split('\n').pop() };
 }
 // A planted string as Latin-1 or as UTF-16 (mluc text).
-const hasPlant = (bytes, s) => contains(bytes, s) || Buffer.from(bytes).includes(Buffer.from(s, 'utf16le').swap16());
+const hasPlant = (bytes: Uint8Array, s: string): boolean => contains(bytes, s) || Buffer.from(bytes).includes(Buffer.from(s, 'utf16le').swap16());
 
 describe('Green keeps only what the specifications define', () => {
   test('a colour profile: well-known text is clean; other text, hidden bytes and private tags are not', () => {
-    const clean = (p) => inspectIcc(new Uint8Array(p));
+    const clean = (p: Uint8Array): IccRead => inspectIcc(new Uint8Array(p));
     assert.ok(clean(F.iccProfile({ desc: 'sRGB IEC61966-2.1', cprt: 'Copyright (c) 1998 Hewlett-Packard Company', more: [['dmnd', 'IEC http://www.iec.ch'], ['dmdd', 'IEC 61966-2.1 Default RGB colour space - sRGB']] })).clean);
     assert.ok(clean(F.iccProfileV4()).clean, 'Display P3, Copyright Apple Inc., 2017');
     assert.ok(clean(F.iccProfileV4({ desc: 'Display P3 Gamut with sRGB Transfer', cprt: 'Google Inc. 2022' })).clean, 'libultrahdr');
     assert.ok(clean(F.iccProfileV4({ desc: 'sRGB', cprt: 'Copyright International Color Consortium, 2015' })).clean);
-    const free = (p) => { const i = clean(p); assert.ok(i.ok, 'readable'); return i.free.map((f) => `${f.sig}=${f.text}`).join(' / '); };
+    const free = (p: Uint8Array): string => { const i = clean(p); assert.ok(i.ok, 'readable'); return i.free.map((f) => `${f.sig}=${f.text}`).join(' / '); };
     assert.match(free(F.iccProfile({ desc: 'sRGB IEC61966-2.1', cprt: `Copyright Astrid ${G}` })), /^cprt=Copyright Astrid GREEN-TEXT-PLANT$/);
     assert.match(free(F.iccProfileV4({ desc: `Astrid ${G}` })), /^desc=Astrid/);
     assert.match(free(F.iccProfileV4({ dmnd: `Maker ${G}` })), /^dmnd=Maker/);
@@ -1691,7 +1740,7 @@ describe('Green keeps only what the specifications define', () => {
       const info = await core.inspect(b);
       assert.equal(tierOf(info, 'icc:text'), 'red', `${name}: ${ids(info).join(' ')}`);
       assert.equal(tierOf(info, name.endsWith('.png') ? 'png:colour' : 'icc:profile'), 'green', name);
-      assert.ok(info.items.find((i) => i.id === 'icc:text').value.includes(G), `${name}: the text is shown`);
+      assert.ok(info.items.find((i) => i.id === 'icc:text')!.value.includes(G), `${name}: the text is shown`);
       const out = name.replace(/\.(\w+)$/, '.out-start.$1');
       const res = await scrubTo(out, b, redAmberIds(info));
       assert.deepEqual(res.warnings.filter((w) => /colour profile/.test(w)), [], name);
@@ -1720,10 +1769,10 @@ describe('Green keeps only what the specifications define', () => {
   });
 
   test('technical XMP fields: numbers and fixed words stay green, anything else is red', () => {
-    const keyOf = (attrs, body = '') => {
+    const keyOf = (attrs: string, body = ''): string | undefined => {
       const parsed = parseXmp(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" ${attrs}>${body}</rdf:Description></rdf:RDF></x:xmpmeta>`);
       const set = new ItemSet();
-      const out = {};
+      const out: Record<string, string> = {};
       for (const it of addXmpItems(set, parsed, {}, {}, 0)) for (const i of it.props) out[parsed.props[i].key] = it.key;
       return Object.values(out)[0];
     };
@@ -1771,7 +1820,7 @@ describe('Green keeps only what the specifications define', () => {
     assert.ok(!contains(out, G), 'the text is gone');
     const back = await core.inspect(out);
     assert.deepEqual(back.items.filter((i) => i.tier !== 'green').map((i) => i.id), []);
-    assert.equal(back.items.find((i) => i.id === 'exif:exposure').value, '1/125 s');
+    assert.equal(back.items.find((i) => i.id === 'exif:exposure')!.value, '1/125 s');
     // Re-saving (crop, resize) rebuilds EXIF from the kept details: the text does not come along.
     const rebuilt = core.buildExif(F.read('green-exif.jpg'), new Set(info.items.filter((i) => i.tier !== 'red').map((i) => i.id)));
     assert.ok(rebuilt && !contains(rebuilt, G), 'buildExif leaves the text out');
@@ -1812,12 +1861,17 @@ describe('Green keeps only what the specifications define', () => {
 
   // The two numbers the way Skia reads them (SkExif::get_maker_note_hdr_headroom): the
   // MakerNote starts with "Apple iOS\0\0\x01MM" and holds a big-endian directory at 14.
-  function appleNumbers(bytes) {
+  // The count of directory entries, and each rational's value by its tag.
+  interface AppleNumbers {
+    count: number;
+    [tag: number]: number;
+  }
+  function appleNumbers(bytes: Uint8Array): AppleNumbers | null {
     const b = Buffer.from(bytes);
     const at = b.indexOf(Buffer.from('Apple iOS\0\0\x01MM', 'latin1'));
     if (at < 0) return null;
     const n = b.readUInt16BE(at + 14);
-    const out = { count: n };
+    const out: AppleNumbers = { count: n };
     for (let i = 0; i < n; i++) {
       const q = at + 16 + i * 12;
       const tag = b.readUInt16BE(q);
@@ -1834,7 +1888,7 @@ describe('Green keeps only what the specifications define', () => {
     const info = await core.inspect(b);
     assert.equal(tierOf(info, 'jpeg:trailing:gain-map'), 'amber', ids(info).join(' '));
     assert.equal(tierOf(info, 'exif:makernote'), 'red');
-    const hdr = info.items.find((i) => i.id === 'exif:apple-hdr');
+    const hdr = info.items.find((i) => i.id === 'exif:apple-hdr')!;
     assert.deepEqual([hdr.tier, hdr.value, hdr.group], ['amber', 'Headroom 5.86 (maker note values 1.02 and 0.0064)', 'hidden']);
     assert.equal(tierOf(info, 'jpeg:trailing:gain-map:metadata'), 'red', 'the extra apdi fields');
     assert.ok(!redAmberIds(info).includes('exif:apple-hdr') && redAmberIds(info).includes('exif:makernote'));
@@ -1850,10 +1904,10 @@ describe('Green keeps only what the specifications define', () => {
     assert.deepEqual(appleNumbers(out), { count: 2, 33: 1.02, 48: 0.0064 });
     // The gain map is whole, its pixels are the same, and its XMP keeps exactly the version
     // and the apdi label Chrome requires.
-    const imgs = mpfImages(out);
-    assert.equal(imgs[0].size, walkJpeg(out).eoiEnd);
+    const imgs = mpfImages(out)!;
+    assert.equal(imgs[0].size, walkJpeg(out)!.eoiEnd);
     const gm = out.subarray(imgs[1].offset, imgs[1].offset + imgs[1].size);
-    const gin = mpfImages(b)[1];
+    const gin = mpfImages(b)![1];
     F.write('apple-hdr.out-gm-in.jpg', b.subarray(gin.offset, gin.offset + gin.size));
     F.write('apple-hdr.out-gm.jpg', gm);
     const [h1, h2] = F.decodeHashes([F.path('apple-hdr.out-gm-in.jpg'), F.path('apple-hdr.out-gm.jpg')]);
@@ -1892,7 +1946,7 @@ describe('Green keeps only what the specifications define', () => {
   // 0.0.3 dropped these two numbers from a real iPhone 16e photo (iOS 26.6.1): its tag 48
   // was above the old limit of 1. The numbers below are that photo's, in a synthetic file;
   // with Skia's formula they give a headroom of 3.5, the gain map's own HDRGainMapHeadroom.
-  const IPHONE_16E = { maker33: [1058986, 1048501], maker48: [34373, 21025] };
+  const IPHONE_16E: F.AppleNoteOptions = { maker33: [1058986, 1048501], maker48: [34373, 21025] };
 
   test('iPhone 16e HDR JPEG: tag 48 above 1 stays with the default (red only) selection', async () => {
     const name = F.appleHdrJpeg('apple-16e.jpg', { note: IPHONE_16E });
@@ -1912,8 +1966,8 @@ describe('Green keeps only what the specifications define', () => {
     const apple = F.exifRead(F.path('apple-16e.out-red.jpg')).filter((r) => r.group === 'Apple').map((r) => `${r.tag}=${r.value}`).sort();
     assert.deepEqual(apple, ['HDRGain=1.6349', 'HDRHeadroom=1.01']);
     // The gain map stays: same pixels, and its XMP keeps the version and the apdi label.
-    const gIn = mpfImages(b)[1];
-    const gOut = mpfImages(out)[1];
+    const gIn = mpfImages(b)![1];
+    const gOut = mpfImages(out)![1];
     F.write('apple-16e.out-gm-in.jpg', b.subarray(gIn.offset, gIn.offset + gIn.size));
     F.write('apple-16e.out-gm.jpg', out.subarray(gOut.offset, gOut.offset + gOut.size));
     const [h1, h2] = F.decodeHashes([F.path('apple-16e.out-gm-in.jpg'), F.path('apple-16e.out-gm.jpg')]);
@@ -1924,7 +1978,7 @@ describe('Green keeps only what the specifications define', () => {
     // Nothing red is left; the HDR pair stays amber (with the amber camera make, unticked).
     assert.deepEqual(reds(back), []);
     assert.deepEqual(['exif:apple-hdr', 'jpeg:trailing:gain-map'].map((id) => tierOf(back, id)), ['amber', 'amber']);
-    assert.equal(back.items.find((i) => i.id === 'exif:apple-hdr').value, hdr.value);
+    assert.equal(back.items.find((i) => i.id === 'exif:apple-hdr')!.value, hdr.value);
     samePixels(name, 'apple-16e.out-red.jpg');
   });
 
@@ -1932,7 +1986,7 @@ describe('Green keeps only what the specifications define', () => {
     // Tag 48 above 16, below 0, or past the point where its stops reach zero (about 7.6 when
     // tag 33 is 1 or more) gives no headroom a screen can use: the numbers are not offered,
     // and the default selection removes the whole MakerNote.
-    const cases = [
+    const cases: [file: string, note: F.AppleNoteOptions][] = [
       ['apple-48-over.jpg', { maker33: [9000, 10000], maker48: [165000, 10000] }],
       ['apple-48-negative.jpg', { maker33: [9000, 10000], maker48: [-100, 10000] }],
       ['apple-48-no-stops.jpg', { maker33: [10100, 10000], maker48: [80000, 10000] }],
@@ -1962,7 +2016,7 @@ describe('Green keeps only what the specifications define', () => {
     for (const name of ['icc-text.jpg', 'icc-text.png', 'icc-text.webp', 'icc-text.heic', 'icc-bad.jpg', 'green-xmp.jpg', 'green-exif.jpg', 'green-png.png', 'apple-hdr.jpg', 'apple-wrong.jpg']) {
       const info = await core.inspect(F.read(name));
       for (const i of info.items) {
-        for (const field of ['label', 'note']) {
+        for (const field of ['label', 'note'] as const) {
           const t = i[field] || '';
           assert.ok(!t.includes('—') && !t.includes('-' + '-'), `${i.id} ${field}: ${t}`);
         }
@@ -1981,23 +2035,23 @@ describe('Green keeps only what the specifications define', () => {
 // back with nothing red, and kept colour data and gain maps must stay as they were.
 
 const NAME = 'Astrid Holmvik';
-const nameIn = (bytes) => contains(bytes, 'Astrid') || contains(bytes, 'Holmvik') || Buffer.from(bytes).includes(Buffer.from('Astrid', 'utf16le').swap16());
+const nameIn = (bytes: Uint8Array): boolean => contains(bytes, 'Astrid') || contains(bytes, 'Holmvik') || Buffer.from(bytes).includes(Buffer.from('Astrid', 'utf16le').swap16());
 // The bytes a colour engine reads in each kept colour tag are the same before and after.
-function colourUsedSame(before, after, label) {
+function colourUsedSame(before: Uint8Array, after: Uint8Array, label: string): void {
   const a = inspectIcc(new Uint8Array(before));
   assert.ok(a.ok, `${label}: the input profile reads`);
   for (const t of a.tags) {
     if (t.kind !== 'keep') continue;
-    for (const [s, e] of t.used) assert.ok(Buffer.from(after.subarray(s, e)).equals(Buffer.from(before.subarray(s, e))), `${label}: colour tag ${t.sig} unchanged`);
+    for (const [s, e] of t.used!) assert.ok(Buffer.from(after.subarray(s, e)).equals(Buffer.from(before.subarray(s, e))), `${label}: colour tag ${t.sig} unchanged`);
   }
 }
-function profileOpens(p, label) {
+function profileOpens(p: Uint8Array, label: string): void {
   const r = spawnSyncPy(F.write(`${label}.icc`, p));
   assert.ok(r.ok, `${label}: LittleCMS opens it (${r.error || ''})`);
 }
 // Puts a profile into a JPEG, a PNG, a WebP and a HEIC, scrubs each with the default
 // selection, and checks the name is gone, the colours stay and the result reads back clean.
-async function iccInFormats(tag, prof) {
+async function iccInFormats(tag: string, prof: Uint8Array): Promise<void> {
   F.write(`${tag}.icc`, prof);
   if (!existsSync(F.path('icc-base.jpg'))) F.magick(['-size', '96x64', 'plasma:fractal', '-seed', '141', '-depth', '8', '-strip', '-quality', '90', F.path('icc-base.jpg')]);
   if (!existsSync(F.path('icc-base.png'))) F.magick(['-size', '96x64', 'plasma:fractal', '-seed', '142', '-depth', '8', '-strip', `PNG24:${F.path('icc-base.png')}`]);
@@ -2030,11 +2084,11 @@ async function iccInFormats(tag, prof) {
 describe('Review 4: free channels through details kept by default', () => {
   const plant = Buffer.from(`${NAME}, 12 Fjordveien, Bergen`, 'latin1');
   const base = () => F.ICC_BASE_TAGS();
-  const withTag = (sig, bytes) => base().map(([s, d]) => [s, s === sig ? bytes : d]);
+  const withTag = (sig: string, bytes: Uint8Array): F.IccTagBytes[] => base().map(([s, d]) => [s, s === sig ? bytes : d]);
   const para = F.u8('para', [0, 0, 0, 0], [0, 0, 0, 0], [0, 2, 0x33, 0x33]);
 
   test('colour tags keep only the bytes a colour engine reads, and only the types their signature takes', () => {
-    const cases = {
+    const cases: Record<string, F.IccTagBytes[]> = {
       'curv-tail': withTag('rTRC', F.u8('curv', [0, 0, 0, 0], [0, 0, 0, 1], [2, 0x33], plant)),
       'targ-ui08': [...base(), ['targ', F.u8('ui08', [0, 0, 0, 0], plant)]],
       'cprt-ui08': withTag('cprt', F.u8('ui08', [0, 0, 0, 0], plant)),
@@ -2048,13 +2102,13 @@ describe('Review 4: free channels through details kept by default', () => {
     };
     for (const [n, tags] of Object.entries(cases)) {
       const p = F.iccBuild({ tags });
-      const i = inspectIcc(p);
+      const i: IccRead = inspectIcc(p);
       if (n === 'xyz-text') { assert.equal(i.ok, false, 'a colour value far outside its range is not read'); continue; }
       assert.ok(i.ok && !i.clean, `${n}: offered (${JSON.stringify(i.extra)})`);
       const c = cleanIcc(p);
       assert.ok(c && c.length === p.length, `${n}: rewritten in place`);
       assert.ok(!nameIn(c) && !contains(c, 'Astr') && !contains(c, 'Hm'), `${n}: the name is gone`);
-      assert.ok(inspectIcc(c).clean, `${n}: nothing left to clean`);
+      assert.ok((inspectIcc(c) as IccRead).clean, `${n}: nothing left to clean`);
       colourUsedSame(p, c, n);
       profileOpens(c, `icc-r4-${n}`);
     }
@@ -2062,8 +2116,8 @@ describe('Review 4: free channels through details kept by default', () => {
     // measurement and viewing condition tags.
     const hpMeas = F.u8('meas', Buffer.alloc(23), [2], Buffer.alloc(11), [2]);
     const view = F.u8('view', [0, 0, 0, 0], ...[19.6445, 20.3718, 16.8089, 3.92889, 4.07439, 3.36179].map((v) => { const x = Buffer.alloc(4); x.writeInt32BE(Math.round(v * 65536)); return x; }), [0, 0, 0, 1]);
-    assert.ok(inspectIcc(F.iccBuild({ tags: [...base(), ['meas', hpMeas], ['view', view]] })).clean);
-    assert.ok(inspectIcc(F.iccBuild({ tags: withTag('rTRC', para) })).clean);
+    assert.ok((inspectIcc(F.iccBuild({ tags: [...base(), ['meas', hpMeas], ['view', view]] })) as IccRead).clean);
+    assert.ok((inspectIcc(F.iccBuild({ tags: withTag('rTRC', para) })) as IccRead).clean);
   });
 
   test('the profile header holds no free text', () => {
@@ -2076,18 +2130,18 @@ describe('Review 4: free channels through details kept by default', () => {
     };
     for (const [n, header] of Object.entries(cases)) {
       const p = F.iccBuild({ header });
-      const i = inspectIcc(p);
+      const i: IccRead = inspectIcc(p);
       assert.ok(i.ok && !i.clean && i.extra.some((x) => x.startsWith('header fields')), `${n}: ${JSON.stringify(i.extra)}`);
       const c = cleanIcc(p);
       assert.ok(c && !contains(c, 'Astr') && !contains(c, 'Holm') && !contains(c, 'vik!') && !contains(c, 'AH'), `${n}: the text is gone`);
-      assert.ok(inspectIcc(c).clean, n);
+      assert.ok((inspectIcc(c) as IccRead).clean, n);
       colourUsedSame(p, c, n);
       profileOpens(c, `icc-r4-header-${n}`);
     }
     // Registered values stay: Apple's CMM and platform, a real date, the ICC's own sRGB2014
     // vendor attribute bit, a relative colorimetric intent.
     const ok = F.iccBuild({ header: { 4: 'appl', 24: '\x07\xe6\0\x01\0\x01\0\0\0\0\0\0', 40: 'APPL', 48: 'APPL', 59: '\x01', 67: '\x01', 80: 'appl' } });
-    assert.ok(inspectIcc(ok).clean, JSON.stringify(inspectIcc(ok).extra));
+    assert.ok((inspectIcc(ok) as IccRead).clean, JSON.stringify((inspectIcc(ok) as IccRead).extra));
   });
 
   test('a name in the header or in a colour tag goes in JPEG, PNG, WebP and HEIC, the colours stay', async () => {
@@ -2096,7 +2150,7 @@ describe('Review 4: free channels through details kept by default', () => {
   });
 
   test('profile text: language codes, the codes of a version 2 description, white space, and text that cannot be read', () => {
-    const mlucMany = (records) => {
+    const mlucMany = (records: readonly string[]): Uint8Array => {
       const head = [Buffer.from('mluc', 'latin1'), Buffer.alloc(4), Buffer.alloc(4), Buffer.alloc(4)];
       head[2].writeUInt32BE(records.length); head[3].writeUInt32BE(12);
       const s16 = Buffer.from('sRGB', 'utf16le').swap16();
@@ -2104,7 +2158,7 @@ describe('Review 4: free channels through details kept by default', () => {
       for (const code of records) { const r = Buffer.alloc(12); r.write(code, 0, 'latin1'); r.writeUInt32BE(s16.length, 4); r.writeUInt32BE(at, 8); head.push(r); }
       return F.u8(...head, s16);
     };
-    const desc2 = (ascii, { lang = 0, uni = '', code = 0, script = '' } = {}) => {
+    const desc2 = (ascii: string, { lang = 0, uni = '', code = 0, script = '' }: { lang?: number | string; uni?: string; code?: number; script?: string } = {}): Uint8Array => {
       const u = Buffer.from(uni, 'utf16le').swap16();
       const parts = [Buffer.from('desc\0\0\0\0', 'latin1'), Buffer.alloc(4), Buffer.from(`${ascii}\0`, 'latin1'), Buffer.alloc(4), Buffer.alloc(4), u, Buffer.alloc(2), Buffer.from([script.length]), Buffer.alloc(67)];
       parts[1].writeUInt32BE(ascii.length + 1);
@@ -2114,7 +2168,7 @@ describe('Review 4: free channels through details kept by default', () => {
       Buffer.from(script, 'latin1').copy(parts[8]);
       return F.u8(...parts);
     };
-    const dirty = {
+    const dirty: Record<string, F.IccTagBytes[]> = {
       'mluc-codes': withTag('desc', mlucMany(['asTR', 'idHO', 'lmVI', 'ksEE'])),
       'mluc-twice': withTag('desc', mlucMany(['enUS', 'enUS'])),
       'desc-lang': withTag('desc', desc2('sRGB', { lang: 'Astr', uni: 'sRGB' })),
@@ -2127,29 +2181,29 @@ describe('Review 4: free channels through details kept by default', () => {
       const i = inspectIcc(p);
       assert.ok(i.ok && !i.clean, `${n}: offered`);
       const c = cleanIcc(p);
-      assert.ok(c && inspectIcc(c).clean, `${n}: cleaned`);
+      assert.ok(c && (inspectIcc(c) as IccRead).clean, `${n}: cleaned`);
       assert.ok(!contains(c, 'Astr') && !contains(c, 'asTR') && !contains(c, 'AH') && !contains(c, 'sRGB \t'), `${n}: nothing left`);
     }
-    assert.ok(inspectIcc(F.iccBuild({ tags: withTag('cprt', F.u8('text\0\0\0\0', 'Copyright 2009 Artifex Software Inc      \0')) })).clean, 'trailing ASCII spaces only');
+    assert.ok((inspectIcc(F.iccBuild({ tags: withTag('cprt', F.u8('text\0\0\0\0', 'Copyright 2009 Artifex Software Inc      \0')) })) as IccRead).clean, 'trailing ASCII spaces only');
     // A description whose structure does not fit is text that cannot be read: the profile
     // stays readable and green, and that tag is overwritten.
     const over = Buffer.from(desc2('Display P3', { uni: 'Display P3' }));
     over.writeUInt32BE(60, 12 + 11 + 4);
     const p = F.iccBuild({ tags: withTag('desc', new Uint8Array(over)) });
-    const i = inspectIcc(p);
+    const i: IccRead = inspectIcc(p);
     assert.ok(i.ok && i.free.some((f) => f.text === 'text that could not be read'), JSON.stringify(i.free));
     assert.ok(cleanIcc(p), 'rewritten');
     // A declared size larger than the data is read as the data's size and written again.
     const big = F.iccBuild({ size: 4000 });
-    assert.ok(inspectIcc(big).ok && !inspectIcc(big).clean);
-    assert.equal(Buffer.from(cleanIcc(big)).readUInt32BE(0), big.length);
+    assert.ok(inspectIcc(big).ok && !(inspectIcc(big) as IccRead).clean);
+    assert.equal(Buffer.from(cleanIcc(big)!).readUInt32BE(0), big.length);
     // A named-colour profile is a list of names, not a colour space.
     assert.equal(inspectIcc(F.iccBuild({ header: { 12: 'nmcl' } })).ok, false);
   });
 
   test('JPEG colour profile segments count 1 to n of n', async () => {
     const prof = Buffer.from(F.iccBuild());
-    const seg = (n, total, part) => F.jpegSeg(0xe2, F.u8('ICC_PROFILE\0', [n, total], part));
+    const seg = (n: number, total: number, part: Uint8Array): Uint8Array => F.jpegSeg(0xe2, F.u8('ICC_PROFILE\0', [n, total], part));
     F.write('icc-r4-numbers.jpg', F.jpegInsert(F.read('icc-base.jpg'), seg(1, 7, prof.subarray(0, 300)), seg(2, 7, prof.subarray(300))));
     const info = await core.inspect(F.read('icc-r4-numbers.jpg'));
     assert.equal(tierOf(info, 'icc:text'), 'red', ids(info).join(' '));
@@ -2164,7 +2218,7 @@ describe('Review 4: free channels through details kept by default', () => {
   test('technical EXIF fields have the type and number of values the specification gives', async () => {
     if (!existsSync(F.path('green-exif-base.jpg'))) F.magick(['-size', '64x48', 'plasma:fractal', '-seed', '151', '-depth', '8', '-strip', '-quality', '90', F.path('green-exif-base.jpg')]);
     const text = Buffer.from(`${NAME}, 12 Fjordveien, Bergen!!!`, 'latin1');
-    const cases = {
+    const cases: Record<string, F.TiffOptions> = {
       'xres-rational': { ifd0: [[0x011a, 5, 5, text.subarray(0, 40)]] },
       'fnumber-short': { exif: [[0x829d, 3, 19, Buffer.concat([text.subarray(0, 38)])]] },
       transfer: { ifd0: [[0x012d, 3, 768, Buffer.concat(Array(48).fill(text.subarray(0, 32)))]] },
@@ -2243,7 +2297,7 @@ describe('Review 4: free channels through details kept by default', () => {
   test('HDR: a name in a prefix, an xml attribute, a declaration or a number around a kept gain map goes, and the gain map stays', async () => {
     const HDRGM = 'http://ns.adobe.com/hdr-gain-map/1.0/';
     const RDFU = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
-    const fields = (p) => `${p}:Version="1.0" ${p}:GainMapMin="0" ${p}:GainMapMax="2.3" ${p}:Gamma="1" ${p}:OffsetSDR="0.015625" ${p}:OffsetHDR="0.015625" ${p}:HDRCapacityMin="0" ${p}:HDRCapacityMax="2.3" ${p}:BaseRenditionIsHDR="False"`;
+    const fields = (p: string): string => `${p}:Version="1.0" ${p}:GainMapMin="0" ${p}:GainMapMax="2.3" ${p}:Gamma="1" ${p}:OffsetSDR="0.015625" ${p}:OffsetHDR="0.015625" ${p}:HDRCapacityMin="0" ${p}:HDRCapacityMax="2.3" ${p}:BaseRenditionIsHDR="False"`;
     const APPLE = 'xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" xmlns:apdi="http://ns.apple.com/pixeldatainfo/1.0/"';
     const appleBody = (apdi = 'apdi', extra = '') => `   <HDRGainMap:HDRGainMapVersion>65536</HDRGainMap:HDRGainMapVersion>\n   <${apdi}:AuxiliaryImageType${extra}>urn:com:apple:photo:2020:aux:hdrgainmap</${apdi}:AuxiliaryImageType>`;
     const cases = {
@@ -2275,9 +2329,9 @@ describe('Review 4: free channels through details kept by default', () => {
       if (!n.startsWith('apple')) { gainMapRenders(name, out); continue; }
       // An Apple gain map has no directory: it is found through MPF, keeps its pixels, and
       // its XMP holds exactly the version and Apple's label, under the usual prefixes.
-      const imgs = mpfImages(o);
-      assert.equal(imgs[0].size, walkJpeg(o).eoiEnd, n);
-      const gin = mpfImages(b)[1];
+      const imgs = mpfImages(o)!;
+      assert.equal(imgs[0].size, walkJpeg(o)!.eoiEnd, n);
+      const gin = mpfImages(b)![1];
       F.write(`${name}.out-gm-in.jpg`, b.subarray(gin.offset, gin.offset + gin.size));
       F.write(`${name}.out-gm.jpg`, o.subarray(imgs[1].offset, imgs[1].offset + imgs[1].size));
       const [h1, h2] = F.decodeHashes([F.path(`${name}.out-gm-in.jpg`), F.path(`${name}.out-gm.jpg`)]);
@@ -2321,7 +2375,7 @@ describe('Review 4: free channels through details kept by default', () => {
     const info = await core.inspect(F.read(name));
     assert.equal(tierOf(info, 'jpeg:trailing:gain-map:colour'), 'green');
     await scrubTo('gm-r4-iso-own-colour.out-start.jpg', F.read(name), redAmberIds(info));
-    const g = mpfImages(F.read('gm-r4-iso-own-colour.out-start.jpg'))[1];
+    const g = mpfImages(F.read('gm-r4-iso-own-colour.out-start.jpg'))![1];
     const sub = F.read('gm-r4-iso-own-colour.out-start.jpg').subarray(g.offset, g.offset + g.size);
     assert.ok(Buffer.from(sub).includes(Buffer.from(own)), 'the gain map keeps its profile byte for byte');
     gainMapRenders(name, 'gm-r4-iso-own-colour.out-start.jpg');
@@ -2330,7 +2384,7 @@ describe('Review 4: free channels through details kept by default', () => {
   test('PNG: a technical exif text copy has no more values than its field', async () => {
     F.magick(['-size', '64x48', 'plasma:fractal', '-seed', '152', '-depth', '8', '-strip', `PNG24:${F.path('green-png-base.png')}`]);
     const codes = [...'Astrid Holmvik'].map((c) => c.charCodeAt(0)).join(',');
-    for (const [n, kw, value, want] of [['codes', 'exif:FNumber', codes, 'red'], ['one', 'exif:FNumber', '28/10', null], ['iso', 'exif:ISOSpeedRatings', '100, 200', null]]) {
+    for (const [n, kw, value, want] of [['codes', 'exif:FNumber', codes, 'red'], ['one', 'exif:FNumber', '28/10', null], ['iso', 'exif:ISOSpeedRatings', '100, 200', null]] as [string, string, string, Tier | null][]) {
       F.write(`png-r4-${n}.png`, F.pngInsertBefore(F.read('green-png-base.png'), 'IDAT', F.pngChunk('tEXt', F.u8(kw, [0], value))));
       const pi = await core.inspect(F.read(`png-r4-${n}.png`));
       assert.equal(tierOf(pi, 'png:exif-text:technical-text'), want ?? undefined, `${n}: ${ids(pi).join(' ')}`);
@@ -2341,7 +2395,7 @@ describe('Review 4: free channels through details kept by default', () => {
     for (const name of ['icc-r4-header.jpg', 'icc-r4-numbers.jpg', 'exif-r4-transfer.jpg', 'xmp-r4-prefix.jpg', 'xmp-r4-xpacket-id.jpg', 'tables-r4-photo.jpg', 'gm-r4-dqt.jpg', 'gm-r4-photo-prefix.jpg']) {
       const info = await core.inspect(F.read(name));
       for (const i of info.items) {
-        for (const field of ['label', 'note']) {
+        for (const field of ['label', 'note'] as const) {
           const t = i[field] || '';
           assert.ok(!t.includes('—') && !t.includes('-' + '-'), `${i.id} ${field}: ${t}`);
         }
@@ -2359,19 +2413,23 @@ describe('Review 4: free channels through details kept by default', () => {
 // packets back out of the files.
 
 // A message spelt in white space: each bit a space or a tab, each byte ended by a newline.
-const WS_BITS = (text) => [...Buffer.from(text, 'latin1')].map((c) => `${[...c.toString(2).padStart(8, '0')].map((x) => (x === '1' ? '\t' : ' ')).join('')}\n`).join('');
+const WS_BITS = (text: string): string => [...Buffer.from(text, 'latin1')].map((c) => `${[...c.toString(2).padStart(8, '0')].map((x) => (x === '1' ? '\t' : ' ')).join('')}\n`).join('');
 const WS_MSG = WS_BITS('Ingrid Holm, Fjordveien 12');
 // A packet laid out with that message between its nodes and padding after it, holding a
 // date (amber, kept by default), a rating (green) and a creator (red).
 const wsPacket = (msg = WS_MSG, pad = 2048) => `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>${msg}<x:xmpmeta xmlns:x="adobe:ns:meta/">${msg}<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">${msg}<rdf:Description rdf:about=""${msg}xmlns:xmp="http://ns.adobe.com/xap/1.0/"${msg}xmlns:dc="http://purl.org/dc/elements/1.1/"   xmp:Rating="3"${msg}>${msg}<xmp:CreateDate>${msg}2026-09-14T10:15:23${msg}</xmp:CreateDate>${msg}<dc:creator>${msg}<rdf:Seq>${msg}<rdf:li>${PLANT.xmpCreator}</rdf:li>${msg}</rdf:Seq>${msg}</dc:creator>${msg}</rdf:Description>${msg}</rdf:RDF>${msg}</x:xmpmeta>${' '.repeat(pad)}${msg}<?xpacket end="w"?>`;
 
 // The XMP packets of a file, as text: { photo: [...], gain: [...] }.
-function xmpPacketsOf(bytes) {
+interface XmpPackets {
+  photo: string[];
+  gain: string[];
+}
+function xmpPacketsOf(bytes: Uint8Array): XmpPackets {
   const b = Buffer.from(bytes);
   const fmt = b[0] === 0xff ? 'jpeg' : b.toString('latin1', 1, 4) === 'PNG' ? 'png' : b.toString('latin1', 8, 12) === 'WEBP' ? 'webp' : 'heic';
-  const out = { photo: [], gain: [] };
-  const fromJpeg = (x, list) => {
-    for (const s of walkJpeg(x).segs) {
+  const out: XmpPackets = { photo: [], gain: [] };
+  const fromJpeg = (x: Uint8Array, list: string[]): void => {
+    for (const s of walkJpeg(x)!.segs) {
       if (s.kind === 'seg' && s.marker === 0xe1 && Buffer.from(x.subarray(s.dataStart, s.dataStart + XMP_HEAD.length)).toString('latin1') === XMP_HEAD) list.push(Buffer.from(x.subarray(s.dataStart + XMP_HEAD.length, s.end)).toString('utf8'));
     }
   };
@@ -2393,7 +2451,7 @@ function xmpPacketsOf(bytes) {
     const gainIds = new Set(m.refs.filter((r) => r.type === 'auxl').map((r) => r.from));
     for (const it of m.items.values()) {
       if (it.contentType !== 'application/rdf+xml') continue;
-      const text = Buffer.concat(it.ranges.map(([s, e]) => b.subarray(s, e))).toString('utf8');
+      const text = Buffer.concat(it.ranges!.map(([s, e]) => b.subarray(s, e))).toString('utf8');
       const ofGain = m.refs.some((r) => r.type === 'cdsc' && r.from === it.id && r.to.some((t) => gainIds.has(t)));
       (ofGain ? out.gain : out.photo).push(text);
     }
@@ -2403,7 +2461,7 @@ function xmpPacketsOf(bytes) {
 
 // A packet is in the canonical form when writing it again gives the same text; an emptied
 // HEIC packet is the one fixed empty packet.
-function assertCanonical(text, compact, label) {
+function assertCanonical(text: string, compact: boolean, label: string): void {
   if (text === '<x:xmpmeta xmlns:x="adobe:ns:meta/"/>') return;
   assert.equal(canonicalXmp(parseXmp(text), compact), text, `${label}: the packet is in the canonical form`);
   assert.ok(!/>[ \t\r\n]+</.test(text), `${label}: no white space between nodes`);
@@ -2448,7 +2506,7 @@ describe('0.0.3: every XMP packet that stays is in the canonical form', () => {
       assert.ok(!/[ \t\n]{2,}/.test(packets[0]), `${name}: no run of white space survives`);
       const back = await core.inspect(o);
       assert.equal(back.normalise, false, `${name}: read back, nothing more to normalise`);
-      assert.equal(back.items.find((i) => i.id === 'xmp:dates').value, info.items.find((i) => i.id === 'xmp:dates').value, `${name}: the date reads the same`);
+      assert.equal(back.items.find((i) => i.id === 'xmp:dates')!.value, info.items.find((i) => i.id === 'xmp:dates')!.value, `${name}: the date reads the same`);
       // Prepared again with nothing ticked, the file does not change.
       const again = await core.scrub(o, []);
       assert.ok(Buffer.from(again.bytes).equals(Buffer.from(o)), `${name}: idempotent`);
@@ -2502,7 +2560,7 @@ ${' '.repeat(500)}
     const b = F.read('canon-fail.jpg');
     const info = await core.inspect(b);
     assert.deepEqual(info.items.filter((i) => i.source === 'XMP').map((i) => `${i.tier}:${i.id}`), ['red:xmp:packet']);
-    assert.equal(info.items.find((i) => i.id === 'xmp:packet').note, 'It may hold anything, so removing it is the safe choice.');
+    assert.equal(info.items.find((i) => i.id === 'xmp:packet')!.note, 'It may hold anything, so removing it is the safe choice.');
     const res = await core.scrub(b, []);
     assert.equal(xmpPacketsOf(res.bytes).photo.length, 0, 'not kept, even unticked');
     assert.ok(res.warnings.some((w) => /could not be read was removed/.test(w)), res.warnings.join(' / '));
@@ -2518,7 +2576,7 @@ ${' '.repeat(500)}
     const plan = planXmp(p, items.map((i) => ({ id: i.id, key: i.key, props: i.props })), new Set());
     assert.equal(plan.action, 'rewrite');
     assert.ok(!plan.text.includes('note') && !plan.text.includes(' '));
-    assert.match(plan.warning, /Hidden text inside XMP was removed although it was not ticked/);
+    assert.match(plan.warning!, /Hidden text inside XMP was removed although it was not ticked/);
   });
 
   test('Extended XMP that stays is written again in the canonical form, with a new GUID', async () => {
@@ -2530,12 +2588,12 @@ ${' '.repeat(500)}
     const res = await scrubTo('extended.out-kept.jpg', b, ['xmp:creator']);
     assert.deepEqual(res.warnings, []);
     const o = Buffer.from(F.read('extended.out-kept.jpg'));
-    const segs = walkJpeg(o).segs.filter((s) => s.kind === 'seg' && s.marker === 0xe1 && o.toString('latin1', s.dataStart, s.dataStart + 35) === 'http://ns.adobe.com/xmp/extension/\0');
+    const segs = walkJpeg(o)!.segs.filter((s) => s.kind === 'seg' && s.marker === 0xe1 && o.toString('latin1', s.dataStart, s.dataStart + 35) === 'http://ns.adobe.com/xmp/extension/\0');
     assert.ok(segs.length >= 2, 'split over several segments again');
-    const guid = o.toString('latin1', segs[0].dataStart + 35, segs[0].dataStart + 67);
-    const whole = Buffer.concat(segs.map((s) => o.subarray(s.dataStart + 75, s.end)));
+    const guid = o.toString('latin1', segs[0].dataStart! + 35, segs[0].dataStart! + 67);
+    const whole = Buffer.concat(segs.map((s) => o.subarray(s.dataStart! + 75, s.end)));
     assert.equal(createHash('md5').update(whole).digest('hex').toUpperCase(), guid, 'the GUID is the MD5 of the new packet');
-    assert.equal(segs.every((s) => o.readUInt32BE(s.dataStart + 67) === whole.length), true, 'each part gives the full length');
+    assert.equal(segs.every((s) => o.readUInt32BE(s.dataStart! + 67) === whole.length), true, 'each part gives the full length');
     assertCanonical(whole.toString('utf8'), true, 'extended');
     const main = xmpPacketsOf(o).photo[0];
     assertCanonical(main, false, 'main');
@@ -2563,7 +2621,7 @@ ${' '.repeat(500)}
     assertCanonical(packets.photo[0], false, 'photo');
     assertCanonical(packets.gain[0], true, 'gain map');
     gainMapRenders(name, 'canon-gm.out-none.jpg');
-    assert.ok(mpfImages(o)[1].size < F.read(`${name}.gain.jpg`).length, 'the gain map is shorter');
+    assert.ok(mpfImages(o)![1].size < F.read(`${name}.gain.jpg`).length, 'the gain map is shorter');
     noNewWarnings(name, 'canon-gm.out-none.jpg');
     // An iPhone gain map keeps its fixed label and version in the canonical form.
     const apple = F.appleHdrJpeg('canon-gm-apple.jpg');
@@ -2585,9 +2643,9 @@ ${' '.repeat(500)}
 
 describe('0.0.3: iPhone HEIC HDR', () => {
   const APPLE = 'urn:com:apple:photo:2020:aux:hdrgainmap';
-  const hdrRows = (file) => {
+  const hdrRows = (file: string) => {
     const rows = F.exifRead(F.path(file));
-    const get = (tag) => rows.find((r) => r.tag === tag)?.value;
+    const get = (tag: string) => rows.find((r) => r.tag === tag)?.value;
     return { headroom: get('HDRHeadroom'), gain: get('HDRGain'), aux: get('AuxiliaryImageType'), version: get('HDRGainMapVersion') };
   };
 
@@ -2636,7 +2694,7 @@ describe('0.0.3: iPhone HEIC HDR', () => {
     const name = F.appleHdrHeic('apple-pair.heic');
     const b = F.read(name);
     const red = reds(await core.inspect(b));
-    for (const [out, ticks] of [['apple-pair.no-brightness.heic', [...red, 'exif:apple-hdr']], ['apple-pair.no-gain.heic', [...red, 'heic:gain-map']]]) {
+    for (const [out, ticks] of [['apple-pair.no-brightness.heic', [...red, 'exif:apple-hdr']], ['apple-pair.no-gain.heic', [...red, 'heic:gain-map']]] as [string, string[]][]) {
       const res = await scrubTo(out, b, ticks);
       assert.deepEqual(res.warnings, [], out);
       const o = F.read(out);
@@ -2658,7 +2716,7 @@ describe('0.0.3: iPhone HEIC HDR', () => {
   });
 
   test('an auxiliary image with a name that is not exactly a known one is red and goes', async () => {
-    const cases = [
+    const cases: [name: string, opts: F.AppleHdrHeicOptions, plant: string][] = [
       ['apple-aux-name.heic', { auxType: `${APPLE} ${PLANT.hdr2}` }, PLANT.hdr2],
       ['apple-aux-tail.heic', { auxTail: Buffer.from(PLANT.hdr2) }, PLANT.hdr2],
       ['apple-aux-near.heic', { auxType: `${APPLE}2` }, `${APPLE}2`],
@@ -2709,8 +2767,8 @@ describe('0.0.3: free text is red, structured details stay amber', () => {
   });
 
   test('free text items are red, structured items amber', () => {
-    for (const k of ['caption', 'keywords', 'instructions', 'other']) assert.equal(IPTC_ITEMS[k].tier, 'red', `iptc:${k}`);
-    for (const k of ['dates', 'software']) assert.equal(IPTC_ITEMS[k].tier, 'amber', `iptc:${k}`);
+    for (const k of ['caption', 'keywords', 'instructions', 'other'] as const) assert.equal(IPTC_ITEMS[k].tier, 'red', `iptc:${k}`);
+    for (const k of ['dates', 'software'] as const) assert.equal(IPTC_ITEMS[k].tier, 'amber', `iptc:${k}`);
     assert.equal(TIFF_ITEMS.description.tier, 'red');
     for (const k of ['datetime', 'timezone', 'camera', 'lens', 'software', 'other', 'apple-hdr']) assert.equal(TIFF_ITEMS[k].tier, 'amber', `exif:${k}`);
     for (const k of ['description', 'history']) assert.equal(XMP_ITEMS[k].tier, 'red', `xmp:${k}`);
@@ -2729,20 +2787,20 @@ describe('0.0.3: free text is red, structured details stay amber', () => {
   test('PNG text under any keyword, and a JPEG comment, are red', async () => {
     const png = F.pngInsertBefore(F.read(F.pngFull()), 'IDAT', F.pngChunk('tEXt', 'Shot by\0Astrid Holmvik'), F.pngChunk('tEXt', 'Disclaimer\0Private'));
     const pi = await core.inspect(png);
-    assert.equal(pi.items.find((i) => i.id === 'png:text:shot-by').tier, 'red');
-    assert.equal(pi.items.find((i) => i.id === 'png:notes').tier, 'red');
+    assert.equal(pi.items.find((i) => i.id === 'png:text:shot-by')!.tier, 'red');
+    assert.equal(pi.items.find((i) => i.id === 'png:notes')!.tier, 'red');
     const out = await core.scrub(png, pi.items.filter((i) => i.tier === 'red').map((i) => i.id));
     assert.ok(!contains(out.bytes, 'Astrid Holmvik') && !contains(out.bytes, 'Private'), 'red only removes them');
     const jpg = F.jpegInsert(F.read(F.jpegProgressive()), F.jpegSeg(0xfe, F.u8('For Astrid')));
     const ji = await core.inspect(jpg);
-    assert.equal(ji.items.find((i) => i.id === 'jpeg:comment').tier, 'red');
+    assert.equal(ji.items.find((i) => i.id === 'jpeg:comment')!.tier, 'red');
   });
 
   // Since the review of 4 October 2026 every manifest is red: the signer's certificate, the
   // generator's name, ingredient names and compressed assertions can all name a person, and
   // each manifest carries a unique identifier.
   test('Content Credentials are always red; what they are seen to repeat is named', () => {
-    const box = (json) => Buffer.from(json, 'latin1');
+    const box = (json: string): Buffer => Buffer.from(json, 'latin1');
     const plain = describeC2pa([box('{"claim_generator":"FjordOS/1.0","alg":"sha256"}')]);
     assert.equal(plain.tier, 'red');
     assert.match(plain.note, /signer's certificate/);
@@ -2828,19 +2886,19 @@ describe('0.0.3 review: nothing hidden rides along with what is kept by default'
   test('Apple HDR brightness: kept rounded, and a value out of range takes the gain map to red', async () => {
     const fine = F.appleHdrJpeg('apple-round.jpg', { note: { maker33: [10108, 10000], maker48: [123456, 10000000] } });
     const i1 = await core.inspect(F.read(fine));
-    const hdr = i1.items.find((i) => i.id === 'exif:apple-hdr');
+    const hdr = i1.items.find((i) => i.id === 'exif:apple-hdr')!;
     assert.equal(hdr.value.replace(/^Headroom [\d.]+ /, ''), '(maker note values 1.011 and 0.0123)');
     const o1 = await core.scrub(F.read(fine), reds(i1));
     const rows = F.exifRead(F.write('apple-round.out-red.jpg', o1.bytes));
-    const val = (tag) => rows.find((r) => r.tag === tag)?.value;
+    const val = (tag: string) => rows.find((r) => r.tag === tag)?.value;
     assert.equal(String(val('HDRHeadroom')), '1.011');
     assert.equal(String(val('HDRGain')), '0.0123');
     for (const [name, build] of [['apple-digits.jpg', () => F.appleHdrJpeg('apple-digits.jpg', { note: { maker33: [47999999, 1000000], maker48: [12345678, 1000000] } })],
       ['apple-digits.heic', () => F.appleHdrHeic('apple-digits.heic', { note: { maker33: [47999999, 1000000], maker48: [12345678, 1000000] } })],
-      ['apple-no33b.jpg', () => F.appleHdrJpeg('apple-no33b.jpg', { note: { maker33: [0, 0] } })]]) {
+      ['apple-no33b.jpg', () => F.appleHdrJpeg('apple-no33b.jpg', { note: { maker33: [0, 0] } })]] as [string, () => string][]) {
       build();
       const info = await core.inspect(F.read(name));
-      const gm = info.items.find((i) => i.id === 'jpeg:trailing:gain-map' || i.id === 'heic:gain-map');
+      const gm = info.items.find((i) => i.id === 'jpeg:trailing:gain-map' || i.id === 'heic:gain-map')!;
       assert.ok(!ids(info).includes('exif:apple-hdr'), `${name}: no Apple HDR brightness out of range`);
       assert.equal(gm.tier, 'red', `${name}: a gain map no screen can show in HDR is red`);
       const out = await core.scrub(F.read(name), reds(info));
@@ -2857,7 +2915,7 @@ describe('0.0.3 review: nothing hidden rides along with what is kept by default'
     F.write('xmp-cr.jpg', b);
     const res = await core.scrub(b, []);
     F.write('xmp-cr.out.jpg', res.bytes);
-    const read = (file) => JSON.parse(F.sh('python3', ['-c', `import sys, json, xml.dom.minidom as md
+    const read = (file: string): Record<string, string> => JSON.parse(F.sh('python3', ['-c', `import sys, json, xml.dom.minidom as md
 b = open(sys.argv[1], 'rb').read(); i = b.find(b'<x:xmpmeta'); j = b.find(b'</x:xmpmeta>') + 12
 d = md.parseString(b[i:j]); out = {}
 for el in d.getElementsByTagName('*'):
@@ -2884,9 +2942,9 @@ print(json.dumps(out))`, F.path(file)]));
   });
 
   test('IPTC that stays is written in the standard form, with its digest computed again', async () => {
-    const ds = (r, d, v) => F.u8([0x1c, r, d], [v.length >> 8, v.length & 255], v);
+    const ds = (r: number, d: number, v: F.Part): Uint8Array => F.u8([0x1c, r, d], [v.length >> 8, v.length & 255], v);
     const iptc = F.u8(ds(2, 0, [0, 2]), ds(2, 60, '101500'), ds(2, 55, '20240101'), ds(2, 65, 'FakeEdit'));
-    const res = (id, data) => F.u8('8BIM', [id >> 8, id & 255], [0, 0], [0, 0, data.length >> 8, data.length & 255], data, data.length & 1 ? [0] : []);
+    const res = (id: number, data: Uint8Array): Uint8Array => F.u8('8BIM', [id >> 8, id & 255], [0, 0], [0, 0, data.length >> 8, data.length & 255], data, data.length & 1 ? [0] : []);
     const b = F.jpegInsert(F.read(F.jpegProgressive()), F.jpegSeg(0xed, F.u8('Photoshop 3.0\0', res(0x0404, iptc), res(0x0425, Buffer.alloc(16, 7)))));
     const info = await core.inspect(b);
     assert.equal(info.normalise, true);
@@ -2917,12 +2975,12 @@ print(json.dumps(out))`, F.path(file)]));
 // Found by the type check of 16 October 2026: names read from a file were looked up in plain
 // objects, so a name such as `constructor` or `__proto__` found what every object inherits.
 describe('type check 2026-10-16: names from a file never find inherited properties', () => {
-  const xmpJpeg = (ns, body) => F.jpegInsert(F.read(F.jpegProgressive()), F.jpegSeg(0xe1, Buffer.concat([
+  const xmpJpeg = (ns: string, body: string): Uint8Array => F.jpegInsert(F.read(F.jpegProgressive()), F.jpegSeg(0xe1, Buffer.concat([
     Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1'),
     Buffer.from(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" ${ns}${body}</rdf:RDF></x:xmpmeta>`, 'utf8'),
   ])));
   const NAME = 'Ola Nordmann, Askoy';
-  const redScrub = async (bytes) => core.scrub(bytes, reds(await core.inspect(bytes)));
+  const redScrub = async (bytes: Uint8Array): Promise<ScrubResult> => core.scrub(bytes, reds(await core.inspect(bytes)));
 
   test('PNG: a text keyword such as constructor or __proto__ is a red detail that goes', async () => {
     for (const kw of ['constructor', 'Constructor', '__proto__']) {

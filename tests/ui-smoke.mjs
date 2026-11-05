@@ -11,7 +11,7 @@
 // the new files and checks them with the engine in Node, and with Pillow when python3
 // has it. It is a smoke test, not the full browser suite: it proves the main paths work.
 //
-// The file name does not end in .test.mjs, so `npm test` does not run it.
+// The file name does not end in .test.ts, so `npm test` does not run it.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';

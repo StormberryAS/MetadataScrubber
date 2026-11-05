@@ -14,7 +14,7 @@
 //          selection, gone when amber is ticked. The checks cannot tell such a name from a
 //          model name, which the README and DESIGN notes say.
 //
-// Used by tests/core.test.mjs and tests/audit.mjs. Everything is synthetic.
+// Used by tests/core.test.ts and tests/audit.mjs. Everything is synthetic.
 //
 // TypeScript since 1 November 2026 (TS-STEP-1). Node 24 runs this file directly (it removes
 // the types and runs the rest as it is), so there is no compiled copy; tests/tsconfig.json
