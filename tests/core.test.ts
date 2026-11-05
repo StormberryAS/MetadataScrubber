@@ -187,7 +187,7 @@ describe('contract basics', () => {
   test('GROUPS and TIERS are complete', () => {
     assert.deepEqual(core.GROUPS.map((g: { id: string }) => g.id), ['where', 'who', 'when', 'device', 'hidden', 'technical']);
     assert.deepEqual(core.GROUPS.map((g: { label: string }) => g.label), ['Where', 'Who', 'When', 'Device', 'Hidden extras', 'Technical']);
-    for (const t of ['red', 'amber', 'green']) assert.ok(core.TIERS[t].label && core.TIERS[t].description);
+    for (const t of ['red', 'amber', 'green'] as const) assert.ok(core.TIERS[t].label && core.TIERS[t].description);
   });
 
   test('privacyWord follows the tier rules', () => {

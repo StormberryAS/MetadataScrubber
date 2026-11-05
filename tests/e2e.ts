@@ -591,9 +591,9 @@ async function openPage(view: View): Promise<Page> {
 // ---------------------------------------------------------------------------------------
 // Checking a downloaded file outside the browser
 
-/** A group of details as the checks use it (GROUPS in src/core/taxonomy.js). Typed here because,
- * until ts/src/scrub-core.ts exists, src/scrub-core.js imports taxonomy through a ?v= stamped path
- * that the tests' program does not follow, and GROUPS reads as any. */
+/** A group of details as the checks use it (GROUPS in src/core/taxonomy.js). It was typed here while
+ * GROUPS read as any in the tests' program; since src/scrub-core.js is compiled from
+ * ts/src/scrub-core.ts, GROUPS has its own type, and that type fits this one. */
 type Group = { id: string; label: string };
 
 /** One planted string from tests/fixtures/out/canaries.tsv. */

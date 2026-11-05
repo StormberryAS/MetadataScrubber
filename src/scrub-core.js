@@ -1,21 +1,6 @@
-// MetadataScrubber engine: the one module the interface talks to.
-//
-// Pure ES module with no DOM dependencies; it runs in browsers and in Node 24. It never
-// decodes or re-encodes pixels: it reads the containers around the picture and removes
-// metadata by dropping whole parts or overwriting them with zeros.
-//
-//   detectFormat(bytes)            'jpeg' | 'png' | 'webp' | 'heic' | null
-//   inspect(bytes)                 async, { format, width, height, orientation, items, warnings, normalise }
-//   scrub(bytes, removeIds)        async, { bytes, warnings }
-//
-// XMP is only ever kept in one canonical form (see rewriteXmp in core/xmp.js), so a scrub
-// that removes nothing still writes the file again when its XMP is not already in that
-// form; inspect() says so with normalise: true.
-//   buildExif(sourceBytes, keepIds)            fresh EXIF block with only kept simple tags, or null
-//   insertExif(bytes, format, exifPayload)     adds that block to a freshly encoded picture
-//   privacyWord(remainingItems)    'public' | 'minimal' | 'clean' | 'custom'
-//   GROUPS, TIERS
-
+/*! src/scrub-core.js is compiled from ts/src/scrub-core.ts by tools/build-ts.sh, which leaves out
+    every comment but this one: the explanations are in the source. Edit the TypeScript, never the
+    .js: the build refuses to overwrite a hand edit, and its check mode fails on one. */
 import { latin1, toU8 } from './core/bytes.js?v=987761c7';
 import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=c8d592f3';
 import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=121e8251';
@@ -23,210 +8,155 @@ import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } fro
 import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=2c02ff09';
 import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=235442fc';
 import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=6db82cf4';
-
 export { GROUPS, TIERS };
-
-/** @typedef {'jpeg' | 'png' | 'webp' | 'heic'} Format */
-/** @typedef {Taxonomy.Item} Item */
-/** @typedef {ArrayBuffer | ArrayBufferView} Input A file's bytes, as the page or the tests hold them. */
-/**
- * What inspect() reports about a picture.
- * @typedef {object} InspectResult
- * @property {Format} format
- * @property {number} width
- * @property {number} height
- * @property {number} orientation EXIF orientation, 1 to 8
- * @property {Item[]} items
- * @property {string[]} warnings
- * @property {boolean} normalise true when a scrub that removes nothing still writes the file again
- */
-/**
- * What scrub() returns: the new file and what the user should know about it.
- * @typedef {{ bytes: Uint8Array, warnings: string[] }} ScrubResult
- */
-/** @typedef {'public' | 'minimal' | 'clean' | 'custom'} PrivacyWord */
-/**
- * One file read by its format module, the model matching the format.
- * @typedef {{ format: 'jpeg', model: ReturnType<typeof analyseJpeg>, set: ItemSet }
- *   | { format: 'png', model: Awaited<ReturnType<typeof analysePng>>, set: ItemSet }
- *   | { format: 'webp', model: ReturnType<typeof analyseWebp>, set: ItemSet }
- *   | { format: 'heic', model: ReturnType<typeof analyseHeic>, set: ItemSet }} Analysis
- */
-
-/**
- * @param {Input} input
- * @returns {Format | null}
- */
 export function detectFormat(input) {
-  const b = toU8(input);
-  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'jpeg';
-  if (isPng(b)) return 'png';
-  if (isWebp(b)) return 'webp';
-  if (isHeic(b)) return 'heic';
-  return null;
-}
-
-/**
- * @param {Uint8Array} b
- * @returns {Promise<Analysis>}
- */
-async function analyse(b) {
-  const format = detectFormat(b);
-  if (!format) throw new Error('This file type is not supported. Use a JPEG, PNG, WebP or HEIC picture.');
-  const set = new ItemSet();
-  let model;
-  if (format === 'jpeg') model = analyseJpeg(b, set);
-  else if (format === 'png') model = await analysePng(b, set);
-  else if (format === 'webp') model = analyseWebp(b, set);
-  else model = analyseHeic(b, set);
-  // Each branch above pairs the format with its own module's model.
-  return /** @type {Analysis} */ ({ format, model, set });
-}
-
-/**
- * @param {Input} input
- * @returns {Promise<InspectResult>}
- */
-export async function inspect(input) {
-  const b = toU8(input);
-  const { format, model, set } = await analyse(b);
-  return {
-    format,
-    width: model.width || 0,
-    height: model.height || 0,
-    orientation: model.orientation >= 1 && model.orientation <= 8 ? model.orientation : 1,
-    items: set.items.map((i) => ({ ...i })),
-    warnings: [...set.warnings],
-    normalise: !!set.normalise,
-  };
-}
-
-/**
- * @param {Input} input
- * @param {Iterable<string> | null} [removeIds] ids of the items to remove
- * @returns {Promise<ScrubResult>}
- */
-export async function scrub(input, removeIds) {
-  const b = toU8(input);
-  const { format, model, set } = await analyse(b);
-  /** @type {Set<string>} */
-  const remove = new Set();
-  /** @type {string[]} */
-  const warnings = [];
-  for (const id of removeIds || []) {
-    if (set.has(id)) remove.add(id);
-    else warnings.push(`Nothing called "${id}" was found in this file, so it was skipped.`);
-  }
-  if (!remove.size && !set.normalise) return { bytes: b.slice(), warnings };
-  /** @type {ScrubResult} */
-  let res;
-  if (format === 'jpeg') res = scrubJpeg(b, model, set, remove);
-  else if (format === 'png') res = await scrubPng(b, model, set, remove);
-  else if (format === 'webp') res = scrubWebp(b, model, set, remove);
-  else res = scrubHeic(b, model, set, remove);
-  // A colour profile that could not be read goes whole; say what that can do to colours.
-  const iccNote = 'The colour profile could not be read, so it was removed. Colours may look slightly different.';
-  if (remove.has('icc:unreadable') && !res.warnings.some((w) => /colour profile/i.test(w))) warnings.push(iccNote);
-  return { bytes: res.bytes, warnings: [...warnings, ...res.warnings] };
-}
-
-// The first EXIF block of a file, located without any asynchronous work.
-/** @param {Uint8Array} b @returns {Uint8Array | null} */
-function firstTiff(b) {
-  const format = detectFormat(b);
-  if (format === 'jpeg') {
-    const w = walkJpeg(b);
-    // The test accepts only kind 'seg', which always has a dataStart.
-    const s = w && /** @type {Jpeg.JpegMarkerSegment | undefined} */ (w.segs.find((x) => x.kind === 'seg' && x.marker === 0xe1 && latin1(b, x.dataStart, x.dataStart + 5) === 'Exif\0'));
-    return s ? b.subarray(s.dataStart + 6, s.end) : null;
-  }
-  if (format === 'png') return firstPngTiff(b);
-  if (format === 'webp') {
-    let p = 12;
-    while (p + 8 <= b.length) {
-      const size = b[p + 4] | (b[p + 5] << 8) | (b[p + 6] << 16) | (b[p + 7] << 24);
-      if (latin1(b, p, p + 4) === 'EXIF') {
-        const data = b.subarray(p + 8, Math.min(b.length, p + 8 + size));
-        const off = findTiffStart(data, 16);
-        return off >= 0 ? data.subarray(off) : null;
-      }
-      p += 8 + size + (size & 1);
-    }
+    const b = toU8(input);
+    if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff)
+        return 'jpeg';
+    if (isPng(b))
+        return 'png';
+    if (isWebp(b))
+        return 'webp';
+    if (isHeic(b))
+        return 'heic';
     return null;
-  }
-  if (format === 'heic') return firstHeicTiff(b);
-  return null;
 }
-
-// A fresh TIFF/EXIF payload holding only the kept simple tags of the file's first EXIF
-// block (IFD0, Exif IFD and GPS), with Orientation forced to 1, no MakerNote and no
-// preview. keepIds are item ids from inspect(), such as 'exif:gps' or 'exif:camera'.
-// Returns null when nothing is kept.
-/**
- * @param {Input} sourceBytes
- * @param {Iterable<string> | null} [keepIds]
- * @returns {Uint8Array | null}
- */
+async function analyse(b) {
+    const format = detectFormat(b);
+    if (!format)
+        throw new Error('This file type is not supported. Use a JPEG, PNG, WebP or HEIC picture.');
+    const set = new ItemSet();
+    let model;
+    if (format === 'jpeg')
+        model = analyseJpeg(b, set);
+    else if (format === 'png')
+        model = await analysePng(b, set);
+    else if (format === 'webp')
+        model = analyseWebp(b, set);
+    else
+        model = analyseHeic(b, set);
+    return { format, model, set };
+}
+export async function inspect(input) {
+    const b = toU8(input);
+    const { format, model, set } = await analyse(b);
+    return {
+        format,
+        width: model.width || 0,
+        height: model.height || 0,
+        orientation: model.orientation >= 1 && model.orientation <= 8 ? model.orientation : 1,
+        items: set.items.map((i) => ({ ...i })),
+        warnings: [...set.warnings],
+        normalise: !!set.normalise,
+    };
+}
+export async function scrub(input, removeIds) {
+    const b = toU8(input);
+    const { format, model, set } = await analyse(b);
+    const remove = new Set();
+    const warnings = [];
+    for (const id of removeIds || []) {
+        if (set.has(id))
+            remove.add(id);
+        else
+            warnings.push(`Nothing called "${id}" was found in this file, so it was skipped.`);
+    }
+    if (!remove.size && !set.normalise)
+        return { bytes: b.slice(), warnings };
+    let res;
+    if (format === 'jpeg')
+        res = scrubJpeg(b, model, set, remove);
+    else if (format === 'png')
+        res = await scrubPng(b, model, set, remove);
+    else if (format === 'webp')
+        res = scrubWebp(b, model, set, remove);
+    else
+        res = scrubHeic(b, model, set, remove);
+    const iccNote = 'The colour profile could not be read, so it was removed. Colours may look slightly different.';
+    if (remove.has('icc:unreadable') && !res.warnings.some((w) => /colour profile/i.test(w)))
+        warnings.push(iccNote);
+    return { bytes: res.bytes, warnings: [...warnings, ...res.warnings] };
+}
+function firstTiff(b) {
+    const format = detectFormat(b);
+    if (format === 'jpeg') {
+        const w = walkJpeg(b);
+        const s = w && w.segs.find((x) => x.kind === 'seg' && x.marker === 0xe1 && latin1(b, x.dataStart, x.dataStart + 5) === 'Exif\0');
+        return s ? b.subarray(s.dataStart + 6, s.end) : null;
+    }
+    if (format === 'png')
+        return firstPngTiff(b);
+    if (format === 'webp') {
+        let p = 12;
+        while (p + 8 <= b.length) {
+            const size = b[p + 4] | (b[p + 5] << 8) | (b[p + 6] << 16) | (b[p + 7] << 24);
+            if (latin1(b, p, p + 4) === 'EXIF') {
+                const data = b.subarray(p + 8, Math.min(b.length, p + 8 + size));
+                const off = findTiffStart(data, 16);
+                return off >= 0 ? data.subarray(off) : null;
+            }
+            p += 8 + size + (size & 1);
+        }
+        return null;
+    }
+    if (format === 'heic')
+        return firstHeicTiff(b);
+    return null;
+}
 export function buildExif(sourceBytes, keepIds) {
-  const b = toU8(sourceBytes);
-  /** @type {Set<string>} */
-  const keys = new Set();
-  for (const id of keepIds || []) {
-    const m = /^exif:([a-z-]+)(?::\d+)?$/.exec(id);
-    if (m) keys.add(m[1]);
-  }
-  keys.delete('makernote');
-  keys.delete('thumbnail');
-  if (!keys.size) return null;
-  const tiff = firstTiff(b);
-  if (!tiff) return null;
-  const m = parseTiff(tiff);
-  return m ? buildTiff(m, keys) : null;
+    const b = toU8(sourceBytes);
+    const keys = new Set();
+    for (const id of keepIds || []) {
+        const m = /^exif:([a-z-]+)(?::\d+)?$/.exec(id);
+        if (m)
+            keys.add(m[1]);
+    }
+    keys.delete('makernote');
+    keys.delete('thumbnail');
+    if (!keys.size)
+        return null;
+    const tiff = firstTiff(b);
+    if (!tiff)
+        return null;
+    const m = parseTiff(tiff);
+    return m ? buildTiff(m, keys) : null;
 }
-
-/** @param {Uint8Array} b @param {string} format @returns {{ width: number, height: number } | null} */
 function pictureSize(b, format) {
-  if (format === 'jpeg') {
-    const w = walkJpeg(b);
-    return w && w.sof ? { width: w.sof.width, height: w.sof.height } : null;
-  }
-  if (format === 'png') {
-    const ihdr = walkPng(b).chunks.find((c) => c.type === 'IHDR');
-    return ihdr ? { width: ((b[ihdr.dataStart] << 24) >>> 0) + (b[ihdr.dataStart + 1] << 16) + (b[ihdr.dataStart + 2] << 8) + b[ihdr.dataStart + 3], height: ((b[ihdr.dataStart + 4] << 24) >>> 0) + (b[ihdr.dataStart + 5] << 16) + (b[ihdr.dataStart + 6] << 8) + b[ihdr.dataStart + 7] } : null;
-  }
-  if (format === 'webp') return frameSize(b, walkWebp(b).chunks);
-  return null;
+    if (format === 'jpeg') {
+        const w = walkJpeg(b);
+        return w && w.sof ? { width: w.sof.width, height: w.sof.height } : null;
+    }
+    if (format === 'png') {
+        const ihdr = walkPng(b).chunks.find((c) => c.type === 'IHDR');
+        return ihdr ? { width: ((b[ihdr.dataStart] << 24) >>> 0) + (b[ihdr.dataStart + 1] << 16) + (b[ihdr.dataStart + 2] << 8) + b[ihdr.dataStart + 3], height: ((b[ihdr.dataStart + 4] << 24) >>> 0) + (b[ihdr.dataStart + 5] << 16) + (b[ihdr.dataStart + 6] << 8) + b[ihdr.dataStart + 7] } : null;
+    }
+    if (format === 'webp')
+        return frameSize(b, walkWebp(b).chunks);
+    return null;
 }
-
-// Adds a payload from buildExif to a freshly encoded picture of the given format, filling
-// in the picture size fields from the picture itself.
-/**
- * @param {Input} input
- * @param {string} format
- * @param {Uint8Array | null} exifPayload a payload from buildExif
- * @returns {Uint8Array}
- */
 export function insertExif(input, format, exifPayload) {
-  const b = toU8(input);
-  if (!exifPayload || !exifPayload.length) return b;
-  const tiff = toU8(exifPayload).slice();
-  const size = pictureSize(b, format);
-  if (size && size.width && size.height) setTiffDimensions(parseTiff(tiff), size.width, size.height);
-  if (format === 'jpeg') return insertJpegExif(b, tiff);
-  if (format === 'png') return insertPngExif(b, tiff);
-  if (format === 'webp') return insertWebpExif(b, tiff);
-  throw new Error(`EXIF cannot be added to a ${format} file`);
+    const b = toU8(input);
+    if (!exifPayload || !exifPayload.length)
+        return b;
+    const tiff = toU8(exifPayload).slice();
+    const size = pictureSize(b, format);
+    if (size && size.width && size.height)
+        setTiffDimensions(parseTiff(tiff), size.width, size.height);
+    if (format === 'jpeg')
+        return insertJpegExif(b, tiff);
+    if (format === 'png')
+        return insertPngExif(b, tiff);
+    if (format === 'webp')
+        return insertWebpExif(b, tiff);
+    throw new Error(`EXIF cannot be added to a ${format} file`);
 }
-
-// The privacy word for a file, from a read-back inspect() of the OUTPUT file.
-/**
- * @param {{ tier: string }[] | null} [remainingItems]
- * @returns {PrivacyWord}
- */
 export function privacyWord(remainingItems) {
-  const items = remainingItems || [];
-  if (!items.length) return 'clean';
-  if (items.some((i) => i.tier === 'red')) return 'custom';
-  if (items.some((i) => i.tier === 'amber')) return 'public';
-  return 'minimal';
+    const items = remainingItems || [];
+    if (!items.length)
+        return 'clean';
+    if (items.some((i) => i.tier === 'red'))
+        return 'custom';
+    if (items.some((i) => i.tier === 'amber'))
+        return 'public';
+    return 'minimal';
 }
