@@ -2770,11 +2770,11 @@ describe('0.0.3: free text is red, structured details stay amber', () => {
 // ======================================================================================
 // The privacy and compatibility reviews of 4 October 2026: since only red is ticked to
 // start with, whatever an amber or green detail keeps by default must hold nothing a person
-// cannot see (tests/probes.mjs), and kept values must read the same to standard readers.
+// cannot see (tests/probes.ts), and kept values must read the same to standard readers.
 
 describe('0.0.3 review: nothing hidden rides along with what is kept by default', () => {
   test('every probe: red canaries go with red only, visible names stay amber, red and amber removes all', async () => {
-    const { privacyProbes } = await import('./probes.mjs');
+    const { privacyProbes } = await import('./probes.ts');
     for (const p of privacyProbes(F)) {
       const info = await core.inspect(p.bytes);
       for (const c of p.canaries) assert.ok(contains(p.bytes, c.string), `${p.name}: the input holds ${c.string}`);

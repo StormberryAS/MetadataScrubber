@@ -169,7 +169,7 @@ export interface HeicOptions {
 
 export interface AppleHdrHeicOptions {
   auxType?: string;
-  auxTail?: Uint8Array | null;
+  auxTail?: Part | null;
   gainBody?: string;
   note?: AppleNoteOptions;
   photoXmp?: string | null;

@@ -1815,12 +1815,12 @@ function heicHdrCheck(label, inFile, rec, keep) {
 async function sectionAdversarial(records) {
   const list = buildAdversarial();
   // A72 onwards (review of 4 October 2026): the hidden-channel probes the engine tests use
-  // (tests/probes.mjs), built into the core fixture folder.
+  // (tests/probes.ts), built into the core fixture folder.
   {
     const prev = process.env.MS_FIXTURE_DIR;
     process.env.MS_FIXTURE_DIR = CORE_FIX;
     const F = await import(pathToFileURL(join(HERE, 'core-fixtures.ts')).href);
-    const { privacyProbes } = await import(pathToFileURL(join(HERE, 'probes.mjs')).href);
+    const { privacyProbes } = await import(pathToFileURL(join(HERE, 'probes.ts')).href);
     if (prev === undefined) delete process.env.MS_FIXTURE_DIR; else process.env.MS_FIXTURE_DIR = prev;
     for (const p of privacyProbes(F)) {
       writeFileSync(advPath(p.name), p.bytes);

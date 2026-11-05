@@ -15,24 +15,47 @@
 //          model name, which the README and DESIGN notes say.
 //
 // Used by tests/core.test.mjs and tests/audit.mjs. Everything is synthetic.
+//
+// TypeScript since 1 November 2026 (TS-STEP-1). Node 24 runs this file directly (it removes
+// the types and runs the rest as it is), so there is no compiled copy; tests/tsconfig.json
+// type-checks it (strict) when tools/build-ts.sh runs. Only types were added to the old
+// tests/probes.mjs: the code is the same, statement for statement.
 
 import { existsSync } from 'node:fs';
 import zlib from 'node:zlib';
+import type * as Fixtures from './core-fixtures.ts';
 
-export function privacyProbes(F) {
-  const list = [];
-  const add = (name, bytes, canaries, note) => { F.write(name, bytes); list.push({ name, bytes: new Uint8Array(bytes), canaries, note }); };
-  const red = (string, location) => ({ string, tier: 'red', location });
-  const amber = (string, location) => ({ string, tier: 'amber', location });
-  const T = (s) => Buffer.from(s, 'latin1');
-  const base = (ext, seed, extra = []) => {
+/** red: must be gone after the starting selection; amber: shown, kept until amber is ticked. */
+export type CanaryTier = 'red' | 'amber';
+/** A planted string, its tier and where the probe hides it. */
+export interface Canary {
+  string: string;
+  tier: CanaryTier;
+  location: string;
+}
+/** One probe picture: its file name in the fixture folder, its bytes, its canaries and a note. */
+export interface Probe {
+  name: string;
+  bytes: Uint8Array;
+  canaries: Canary[];
+  note: string;
+}
+
+/** Builds every probe picture into the fixture folder of F (tests/core-fixtures.ts) and lists them. */
+export function privacyProbes(F: typeof Fixtures): Probe[] {
+  const list: Probe[] = [];
+  const add = (name: string, bytes: Uint8Array, canaries: Canary[], note: string): void => { F.write(name, bytes); list.push({ name, bytes: new Uint8Array(bytes), canaries, note }); };
+  const red = (string: string, location: string): Canary => ({ string, tier: 'red', location });
+  const amber = (string: string, location: string): Canary => ({ string, tier: 'amber', location });
+  const T = (s: string): Buffer => Buffer.from(s, 'latin1');
+  const base = (ext: string, seed: number, extra: readonly string[] = []): Uint8Array => {
     const n = `probe-base-${seed}.${ext}`;
     if (!existsSync(F.path(n))) F.magick(['-size', '64x48', 'plasma:fractal', '-seed', String(seed), '-depth', '8', '-strip', ...extra, F.path(n)]);
     return F.read(n);
   };
   const jpg = base('jpg', 201, ['-quality', '85']);
   const png = base('png', 202);
-  const exif = (tiff) => F.jpegSeg(0xe1, F.u8('Exif\0\0', tiff));
+  const exif = (tiff: Uint8Array): Uint8Array => F.jpegSeg(0xe1, F.u8('Exif\0\0', tiff));
 
   // EXIF
   add('probe-exif-afternul.jpg', F.jpegInsert(jpg, exif(F.tiffBlock({
@@ -69,7 +92,7 @@ export function privacyProbes(F) {
   ], 'A name written as the camera make: shown, kept until amber is ticked.');
 
   // PNG
-  const chunk = (type, ...parts) => F.pngChunk(type, F.u8(...parts));
+  const chunk = (type: string, ...parts: Fixtures.Part[]): Uint8Array => F.pngChunk(type, F.u8(...parts));
   const ztail = Buffer.concat([zlib.deflateSync(Buffer.from('2024-01-01T00:00:00')), T('PROBE-ZTAIL-8a3')]);
   add('probe-png-text.png', F.pngInsertBefore(png, 'IDAT',
     chunk('tEXt', 'Creation Time\0PROBE-CTIME-8a0 Storgata 5'),
@@ -98,8 +121,8 @@ export function privacyProbes(F) {
   ], 'An eXIf chunk with bytes before its TIFF header.');
 
   // IPTC and the Photoshop block
-  const ds = (r, d, v) => F.u8([0x1c, r, d], [v.length >> 8, v.length & 255], v);
-  const res = (id, name, data) => {
+  const ds = (r: number, d: number, v: Uint8Array): Uint8Array => F.u8([0x1c, r, d], [v.length >> 8, v.length & 255], v);
+  const res = (id: number, name: string, data: Uint8Array): Uint8Array => {
     let n = F.u8([name.length], name);
     if (n.length & 1) n = F.u8(n, [0]);
     return F.u8('8BIM', [id >> 8, id & 255], n, [data.length >>> 24, (data.length >>> 16) & 255, (data.length >>> 8) & 255, data.length & 255], data, data.length & 1 ? [0] : []);
@@ -145,7 +168,7 @@ export function privacyProbes(F) {
   ], 'A date under the usual prefix of XMP but in a namespace of its own.');
 
   // HEIC (built like an iPhone HDR photo)
-  const heic = (name, opts, canaries, note) => { F.appleHdrHeic(name, opts); add(name, F.read(name), canaries, note); };
+  const heic = (name: string, opts: Fixtures.AppleHdrHeicOptions, canaries: Canary[], note: string): void => { F.appleHdrHeic(name, opts); add(name, F.read(name), canaries, note); };
   heic('probe-heic-auxc.heic', { auxType: 'urn:mpeg:hevc:2015:auxid:2', auxTail: 'PROBE-AUXTAIL-ba1\0' }, [
     red('PROBE-AUXTAIL-ba1', 'text after an MPEG auxiliary image name'),
   ], 'A depth layer name followed by text.');
@@ -174,8 +197,8 @@ export function privacyProbes(F) {
   add('probe-webp-exif-prefix.webp', F.webpRebuild(webp), [red('PRBWEBP', 'bytes before the TIFF header of the WebP EXIF chunk')], 'A WebP EXIF chunk with bytes before its TIFF header.');
 
   // Content Credentials: every manifest is red since the review.
-  const jumbf = (json) => {
-    const box = (type, body) => F.u8([0, 0, (body.length + 8) >> 8, (body.length + 8) & 255], type, body);
+  const jumbf = (json: string): Uint8Array => {
+    const box = (type: string, body: Uint8Array): Uint8Array => F.u8([0, 0, (body.length + 8) >> 8, (body.length + 8) & 255], type, body);
     const jumd = box('jumd', F.u8(Buffer.from('6332706100110010800000aa00389b71', 'hex'), [3], 'c2pa\0'));
     return F.u8('JP', [0, 1], [0, 0, 0, 1], box('jumb', F.u8(jumd, box('json', T(json)))));
   };
