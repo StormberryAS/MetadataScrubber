@@ -29,3 +29,16 @@ declare namespace Icc {
   type IccInfo = import('ms-src/core/icc.js').IccInfo;
   type IccTextRead = import('ms-src/core/icc.js').IccTextRead;
 }
+
+/** The types of ts/src/core/tiff.ts. */
+declare namespace Tiff {
+  type TiffEntry = import('ms-src/core/tiff.js').TiffEntry;
+  type TiffIfd = import('ms-src/core/tiff.js').TiffIfd;
+  type TiffModel = import('ms-src/core/tiff.js').TiffModel;
+  type TiffItemDef = import('ms-src/core/tiff.js').TiffItemDef;
+  type TiffItem = import('ms-src/core/tiff.js').TiffItem;
+  type AppleHdr = import('ms-src/core/tiff.js').AppleHdr;
+  type GreenSpec = import('ms-src/core/tiff.js').GreenSpec;
+  type BytesCheck = import('ms-src/core/tiff.js').BytesCheck;
+  type Placed = import('ms-src/core/tiff.js').Placed;
+}

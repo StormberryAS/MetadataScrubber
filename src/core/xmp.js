@@ -14,7 +14,7 @@
 
 import { clip, encodeUtf8, utf8 } from './bytes.js?v=987761c7';
 import { iccNameAllowed } from './icc.js?v=2ec75235';
-import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=11f4e710';
+import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=6db82cf4';
 
 /** @typedef {Taxonomy.ItemSet} ItemSet */
 /** @typedef {Taxonomy.ItemInternal} ItemInternal */

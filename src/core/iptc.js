@@ -9,7 +9,7 @@
 
 import { clip, concat, encodeLatin1, formatBytes, latin1, startsWith, u16be, u32be, w32be } from './bytes.js?v=987761c7';
 import { md5 } from './icc.js?v=2ec75235';
-import { deviceNameOk } from './tiff.js?v=11f4e710';
+import { deviceNameOk } from './tiff.js?v=6db82cf4';
 
 /** @typedef {Taxonomy.Tier} Tier */
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */

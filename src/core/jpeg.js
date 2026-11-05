@@ -18,15 +18,15 @@ import { describeC2pa } from './c2pa.js?v=02cf98cd';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=2ec75235';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb,
-} from './iptc.js?v=4ba9398a';
+} from './iptc.js?v=8484b294';
 import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=c8d592f3';
-import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=11f4e710';
-import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=0607c521';
+import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=6db82cf4';
+import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=92dffd88';
 
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
 /** @typedef {Taxonomy.Tier} Tier */
 /** @typedef {Taxonomy.Item} Item */
-/** @typedef {import('./tiff.js').TiffModel} TiffModel */
+/** @typedef {Tiff.TiffModel} TiffModel */
 /** @typedef {import('./iptc.js').ParsedIrb} ParsedIrb */
 /** @typedef {import('./iptc.js').ParsedIptc} ParsedIptc */
 /** @typedef {import('./iptc.js').IrbResource} IrbResource */

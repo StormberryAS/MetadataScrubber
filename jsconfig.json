@@ -28,7 +28,6 @@
     "src/core/iptc.js",
     "src/core/jpeg.js",
     "src/core/png.js",
-    "src/core/tiff.js",
     "src/core/webp.js",
     "src/core/xmp.js",
     "types/stamped-imports.d.ts",

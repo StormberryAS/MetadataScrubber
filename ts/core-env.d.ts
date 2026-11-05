@@ -11,7 +11,7 @@ interface TextDecoder {
 }
 declare var TextDecoder: {
   prototype: TextDecoder;
-  new (label?: string): TextDecoder;
+  new (label?: string, options?: { fatal?: boolean; ignoreBOM?: boolean }): TextDecoder;
 };
 
 interface TextEncoder {

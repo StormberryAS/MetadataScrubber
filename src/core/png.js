@@ -13,12 +13,12 @@ import { describeC2pa } from './c2pa.js?v=02cf98cd';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=2ec75235';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc,
-} from './iptc.js?v=4ba9398a';
+} from './iptc.js?v=8484b294';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import {
   TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation,
-} from './tiff.js?v=11f4e710';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=0607c521';
+} from './tiff.js?v=6db82cf4';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=92dffd88';
 
 /** @typedef {Taxonomy.ItemSet} ItemSet */
 /** @typedef {Taxonomy.ItemSpec} ItemSpec */
