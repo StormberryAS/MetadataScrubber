@@ -7,7 +7,6 @@
 # TypeScript source; and on a listed app file that jsconfig.json does not type-check.
 #
 # Columns: the file today, what replaces it ("retire" means it is deleted, not converted), group.
-src/core/jpeg.js                        ts/src/core/jpeg.ts                     core
 src/scrub-core.js                       ts/src/scrub-core.ts                    core
 app.js                                  ts/app.ts                               app
 android/web-overlay/android-bridge.js   android/web-overlay/android-bridge.ts   app

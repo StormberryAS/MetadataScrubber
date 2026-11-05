@@ -18,7 +18,7 @@
 
 import { latin1, toU8 } from './core/bytes.js?v=987761c7';
 import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=c8d592f3';
-import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=2ebc0733';
+import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=121e8251';
 import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=07658dea';
 import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=2c02ff09';
 import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=235442fc';
@@ -137,7 +137,7 @@ function firstTiff(b) {
   if (format === 'jpeg') {
     const w = walkJpeg(b);
     // The test accepts only kind 'seg', which always has a dataStart.
-    const s = w && /** @type {import('./core/jpeg.js').JpegMarkerSegment | undefined} */ (w.segs.find((x) => x.kind === 'seg' && x.marker === 0xe1 && latin1(b, x.dataStart, x.dataStart + 5) === 'Exif\0'));
+    const s = w && /** @type {Jpeg.JpegMarkerSegment | undefined} */ (w.segs.find((x) => x.kind === 'seg' && x.marker === 0xe1 && latin1(b, x.dataStart, x.dataStart + 5) === 'Exif\0'));
     return s ? b.subarray(s.dataStart + 6, s.end) : null;
   }
   if (format === 'png') return firstPngTiff(b);

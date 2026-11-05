@@ -24,7 +24,6 @@
   "include": [
     "app.js",
     "src/scrub-core.js",
-    "src/core/jpeg.js",
     "types/stamped-imports.d.ts",
     "types/moved-types.d.ts",
     "ts/page.d.ts",

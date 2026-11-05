@@ -88,3 +88,39 @@ declare namespace Xmp {
   type PlanOpts = import('ms-src/core/xmp.js').PlanOpts;
   type XmpPlan = import('ms-src/core/xmp.js').XmpPlan;
 }
+
+/** The types of ts/src/core/jpeg.ts. */
+declare namespace Jpeg {
+  type ParsedXmp = import('ms-src/core/jpeg.js').ParsedXmp;
+  type XmpPacketItems = import('ms-src/core/jpeg.js').XmpPacketItems;
+  type XmpDirectory = import('ms-src/core/jpeg.js').XmpDirectory;
+  type XmpFieldProp = import('ms-src/core/jpeg.js').XmpFieldProp;
+  type JpegAppKind = import('ms-src/core/jpeg.js').JpegAppKind;
+  type JpegMarkerSegment = import('ms-src/core/jpeg.js').JpegMarkerSegment;
+  type JpegBareSegment = import('ms-src/core/jpeg.js').JpegBareSegment;
+  type JpegSegment = import('ms-src/core/jpeg.js').JpegSegment;
+  type JpegSof = import('ms-src/core/jpeg.js').JpegSof;
+  type JpegWalk = import('ms-src/core/jpeg.js').JpegWalk;
+  type MpfEntry = import('ms-src/core/jpeg.js').MpfEntry;
+  type MpfIndex = import('ms-src/core/jpeg.js').MpfIndex;
+  type MpfFieldBase = import('ms-src/core/jpeg.js').MpfFieldBase;
+  type MpfFitField = import('ms-src/core/jpeg.js').MpfFitField;
+  type MpfField = import('ms-src/core/jpeg.js').MpfField;
+  type MpfStrict = import('ms-src/core/jpeg.js').MpfStrict;
+  type IsoGain = import('ms-src/core/jpeg.js').IsoGain;
+  type GainSignals = import('ms-src/core/jpeg.js').GainSignals;
+  type TrailingKind = import('ms-src/core/jpeg.js').TrailingKind;
+  type TrailingRegion = import('ms-src/core/jpeg.js').TrailingRegion;
+  type TrailingDef = import('ms-src/core/jpeg.js').TrailingDef;
+  type TrailingItem = import('ms-src/core/jpeg.js').TrailingItem;
+  type XmpPacket = import('ms-src/core/jpeg.js').XmpPacket;
+  type JfifHeader = import('ms-src/core/jpeg.js').JfifHeader;
+  type AdobeHeader = import('ms-src/core/jpeg.js').AdobeHeader;
+  type JpegIrb = import('ms-src/core/jpeg.js').JpegIrb;
+  type JpegModel = import('ms-src/core/jpeg.js').JpegModel;
+  type TableDef = import('ms-src/core/jpeg.js').TableDef;
+  type MpfOutField = import('ms-src/core/jpeg.js').MpfOutField;
+  type PlacedPart = import('ms-src/core/jpeg.js').PlacedPart;
+  type CleanParts = import('ms-src/core/jpeg.js').CleanParts;
+  type IccTextInternal = import('ms-src/core/jpeg.js').IccTextInternal;
+}
