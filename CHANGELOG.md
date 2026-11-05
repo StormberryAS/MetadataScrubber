@@ -4,6 +4,7 @@ MetadataScrubber for Android, newest first. The release text of each version, wh
 
 ## 1.1.2 (versionCode 8), 2026-11-05
 
+- Lens details in a photo's XMP now have their own amber line, Lens, as lens details from EXIF already had (`aux:Lens`, `aux:LensInfo`, `aux:LensID`, the `exifEX` lens make, model and specification, and the Windows Photo lens fields). Before, they were listed under Camera make and model, so a photo whose XMP named only its lens showed that lens under the camera's label. Nothing was missed: the values were shown and removed with that line. They are still kept unless you tick them, and a lens field that holds anything but a plain name is still the red "Unexpected text in date or device details".
 - The code is now TypeScript, compiled to the same JavaScript the app and the website run; the move itself changes nothing you see or use. The compiled files are committed and marked as generated, and the build checks that each one is exactly what its TypeScript compiles to; the repository holds no other JavaScript but the shared first-run notice.
 - The app bundles the website as it now stands: the list of Stormberry apps at the foot of the page now includes GDPRLetterBuilder, and EclipseTracker follows MoonApp. The website's new Google Play button is not shown in the app.
 - Still one permission, the camera, and no internet access.

@@ -2772,7 +2772,7 @@ describe('0.0.3: free text is red, structured details stay amber', () => {
     assert.equal(TIFF_ITEMS.description.tier, 'red');
     for (const k of ['datetime', 'timezone', 'camera', 'lens', 'software', 'other', 'apple-hdr']) assert.equal(TIFF_ITEMS[k].tier, 'amber', `exif:${k}`);
     for (const k of ['description', 'history']) assert.equal(XMP_ITEMS[k].tier, 'red', `xmp:${k}`);
-    for (const k of ['dates', 'camera', 'software', 'motion', 'gainmap']) assert.equal(XMP_ITEMS[k].tier, 'amber', `xmp:${k}`);
+    for (const k of ['dates', 'camera', 'lens', 'software', 'motion', 'gainmap']) assert.equal(XMP_ITEMS[k].tier, 'amber', `xmp:${k}`);
   });
 
   test('EXIF ImageDescription, UserComment and the XP fields are one red detail', async () => {
@@ -3027,6 +3027,93 @@ describe('type check 2026-10-16: names from a file never find inherited properti
         assert.ok(item && item.tier === 'red', `${uri}: ${JSON.stringify(item)}`);
         assert.ok(!contains((await redScrub(jpg)).bytes, NAME), `${uri}: red only removes it`);
       }
+    }
+  });
+});
+
+// Owed item 1 (found 2026-10-03, fixed in 1.1.2): XMP lens details have their own amber Lens
+// line, as EXIF's have (exif:lens); before, they were listed under Camera make and model, so a
+// file whose XMP held only a lens name showed it under the camera's label. The tiers and the
+// checks on the values do not change.
+describe('1.1.2: XMP lens details have their own Lens line', () => {
+  const xmpJpeg = (body: string): Uint8Array => F.jpegInsert(F.read(F.jpegProgressive()), F.jpegSeg(0xe1, Buffer.concat([
+    Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1'),
+    Buffer.from('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+      + '<rdf:Description rdf:about="" xmlns:tiff="http://ns.adobe.com/tiff/1.0/" xmlns:aux="http://ns.adobe.com/exif/1.0/aux/"'
+      + ' xmlns:exifEX="http://cipa.jp/exif/1.0/" xmlns:MicrosoftPhoto="http://ns.microsoft.com/photo/1.0/">'
+      + `${body}</rdf:Description></rdf:RDF></x:xmpmeta>`, 'utf8'),
+  ])));
+  const item = (info: InspectResult, id: string): Item | undefined => info.items.find((i) => i.id === id);
+  const LENS = 'Fjordlens 35mm f/1.4';
+  const MODEL = 'Fjordcam X100';
+  const LENS_FIELDS = ['aux:Lens', 'aux:LensInfo', 'aux:LensID', 'exifEX:LensMake', 'exifEX:LensModel', 'exifEX:LensSpecification',
+    'MicrosoftPhoto:LensManufacturer', 'MicrosoftPhoto:LensModel'];
+
+  test('a lens name alone is the amber Lens detail, not Camera make and model', async () => {
+    const info = await core.inspect(xmpJpeg(`<aux:Lens>${LENS}</aux:Lens>`));
+    const lens = item(info, 'xmp:lens');
+    assert.ok(lens, ids(info).join(' '));
+    assert.deepEqual([lens.label, lens.tier, lens.group, lens.value], ['Lens', 'amber', 'device', LENS]);
+    assert.ok(!item(info, 'xmp:camera'), 'no camera line for a lens');
+    assert.deepEqual(XMP_ITEMS.lens, { group: 'device', tier: 'amber', label: 'Lens' });
+  });
+
+  test('every lens field goes to Lens, and make, model and firmware stay under the camera', async () => {
+    for (const f of LENS_FIELDS) {
+      const info = await core.inspect(xmpJpeg(`<${f}>${LENS}</${f}>`));
+      assert.equal(item(info, 'xmp:lens')?.value, LENS, `${f}: ${ids(info).join(' ')}`);
+      assert.ok(!item(info, 'xmp:camera'), `${f}: no camera line`);
+    }
+    for (const f of ['tiff:Make', 'tiff:Model', 'aux:Firmware']) {
+      const info = await core.inspect(xmpJpeg(`<${f}>${MODEL}</${f}>`));
+      assert.deepEqual([item(info, 'xmp:camera')?.label, item(info, 'xmp:camera')?.value], ['Camera make and model', MODEL], f);
+      assert.ok(!item(info, 'xmp:lens'), `${f}: no lens line`);
+    }
+  });
+
+  test('a camera model and a lens model give two lines, each with its own value', async () => {
+    const info = await core.inspect(xmpJpeg(`<tiff:Model>${MODEL}</tiff:Model><exifEX:LensModel>${LENS}</exifEX:LensModel>`));
+    assert.deepEqual([item(info, 'xmp:camera')?.value, item(info, 'xmp:camera')?.tier], [MODEL, 'amber']);
+    assert.deepEqual([item(info, 'xmp:lens')?.value, item(info, 'xmp:lens')?.tier], [LENS, 'amber']);
+  });
+
+  test('removing Lens keeps the camera model, and removing the camera keeps the lens', async () => {
+    const jpg = xmpJpeg(`<tiff:Model>${MODEL}</tiff:Model><aux:Lens>${LENS}</aux:Lens><aux:LensInfo>35/1 35/1 14/10 14/10</aux:LensInfo>`);
+    const noLens = (await core.scrub(jpg, ['xmp:lens'])).bytes;
+    assert.ok(!contains(noLens, 'Fjordlens') && !contains(noLens, '35/1 35/1'), 'the lens fields are gone');
+    assert.ok(contains(noLens, MODEL), 'the camera model stays');
+    const back1 = await core.inspect(noLens);
+    assert.ok(item(back1, 'xmp:camera') && !item(back1, 'xmp:lens'), ids(back1).join(' '));
+    const noCamera = (await core.scrub(jpg, ['xmp:camera'])).bytes;
+    assert.ok(!contains(noCamera, MODEL), 'the camera model is gone');
+    assert.ok(contains(noCamera, LENS) && contains(noCamera, '35/1 35/1'), 'the lens fields stay');
+    const back2 = await core.inspect(noCamera);
+    assert.ok(item(back2, 'xmp:lens') && !item(back2, 'xmp:camera'), ids(back2).join(' '));
+  });
+
+  test('the starting selection (red only) keeps both lines', async () => {
+    const jpg = xmpJpeg(`<tiff:Make>Fjordcam</tiff:Make><exifEX:LensMake>Fjordlens</exifEX:LensMake><exifEX:LensModel>${LENS}</exifEX:LensModel>`);
+    const info = await core.inspect(jpg);
+    const out = (await core.scrub(jpg, reds(info))).bytes;
+    const back = await core.inspect(out);
+    assert.equal(item(back, 'xmp:camera')?.value, 'Fjordcam');
+    assert.equal(item(back, 'xmp:lens')?.value, `Fjordlens, ${LENS}`);
+    assert.ok(contains(out, LENS));
+  });
+
+  test('a lens field with an attribute or hidden text is still the red unexpected-text detail', async () => {
+    const cases = [
+      `<aux:Lens xml:lang="en">${LENS}</aux:Lens>`,
+      `<exifEX:LensModel>${LENS}\nOla Nordmann</exifEX:LensModel>`,
+      `<aux:LensID>${'Fjordlens '.repeat(40)}</aux:LensID>`,
+    ];
+    for (const body of cases) {
+      const jpg = xmpJpeg(body);
+      const info = await core.inspect(jpg);
+      assert.equal(item(info, 'xmp:device-text')?.tier, 'red', `${body.slice(0, 40)}: ${ids(info).join(' ')}`);
+      assert.ok(!item(info, 'xmp:lens'), `${body.slice(0, 40)}: not shown as an amber lens`);
+      const out = (await core.scrub(jpg, reds(info))).bytes;
+      assert.ok(!contains(out, 'Fjordlens'), `${body.slice(0, 40)}: red only removes it`);
     }
   });
 });

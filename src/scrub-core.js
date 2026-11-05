@@ -3,10 +3,10 @@
     .js: the build refuses to overwrite a hand edit, and its check mode fails on one. */
 import { latin1, toU8 } from './core/bytes.js?v=987761c7';
 import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=c8d592f3';
-import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=121e8251';
-import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=07658dea';
-import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=2c02ff09';
-import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=235442fc';
+import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=8a30b943';
+import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=cfd5ecf1';
+import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=7c287ce5';
+import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=dc689eb2';
 import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=6db82cf4';
 export { GROUPS, TIERS };
 export function detectFormat(input) {

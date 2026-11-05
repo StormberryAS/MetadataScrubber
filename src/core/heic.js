@@ -6,7 +6,7 @@ import { describeC2pa } from './c2pa.js?v=02cf98cd';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=2ec75235';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=6db82cf4';
-import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=9a59d83b';
+import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=e13f5d8e';
 const EMPTY_XMP = '<x:xmpmeta xmlns:x="adobe:ns:meta/"/>';
 const HEIC_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs']);
 const C2PA_UUID = 'd8fec3d61b0e483c92975828877ec481';

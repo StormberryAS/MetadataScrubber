@@ -815,6 +815,9 @@ export const XMP_ITEMS: Record<string, XmpItemDef> = {
   computer: { group: 'who', tier: 'red', label: 'Computer name', note: "Often contains the owner's name." },
   dates: { group: 'when', tier: 'amber', label: 'Dates and times' },
   camera: { group: 'device', tier: 'amber', label: 'Camera make and model' },
+  // Lens details have their own line since 1.1.2, as in EXIF (TIFF_ITEMS.lens); before, they
+  // were listed under Camera make and model.
+  lens: { group: 'device', tier: 'amber', label: 'Lens' },
   software: { group: 'device', tier: 'amber', label: 'Editing software' },
   ids: { group: 'hidden', tier: 'red', label: 'Unique document ID', note: 'Can link copies of the picture back to the original file.' },
   thumbnail: { group: 'hidden', tier: 'red', label: 'Built-in preview image', note: 'Can still show the original, uncropped photo after cropping.' },
@@ -847,8 +850,9 @@ const KEY_LISTS: Record<string, string[]> = {
   dates: ['xmp:CreateDate', 'xmp:ModifyDate', 'xmp:MetadataDate', 'photoshop:DateCreated', 'exif:DateTimeOriginal',
     'exif:DateTimeDigitized', 'tiff:DateTime', 'dc:date', 'Iptc4xmpCore:DateCreated', 'MicrosoftPhoto:DateAcquired',
     'GPano:FirstPhotoDate', 'GPano:LastPhotoDate'],
-  camera: ['tiff:Make', 'tiff:Model', 'aux:Lens', 'aux:LensInfo', 'aux:LensID', 'aux:Firmware', 'exifEX:LensMake',
-    'exifEX:LensModel', 'exifEX:LensSpecification', 'MicrosoftPhoto:LensManufacturer', 'MicrosoftPhoto:LensModel'],
+  camera: ['tiff:Make', 'tiff:Model', 'aux:Firmware'],
+  lens: ['aux:Lens', 'aux:LensInfo', 'aux:LensID', 'exifEX:LensMake', 'exifEX:LensModel', 'exifEX:LensSpecification',
+    'MicrosoftPhoto:LensManufacturer', 'MicrosoftPhoto:LensModel'],
   software: ['xmp:CreatorTool', 'tiff:Software', 'x:xmptk', 'pdf:Producer', 'GPano:CaptureSoftware', 'GPano:StitchingSoftware'],
   computer: ['tiff:HostComputer', 'exif:HostComputer', 'exifEX:HostComputer'],
   // The digests are of the original file's metadata: 128 free bits each, and a link back.
@@ -1002,11 +1006,12 @@ function technicalOk(p: XmpProp): boolean {
 // printable text (see deviceNameOk); a Motion Photo field is a number. Anything else is
 // the red 'device-text' detail. A short, well-formed name cannot be told apart from a
 // model name: that is shown, as amber.
-const AMBER_XMP_KEYS = new Set(['dates', 'camera', 'software', 'motion']);
+const AMBER_XMP_KEYS = new Set(['dates', 'camera', 'lens', 'software', 'motion']);
 const XMP_DATE = /^\d{4}(?:-\d\d(?:-\d\d(?:T\d\d:\d\d(?::\d\d(?:\.\d{1,9})?)?(?:Z|[+-]\d\d:\d\d)?)?)?)?$/;
 const AMBER_VALUE: Record<string, (v: string) => boolean> = {
   dates: (v) => XMP_DATE.test(v) || /^\d{4}:\d\d:\d\d \d\d:\d\d:\d\d$/.test(v) || /^[+-]\d\d:\d\d$/.test(v) || /^\d{1,9}$/.test(v),
   camera: deviceNameOk,
+  lens: deviceNameOk,
   software: deviceNameOk,
   motion: (v) => /^-?\d{1,20}$/.test(v) || v === 'True' || v === 'False',
 };
@@ -1043,7 +1048,7 @@ function rawKey(p: XmpProp): string {
     const map: Record<string, string> = {
       orientation: 'technical', resolution: 'technical', colour: 'technical', dimensions: 'technical',
       exposure: 'technical', format: 'technical', datetime: 'dates', timezone: 'dates', camera: 'camera',
-      lens: 'camera', software: 'software', computer: 'computer', owner: 'owner', serial: 'serial', 'lens-serial': 'serial',
+      lens: 'lens', software: 'software', computer: 'computer', owner: 'owner', serial: 'serial', 'lens-serial': 'serial',
       'unique-id': 'ids', description: 'description', copyright: 'copyright', makernote: 'makernote',
       thumbnail: 'thumbnail', other: 'other', private: 'other',
     };

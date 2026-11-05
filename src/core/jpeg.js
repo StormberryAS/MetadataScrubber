@@ -7,7 +7,7 @@ import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeTe
 import { IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, } from './iptc.js?v=13ee17f2';
 import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=c8d592f3';
 import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=6db82cf4';
-import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=9a59d83b';
+import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=e13f5d8e';
 const XMP_ID = 'http://ns.adobe.com/xap/1.0/\0';
 const XMP_EXT_ID = 'http://ns.adobe.com/xmp/extension/\0';
 const ISO_GAIN_ID = 'urn:iso:std:iso:ts:21496:-1\0';

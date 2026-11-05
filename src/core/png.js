@@ -7,7 +7,7 @@ import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeTe
 import { IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc, } from './iptc.js?v=13ee17f2';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import { TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation, } from './tiff.js?v=6db82cf4';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=9a59d83b';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=e13f5d8e';
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const STRUCTURAL = new Set(['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS', 'acTL', 'fcTL', 'fdAT']);
 const COLOUR = new Set(['iCCP', 'sRGB', 'gAMA', 'cHRM', 'cICP', 'mDCV', 'cLLI', 'mDCv', 'cLLi']);

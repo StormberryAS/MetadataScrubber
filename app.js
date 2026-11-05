@@ -1,7 +1,7 @@
 /*! app.js is compiled from ts/app.ts by tools/build-ts.sh, which leaves out every comment but
     this one: the explanations are in the source. Edit the TypeScript, never the .js: the build
     refuses to overwrite a hand edit, and its check mode fails on one. */
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=0c35e277';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=ede06fae';
 const MIME = { jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic' };
 const EXT = { jpeg: 'jpg', png: 'png', webp: 'webp', heic: 'heic' };
 const FORMAT_NAME = { jpeg: 'JPEG', png: 'PNG', webp: 'WebP', heic: 'HEIC' };
