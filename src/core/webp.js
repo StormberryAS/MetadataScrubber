@@ -5,7 +5,7 @@
 // removal the VP8X flags are brought in line and the RIFF size is rewritten.
 
 import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=987761c7';
-import { describeC2pa } from './c2pa.js?v=97ae70f3';
+import { describeC2pa } from './c2pa.js?v=02cf98cd';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=f690fd20';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=95b646c0';

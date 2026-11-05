@@ -15,3 +15,4 @@
 # The engine's modules, compiled from ts/src/ (one per commit while the move goes on).
 /src/core/bytes.js linguist-generated=true
 /src/core/taxonomy.js linguist-generated=true
+/src/core/c2pa.js linguist-generated=true

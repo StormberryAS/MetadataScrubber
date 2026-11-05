@@ -18,10 +18,10 @@
 
 import { latin1, toU8 } from './core/bytes.js?v=987761c7';
 import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=c8d592f3';
-import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=c24cac38';
-import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=ca514f27';
-import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=39e90a6e';
-import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=26d369af';
+import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=ed45a4c3';
+import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=50b99fe8';
+import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=8344e2a0';
+import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=baf7af55';
 import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=95b646c0';
 
 export { GROUPS, TIERS };

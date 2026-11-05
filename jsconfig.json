@@ -24,7 +24,6 @@
   "include": [
     "app.js",
     "src/scrub-core.js",
-    "src/core/c2pa.js",
     "src/core/heic.js",
     "src/core/icc.js",
     "src/core/iptc.js",

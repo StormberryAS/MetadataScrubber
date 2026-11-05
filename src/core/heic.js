@@ -21,7 +21,7 @@
 // that no item points at. What is not needed to show the picture is offered as an item.
 
 import { concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, subtractRanges, u16be, u32be, u64be, w16be, w32be, w64be, zeroRanges } from './bytes.js?v=987761c7';
-import { describeC2pa } from './c2pa.js?v=97ae70f3';
+import { describeC2pa } from './c2pa.js?v=02cf98cd';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=f690fd20';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=95b646c0';
