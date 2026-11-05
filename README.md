@@ -146,15 +146,19 @@ python3 bump_assets.py          # stamp pages and module imports
 python3 bump_assets.py --check  # exits 1 if any page or module is stale
 ```
 
-### Type checking
+### TypeScript
 
-The browser runs the plain JavaScript in this repository, with no build step. The TypeScript compiler only checks it: the types live in JSDoc comments in `app.js` and `src/`, and `tsc` writes nothing (`noEmit`, `strict`). The tooling is for development only and is never published: `package.json` (one dev dependency, TypeScript 6.0.3, pinned in `package-lock.json`), `jsconfig.json` and `types/` are excluded from the website in `_config.yml` and from the APK in `android/app/build.gradle.kts`.
+The code is moving to TypeScript, one file per commit (November 2026): the tests first, then the engine modules from the ones that import nothing upwards, then `app.js` and the Android bridge. `tools/js-to-convert.txt` lists the JavaScript files that are still hand-written, in that order. Each moved file's source goes to `ts/` (the bridge's stays beside it in `android/web-overlay/`), and `tools/build-ts.sh` compiles it to the `.js` of the same path the page loads today. The compiled files are committed, because GitHub Pages and the Android build have no build step of their own; `.gitattributes` marks them as generated. Edit the TypeScript, never the compiled `.js`: the build refuses to overwrite a hand edit, and its check mode fails on one.
 
 ```bash
-npm ci --ignore-scripts && npm run typecheck
+npm ci --ignore-scripts
+npm run build       # compile, stamp with bump_assets.py, and type-check the hand-written JavaScript
+npm run check       # change nothing; fail when anything is stale (also npm run typecheck)
 ```
 
-`npm run typecheck` first runs `node types/stamped-imports.mjs`, then `tsc -p jsconfig.json`. The checker cannot follow an import such as `./bytes.js?v=4d7df4d3`, so that script declares each stamped import as the real module; run it again (or use `npm run typecheck`) after `bump_assets.py` changes a stamp. `types/globals.d.ts` describes what the Android bridge adds to the page and `types/node.d.ts` the little of Node the engine uses under the tests. `gate.js` is left out, because the shared gate generator writes it.
+Until the last file has moved, the hand-written JavaScript is type-checked as before: the types live in JSDoc comments, and `tsc` reads `jsconfig.json` and writes nothing (`noEmit`, `strict`). The checker cannot follow an import such as `./bytes.js?v=4d7df4d3`, so `types/stamped-imports.mjs` declares each stamped import as the real module, which is the TypeScript source once the module has one; the build runs it. `ts/page.d.ts` describes what the Android bridge adds to the page and `ts/node-shim.d.ts` the little of Node the engine uses under the tests. `gate.js` is not compiled here: the estate's shared gate generator writes it.
+
+The tooling is for development only and is never published: `package.json` (two dev dependencies, TypeScript 6.0.3 and the Node 24 types, pinned in `package-lock.json`), `ts/`, `tools/`, `tsconfig.json`, `tsconfig.core.json`, `jsconfig.json` and `types/` are excluded from the website in `_config.yml` and from the APK in `android/app/build.gradle.kts`.
 
 ## Android app
 

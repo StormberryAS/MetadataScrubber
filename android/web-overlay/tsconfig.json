@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "noEmit": true
+  },
+  "include": [
+    "android-bridge.ts",
+    "../../ts/page.d.ts"
+  ]
+}

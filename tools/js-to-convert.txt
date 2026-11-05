@@ -1,0 +1,32 @@
+# The JavaScript that is still hand-written, in the order it moves to TypeScript (TS-STEP-1,
+# 1 November 2026): tests and tools first, then the app modules from the leaves up (a module
+# moves after every module it imports), app.js and the Android bridge last. One file per commit;
+# each conversion deletes its line here, and the commit that converts the last one deletes this
+# file. tools/build-ts.sh check mode fails on any tracked JavaScript that is neither compiled
+# output, nor gate.js, nor listed here; on a listed file that is missing or already has its
+# TypeScript source; and on a listed app file that jsconfig.json does not type-check.
+#
+# Columns: the file today, what replaces it ("retire" means it is deleted, not converted), group.
+tests/index.js                          retire                                  tests-tools
+tests/share-stub.mjs                    tests/share-stub.ts                     tests-tools
+tests/core-fixtures.mjs                 tests/core-fixtures.ts                  tests-tools
+tests/probes.mjs                        tests/probes.ts                         tests-tools
+tests/core.test.mjs                     tests/core.test.ts                      tests-tools
+tests/audit.mjs                         tests/audit.ts                          tests-tools
+tests/ui-smoke.mjs                      tests/ui-smoke.ts                       tests-tools
+tests/e2e.mjs                           tests/e2e.ts                            tests-tools
+src/core/bytes.js                       ts/src/core/bytes.ts                    core-leaf
+src/core/taxonomy.js                    ts/src/core/taxonomy.ts                 core-leaf
+src/core/c2pa.js                        ts/src/core/c2pa.ts                     core
+src/core/icc.js                         ts/src/core/icc.ts                      core
+src/core/tiff.js                        ts/src/core/tiff.ts                     core
+src/core/iptc.js                        ts/src/core/iptc.ts                     core
+src/core/xmp.js                         ts/src/core/xmp.ts                      core
+src/core/webp.js                        ts/src/core/webp.ts                     core
+src/core/heic.js                        ts/src/core/heic.ts                     core
+src/core/png.js                         ts/src/core/png.ts                      core
+src/core/jpeg.js                        ts/src/core/jpeg.ts                     core
+src/scrub-core.js                       ts/src/scrub-core.ts                    core
+app.js                                  ts/app.ts                               app
+android/web-overlay/android-bridge.js   android/web-overlay/android-bridge.ts   app
+types/stamped-imports.mjs               retire                                  tool

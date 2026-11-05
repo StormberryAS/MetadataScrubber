@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2022"
+    ],
+    "noEmit": true
+  },
+  "include": [
+    "ts/src/**/*.ts",
+    "ts/core-env.d.ts",
+    "ts/node-shim.d.ts"
+  ],
+  "exclude": []
+}

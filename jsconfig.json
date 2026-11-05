@@ -1,5 +1,8 @@
-// Type checking only (npm run typecheck): tsc reads the plain JavaScript the site and the
-// app serve and writes nothing. Never published: see _config.yml and the APK excludes.
+// Type checking of the JavaScript that is still hand-written (TS-STEP-1, 2026-11-01): tsc reads
+// the plain JavaScript the site and the app serve and writes nothing. tools/build-ts.sh runs it
+// while this file exists. The files move to TypeScript one per commit; each conversion takes its
+// file out of "include" (and out of tools/js-to-convert.txt), and the last one deletes this file.
+// Never published: see _config.yml and the APK excludes.
 {
   "compilerOptions": {
     "checkJs": true,
@@ -11,11 +14,29 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    // No @types packages: the few Node and Android bridge globals are in types/.
+    // No @types packages: the few Node and Android bridge globals are in ts/*.d.ts.
     "types": [],
-    // Lets types/stamped-imports.d.ts point each ?v= stamped import at its real file.
-    "paths": { "ms-src/*": ["./src/*"] }
+    // Lets types/stamped-imports.d.ts point each ?v= stamped import at its real module: the
+    // TypeScript source once the module has one (ts/src/), the hand-written .js until then.
+    "paths": { "ms-src/*": ["./ts/src/*", "./src/*"] }
   },
   // gate.js is left out: the estate's shared gate generator writes it.
-  "include": ["app.js", "src/**/*.js", "types/**/*.d.ts"]
+  "include": [
+    "app.js",
+    "src/scrub-core.js",
+    "src/core/bytes.js",
+    "src/core/c2pa.js",
+    "src/core/heic.js",
+    "src/core/icc.js",
+    "src/core/iptc.js",
+    "src/core/jpeg.js",
+    "src/core/png.js",
+    "src/core/taxonomy.js",
+    "src/core/tiff.js",
+    "src/core/webp.js",
+    "src/core/xmp.js",
+    "types/stamped-imports.d.ts",
+    "ts/page.d.ts",
+    "ts/node-shim.d.ts"
+  ]
 }

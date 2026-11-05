@@ -1,13 +1,26 @@
 {
-  "name": "metadatascrubber-typecheck",
+  "name": "metadatascrubber-dev",
   "private": true,
   "type": "module",
-  "description": "Type checking only: tsc checks the plain JavaScript the site and the app serve (JSDoc types, noEmit). The published app has no dependencies and no build step.",
+  "description": "Build and test tooling only: compiles ts/ into the JavaScript the page loads (app.js and src/) and the Android bridge script, type-checks the JavaScript that is still hand-written, and runs the tests (Node 24). The published app has no runtime dependencies, and none of these files is published.",
   "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "typecheck": "node types/stamped-imports.mjs && tsc -p jsconfig.json"
+    "build": "tools/build-ts.sh",
+    "check": "tools/build-ts.sh --check",
+    "typecheck": "tools/build-ts.sh --check",
+    "test": "node --test tests/",
+    "audit": "node tests/audit.mjs",
+    "ui-smoke": "node tests/ui-smoke.mjs",
+    "e2e": "node tests/e2e.mjs"
+  },
+  "imports": {
+    "#src/*": "./src/*"
   },
   "devDependencies": {
+    "@types/node": "24.19.2",
     "typescript": "6.0.3"
   }
 }

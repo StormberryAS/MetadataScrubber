@@ -1,6 +1,7 @@
 // The little of Node that src/core/bytes.js uses when the engine runs under the tests.
-// The browser never takes that branch. Declared here so no @types package is needed.
-// Type checking only, never served.
+// The browser never takes that branch. Declared here so the page's programs need no @types
+// package (the tests have @types/node instead and do not read this file). Types only, so tsc
+// emits nothing for it; never served.
 
 declare var process: { versions?: { node?: string } } | undefined;
 

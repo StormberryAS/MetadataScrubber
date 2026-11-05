@@ -1,5 +1,8 @@
 # Local and generated files that must never be published.
 node_modules/
+# tools/build-ts.sh's record of what it last wrote, outside a git checkout (in a checkout it lives
+# in the git directory).
+.build-ts.last
 __pycache__/
 *.pyc
 *.bak*
@@ -11,3 +14,8 @@ __pycache__/
 *.keystore
 keystore.properties
 local.properties
+# zsp (the Zapstore publisher) offers to save SIGN_WITH, the publishing key, into .env in the
+# repository root. It must never be committed (as in GDPRLetterBuilder, SunApp and UsernameGenerator).
+.env
+.env.*
+!.env.example

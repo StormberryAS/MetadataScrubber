@@ -38,6 +38,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # Node 24 for tools/build-ts.sh (2026-11-01), which proves the committed JavaScript is what
+      # the TypeScript compiles to. The Gradle build itself never runs Node or tsc.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
       # The runner ships an Android SDK, but not necessarily platform 37.1, and its
@@ -53,6 +59,20 @@ jobs:
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" "platforms;android-37.1" "build-tools;36.0.0"
+
+      # tools/build-ts.sh in check mode installs the pinned TypeScript with npm ci (frozen, no
+      # install scripts) and fails unless every compiled .js is byte for byte what its TypeScript
+      # source compiles to (stamps aside) and is marked generated, the only other JavaScript is
+      # gate.js and the hand-written files still listed in tools/js-to-convert.txt, every ?v=
+      # stamp is current (bump_assets.py check mode; python3 is on the runner) and the
+      # hand-written JavaScript still type-checks (jsconfig.json). The engine tests stay off CI:
+      # they need exiftool and ImageMagick.
+      - name: Check the compiled TypeScript
+        working-directory: .
+        run: |
+          set -euo pipefail
+          node --version
+          tools/build-ts.sh --check
 
       # Tests, the web asset checks and lint run with NO signing secrets in the
       # environment and no key on disk: test JVMs and lint load third-party code.

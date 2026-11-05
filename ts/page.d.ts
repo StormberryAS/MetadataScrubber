@@ -1,4 +1,5 @@
-// Globals the served JavaScript uses but does not define. Type checking only, never served.
+// Globals the page's code uses but does not define: what the Android app adds to the page.
+// Types only, so tsc emits nothing for it; never served (ts/ is excluded in _config.yml and the APK).
 
 /** What the Android app's android-bridge.js (android/web-overlay/) adds to the page. */
 interface MSAndroidApi {

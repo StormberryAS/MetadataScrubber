@@ -1,0 +1,14 @@
+# GitHub's language bar counts what people write, not what a tool generates. The files below are
+# generated, so they are marked and left out of the statistics (and the diffs of generated files
+# are collapsed by default on GitHub). Added on 1 November 2026 with the TypeScript build
+# (TS-STEP-1), on GDPRLetterBuilder's and UsernameGenerator's .gitattributes.
+#
+# As each hand-written JavaScript file moves to TypeScript, its compiled .js is added here: the
+# compiled files are written by tools/build-ts.sh; edit the TypeScript, never the .js.
+#
+# gate.js, the first-run notice, is written by build-gates.py at the root of the GitHub folder,
+# shared by every Labs app; it is not edited here.
+/gate.js linguist-generated=true
+# types/stamped-imports.d.ts is written by types/stamped-imports.mjs from the ?v= stamps (until the
+# last hand-written JavaScript file is gone, when both are deleted).
+/types/stamped-imports.d.ts linguist-generated=true
