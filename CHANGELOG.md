@@ -2,6 +2,12 @@
 
 MetadataScrubber for Android, newest first. The release text of each version, which GitHub Releases and Zapstore show, is in `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` (from 0.0.2). The app runs the same files as the website, metadata.stormberry.as, which is published from the same repository; from 1.0.0 the Google Play edition (`no.stormberry.metadatascrubber.play`) carries the same version name, with versionCode 1000 plus the one below.
 
+## 1.1.2 (versionCode 8), 2026-11-05
+
+- The code is now TypeScript, compiled to the same JavaScript the app and the website run; the move itself changes nothing you see or use. The compiled files are committed and marked as generated, and the build checks that each one is exactly what its TypeScript compiles to; the repository holds no other JavaScript but the shared first-run notice.
+- The app bundles the website as it now stands: the list of Stormberry apps at the foot of the page now includes GDPRLetterBuilder, and EclipseTracker follows MoonApp. The website's new Google Play button is not shown in the app.
+- Still one permission, the camera, and no internet access.
+
 ## 1.1.1 (versionCode 7)
 
 - Save writes the new file over an existing one whole, or not at all. The app first asks the storage app to write and truncate (`"wt"`). A storage app that refuses that gets a plain write (`"w"`), which some storage apps do not truncate; the app then checks that the file is exactly as long as the new picture, and otherwise the save fails, the mixed file is removed and the app says so. Saving over an older, longer file (a Motion Photo, whose video has its own details) can no longer leave that file's end after the clean picture. Either way, a save in which fewer bytes than the new picture's length were written fails too. A file you chose to replace is deleted after a failure only once the app has opened it for writing; before that only an empty file is removed, such as the one the save screen made (`SaveTarget.kt`, the same logic as CheckLink's, with its own tests). Android's own storage accepts `"wt"`, so on most phones nothing changes.

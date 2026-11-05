@@ -179,7 +179,7 @@ The Android app (package `no.stormberry.metadatascrubber`) runs **the same files
 Since 1.1.0 the APK declares one permission, `android.permission.CAMERA`, and nothing else, not even internet access, so the WebView cannot reach the network whatever the page did. Check any APK yourself:
 
 ```bash
-aapt dump permissions MetadataScrubber-v1.1.1.apk
+aapt dump permissions MetadataScrubber-v1.1.2.apk
 # package: no.stormberry.metadatascrubber
 # uses-permission: name='android.permission.CAMERA'
 ```
@@ -219,9 +219,9 @@ RELEASE_KEY_PASSWORD="$RELEASE_STORE_PASSWORD" \
 Verify a release APK:
 
 ```bash
-apksigner verify --print-certs MetadataScrubber-v1.1.1.apk
-sha256sum -c MetadataScrubber-v1.1.1.apk.sha256
-gh attestation verify MetadataScrubber-v1.1.1.apk -R StormberryAS/MetadataScrubber
+apksigner verify --print-certs MetadataScrubber-v1.1.2.apk
+sha256sum -c MetadataScrubber-v1.1.2.apk.sha256
+gh attestation verify MetadataScrubber-v1.1.2.apk -R StormberryAS/MetadataScrubber
 ```
 
 **Signing certificate SHA-256:** `30e916e7d44860a2c00c839ad2a6b5806e15d14d59b2811c962866959f3e3a98`
