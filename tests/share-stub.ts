@@ -1,5 +1,5 @@
 // Stand-ins for the Web Share API and the async clipboard, for the browser tests
-// (tests/ui-smoke.mjs and tests/e2e.mjs). Node 24 runs this file directly; it is
+// (tests/ui-smoke.ts and tests/e2e.mjs). Node 24 runs this file directly; it is
 // type-checked with tests/tsconfig.json. Every export is either text the tests hand to
 // the page or a Node-side helper, so the types below describe only what this file gives
 // and takes. Desktop Chromium on Linux has no share sheet, and a headless browser has no

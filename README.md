@@ -118,7 +118,7 @@ bash tests/fixtures/make-fixtures.sh
 MS_AUDIT_DIR=/tmp/ms-audit MS_FIXTURE_DIR=/tmp/ms-core-fixtures node tests/audit.ts
 
 # 4. Interface smoke test in headless Chromium
-node tests/ui-smoke.mjs --out /tmp/ms-ui
+node tests/ui-smoke.ts --out /tmp/ms-ui
 
 # 5. End to end, as on the live site
 node tests/e2e.mjs --out /tmp/ms-e2e --keep

@@ -13,7 +13,7 @@
     "typecheck": "tools/build-ts.sh --check",
     "test": "node --test 'tests/*.test.ts'",
     "audit": "node tests/audit.ts",
-    "ui-smoke": "node tests/ui-smoke.mjs",
+    "ui-smoke": "node tests/ui-smoke.ts",
     "e2e": "node tests/e2e.mjs"
   },
   "imports": {

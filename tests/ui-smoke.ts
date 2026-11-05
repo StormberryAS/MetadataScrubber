@@ -1,7 +1,7 @@
 // Browser smoke test of the MetadataScrubber interface, driven over the Chrome DevTools
 // Protocol with nothing but Node 24 built-ins.
 //
-//   node tests/ui-smoke.mjs [--chromium /usr/bin/chromium] [--out DIR] [--keep]
+//   node tests/ui-smoke.ts [--chromium /usr/bin/chromium] [--out DIR] [--keep]
 //
 // It serves the repository read-only with the stormberry.as zone policy as a header (so
 // the browser enforces the zone policy and the page's own policy together, as in
@@ -12,6 +12,15 @@
 // has it. It is a smoke test, not the full browser suite: it proves the main paths work.
 //
 // The file name does not end in .test.ts, so `npm test` does not run it.
+//
+// TypeScript (TS-STEP-1, 1 November 2026): Node 24 runs this file directly (npm run ui-smoke), and
+// tests/tsconfig.json type-checks it (strict) when tools/build-ts.sh runs. The engine is imported
+// through "#src/", which Node maps to the served ./src/ (see "imports" in package.json), so the
+// downloads are checked by the engine that ships. Only types were added to the JavaScript it was.
+// What comes back over the DevTools protocol, what the page returns to Runtime.evaluate and what
+// Pillow prints is JSON from outside the program, which tsc cannot know: it is typed Json (any) in
+// this one place on purpose, as GDPRLetterBuilder's tests/cdp.ts does, so the checks read it as
+// they always have. A non-null assertion (!) marks a value that is always there at that point.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -20,13 +29,18 @@ import { tmpdir } from 'node:os';
 import { crc32, deflateSync } from 'node:zlib';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { inspect, privacyWord } from '../src/scrub-core.js';
+import type { AddressInfo } from 'node:net';
+import { inspect, privacyWord } from '#src/scrub-core.js';
+import type { Tier } from '#src/core/taxonomy.js';
 import { CAMERA_STATE, CAMERA_TEXT, SHARE_STATE, SHARE_TEXT, SKIP_CLOCK, appBridgeStub, appFileBytes, shareStub } from './share-stub.ts';
+
+/** JSON from outside the program (the DevTools protocol, the page, Pillow): any on purpose, see the header. */
+type Json = any;
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const FIX = join(ROOT, 'tests', 'fixtures', 'out');
 const args = process.argv.slice(2);
-const opt = (name, fallback) => {
+const opt = (name: string, fallback: string): string => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
@@ -39,7 +53,7 @@ const ZONE_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' https://
   + "connect-src 'self' https://stormberry-contact-form.marcos-495.workers.dev; "
   + "frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'self'; "
   + "form-action 'self' https://stormberry-contact-form.marcos-495.workers.dev; object-src 'none'";
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.md': 'text/markdown', '.txt': 'text/plain' };
+const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.md': 'text/markdown', '.txt': 'text/plain' };
 
 for (const f of ['jpeg-everything.jpg', 'jpeg-orientation-6.jpg', 'png-transparent.png', 'heic-everything.heic', 'jpeg-large.jpg', 'not-an-image.pdf', 'webp-everything.webp', 'camera-clean.jpg']) {
   if (!existsSync(join(FIX, f))) {
@@ -58,7 +72,7 @@ const downloads = mkdtempSync(join(OUT, 'downloads-'));
 const BRIDGE_FILE = 'android-bridge.js';
 const BRIDGE_PATH = join(ROOT, 'android', 'web-overlay', BRIDGE_FILE);
 const BRIDGE_TAG = `<script src="${BRIDGE_FILE}"></script>`;
-function androidIndex(text) {
+function androidIndex(text: string): string {
   const first = text.indexOf('<script');
   const lineStart = text.lastIndexOf('\n', first) + 1;
   const indent = text.slice(lineStart, first);
@@ -70,17 +84,17 @@ const PLAY = 'https://play.google.com/store/apps/details?id=no.stormberry.metada
 const COLOUR_NOTE = 'Colours may look a little duller and bright areas less vivid on HDR screens.';
 
 // ---- Static server ---------------------------------------------------------------------
-const requests = [];
+const requests: string[] = [];
 const server = createServer((req, res) => {
-  const url = new URL(req.url, 'http://x');
+  const url = new URL(req.url!, 'http://x');
   const path = decodeURIComponent(url.pathname);
   requests.push(path);
   if (req.method === 'GET' && (path === `/${BRIDGE_FILE}` || (path === '/' && url.searchParams.has('android')))) {
-    let body;
+    let body: string | Buffer;
     try {
       body = path === '/' ? androidIndex(readFileSync(join(ROOT, 'index.html'), 'utf8')) : readFileSync(BRIDGE_PATH);
     } catch (err) {
-      check('the page can be served the way the APK serves it', false, String(err.message || err));
+      check('the page can be served the way the APK serves it', false, String((err as Error).message || err));
       res.writeHead(500, { 'Content-Security-Policy': ZONE_CSP });
       res.end('cannot inject the bridge');
       return;
@@ -98,8 +112,8 @@ const server = createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', 'Content-Security-Policy': ZONE_CSP, 'Cache-Control': 'no-store' });
   res.end(readFileSync(file));
 });
-await new Promise((r) => server.listen(0, '127.0.0.1', r));
-const BASE = `http://127.0.0.1:${server.address().port}/`;
+await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+const BASE = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
 
 // ---- Chromium --------------------------------------------------------------------------
 const chrome = spawn(CHROMIUM, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-sync', '--disable-component-update', '--disable-breakpad', '--disable-crash-reporter', 'about:blank'], {
@@ -108,7 +122,7 @@ const chrome = spawn(CHROMIUM, ['--headless=new', '--remote-debugging-port=0', `
   // person's own ~/.config/chromium, which --user-data-dir alone does not cover.
   env: { ...process.env, XDG_CONFIG_HOME: join(profile, 'xdg-config'), CHROME_CONFIG_HOME: join(profile, 'xdg-config'), XDG_CACHE_HOME: join(profile, 'xdg-cache') },
 });
-const wsUrl = await new Promise((res, rej) => {
+const wsUrl = await new Promise<string>((res, rej) => {
   let buf = '';
   const t = setTimeout(() => rej(new Error('Chromium did not start')), 20000);
   chrome.stderr.on('data', (d) => {
@@ -120,35 +134,35 @@ const wsUrl = await new Promise((res, rej) => {
 const ws = new WebSocket(wsUrl);
 await new Promise((r) => ws.addEventListener('open', r, { once: true }));
 let seq = 0;
-const pending = new Map();
-const listeners = new Set();
+const pending = new Map<number, { res: (value: Json) => void; rej: (err: Error) => void }>();
+const listeners = new Set<(m: Json) => void>();
 ws.addEventListener('message', (ev) => {
-  const m = JSON.parse(ev.data);
+  const m: Json = JSON.parse(ev.data);
   if (m.id && pending.has(m.id)) {
-    const p = pending.get(m.id);
+    const p = pending.get(m.id)!;
     pending.delete(m.id);
     if (m.error) p.rej(new Error(JSON.stringify(m.error)));
     else p.res(m.result);
   } else for (const fn of listeners) fn(m);
 });
-const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
+const send = (method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Json> => new Promise((res, rej) => {
   const id = ++seq;
   pending.set(id, { res, rej });
   ws.send(JSON.stringify({ id, method, params, sessionId }));
 });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // ---- Checks ----------------------------------------------------------------------------
 let failures = 0;
 let passes = 0;
-function check(name, ok, detail) {
+function check(name: string, ok: boolean, detail?: unknown): void {
   if (ok) passes += 1;
   else failures += 1;
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${!ok && detail !== undefined ? `\n     ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
 }
 
 const python = spawnSync('python3', ['-c', 'import PIL'], { encoding: 'utf8' }).status === 0;
-function pil(script, ...files) {
+function pil(script: string, ...files: string[]): Json {
   const r = spawnSync('python3', ['-c', script, ...files], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(r.stderr);
   return JSON.parse(r.stdout);
@@ -162,20 +176,35 @@ function pil(script, ...files) {
 // too old for it.
 // init: extra script run before the page's own, such as the share stand-ins (share-stub.ts).
 // touch: a touch screen, so the page sees a coarse pointer and no hover, as on a phone.
-async function openPage(width, height, { android = false, init = null, touch = false } = {}) {
+/** android: false, true (a recording stand-in channel), 'app' (share-stub.ts's) or 'bare'; see above. */
+interface PageOptions {
+  android?: boolean | 'app' | 'bare';
+  init?: string | null;
+  touch?: boolean;
+}
+
+/** What a page recorded: errors, policy refusals, requests to elsewhere, file choosers. */
+interface PageLog {
+  errors: string[];
+  csp: string[];
+  offsite: string[];
+  choosers: Json[];
+}
+
+async function openPage(width: number, height: number, { android = false, init = null, touch = false }: PageOptions = {}) {
   const { browserContextId } = await send('Target.createBrowserContext');
   const { targetId } = await send('Target.createTarget', { url: 'about:blank', browserContextId });
   const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
-  const s = (m, p) => send(m, p, sessionId);
-  const log = { errors: [], csp: [], offsite: [], choosers: [] };
-  const named = new Map();
-  const completed = [];
-  const onMsg = (m) => {
+  const s = (m: string, p?: Record<string, unknown>): Promise<Json> => send(m, p, sessionId);
+  const log: PageLog = { errors: [], csp: [], offsite: [], choosers: [] };
+  const named = new Map<string, string>();
+  const completed: string[] = [];
+  const onMsg = (m: Json): void => {
     if (m.method === 'Browser.downloadWillBegin') named.set(m.params.guid, m.params.suggestedFilename);
     if (m.method === 'Browser.downloadProgress' && m.params.state === 'completed') completed.push(m.params.guid);
     if (m.sessionId !== sessionId) return;
     if (m.method === 'Runtime.exceptionThrown') log.errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
-    if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') log.errors.push(m.params.args.map((a) => a.value ?? a.description).join(' '));
+    if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') log.errors.push(m.params.args.map((a: Json) => a.value ?? a.description).join(' '));
     if (m.method === 'Network.requestWillBeSent' && !m.params.request.url.startsWith(BASE) && !/^(data|blob):/.test(m.params.request.url)) log.offsite.push(m.params.request.url);
     if (m.method === 'Page.fileChooserOpened') log.choosers.push(m.params);
   };
@@ -197,7 +226,7 @@ async function openPage(width, height, { android = false, init = null, touch = f
   if (init) await s('Page.addScriptToEvaluateOnNewDocument', { source: init });
   await s('Page.navigate', { url: android ? `${BASE}?android` : BASE });
   await sleep(1200);
-  const ev = async (expression) => {
+  const ev = async (expression: string): Promise<Json> => {
     const r = await s('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
     return r.result.value;
@@ -206,11 +235,11 @@ async function openPage(width, height, { android = false, init = null, touch = f
   await ev("document.querySelector('.sb-gate-btn')?.click()");
   await sleep(200);
   const { root } = await s('DOM.getDocument', { depth: 0 });
-  const setFiles = async (names) => {
+  const setFiles = async (names: string[]): Promise<void> => {
     const { nodeId } = await s('DOM.querySelector', { nodeId: root.nodeId, selector: '#file-input' });
     await s('DOM.setFileInputFiles', { nodeId, files: names.map((n) => (n.startsWith('/') ? n : join(FIX, n))) });
   };
-  const waitFor = async (expression, ms = 30000) => {
+  const waitFor = async (expression: string, ms = 30000): Promise<boolean> => {
     const end = Date.now() + ms;
     while (Date.now() < end) {
       if (await ev(expression)) return true;
@@ -218,40 +247,40 @@ async function openPage(width, height, { android = false, init = null, touch = f
     }
     return false;
   };
-  const load = async (names) => {
+  const load = async (names: string[]): Promise<boolean> => {
     await ev("window.__loaded = false; document.getElementById('workspace').hidden = true; document.getElementById('pick-errors').hidden = true;");
     await setFiles(names);
     return waitFor("!document.getElementById('workspace').hidden || !document.getElementById('pick-errors').hidden");
   };
-  const press = async () => {
+  const press = async (): Promise<void> => {
     await ev("document.getElementById('go-btn').click()");
     await waitFor("document.getElementById('go-btn').getAttribute('aria-busy') === null && !document.getElementById('results').hidden", 120000);
   };
   // Pressing when nothing would change: no file, and the reason beside the button.
   // The button is focused first, as with the keyboard: a scripted click() does not move focus.
-  const pressIdle = async () => {
+  const pressIdle = async (): Promise<Json> => {
     await ev("(() => { const b = document.getElementById('go-btn'); b.focus(); b.click(); })()");
     await waitFor("!document.getElementById('go-nothing').hidden", 10000);
     return ev("({ text: document.getElementById('go-nothing').textContent, results: document.getElementById('results').hidden, links: document.querySelectorAll('.ms-download').length, focus: document.activeElement.id })");
   };
   // Clicks every download link and returns { name: bytes }.
-  const download = async () => {
+  const download = async (): Promise<Record<string, Uint8Array>> => {
     const names = await ev("[...document.querySelectorAll('.ms-download')].map(a => a.download)");
     const start = completed.length;
     await ev("document.querySelectorAll('.ms-download').forEach(a => a.click())");
     const end = Date.now() + 30000;
     while (completed.length < start + names.length && Date.now() < end) await sleep(100);
-    const files = {};
-    for (const guid of completed.slice(start)) files[named.get(guid)] = new Uint8Array(readFileSync(join(downloads, guid)));
+    const files: Record<string, Uint8Array> = {};
+    for (const guid of completed.slice(start)) files[named.get(guid)!] = new Uint8Array(readFileSync(join(downloads, guid)));
     return files;
   };
-  const shot = async (label) => {
+  const shot = async (label: string): Promise<void> => {
     const h = await ev('document.documentElement.scrollHeight');
     const r = await s('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width, height: Math.min(6000, h), scale: 1 } });
     writeFileSync(join(OUT, `${label}.png`), Buffer.from(r.data, 'base64'));
   };
   // A picture of one part of the page, for a person to look at.
-  const shotOf = async (label, selector) => {
+  const shotOf = async (label: string, selector: string): Promise<void> => {
     const b = await ev(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [r.left + scrollX, r.top + scrollY, r.width, r.height]; })()`);
     const r = await s('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: b[0], y: b[1], width: b[2], height: Math.min(6000, b[3]), scale: 1 } });
     writeFileSync(join(OUT, `${label}.png`), Buffer.from(r.data, 'base64'));
@@ -259,7 +288,7 @@ async function openPage(width, height, { android = false, init = null, touch = f
   // Sets each colour section's own tick box, the way a person would: one press, or two
   // when the box is half-ticked and the colour must end up unticked. { red: true } ticks
   // red and unticks amber and green.
-  const tick = (want) => ev(`(() => {
+  const tick = (want: Partial<Record<Tier, boolean>>): Promise<Json> => ev(`(() => {
     const want = ${JSON.stringify(want)};
     for (const all of document.querySelectorAll('#meta-groups .ms-tier-check')) {
       const on = !!want[all.dataset.tier];
@@ -267,7 +296,7 @@ async function openPage(width, height, { android = false, init = null, touch = f
       if (all.checked !== on) all.click();
     }
   })()`);
-  const close = async () => {
+  const close = async (): Promise<void> => {
     listeners.delete(onMsg);
     await send('Target.closeTarget', { targetId });
     await send('Target.disposeBrowserContext', { browserContextId });
@@ -296,8 +325,8 @@ b = Image.open(sys.argv[1]).convert('RGB')
 print(json.dumps({'mode': Image.open(sys.argv[1]).format, 'corner': b.getpixel((0, 0)), 'size': list(b.size)}))`;
 
 // A small PNG with no metadata at all: only IHDR, IDAT and IEND.
-function plainPng(w, h) {
-  const chunk = (type, data) => {
+function plainPng(w: number, h: number): Buffer {
+  const chunk = (type: string, data: Buffer): Buffer => {
     const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
     const len = Buffer.alloc(4);
     len.writeUInt32BE(data.length);
@@ -314,7 +343,7 @@ function plainPng(w, h) {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
 }
 
-const tmpFile = (name, bytes) => {
+const tmpFile = (name: string, bytes: Uint8Array): string => {
   const p = join(downloads, `check-${name}`);
   writeFileSync(p, bytes);
   return p;
@@ -361,10 +390,10 @@ try {
     const src = await inspect(new Uint8Array(readFileSync(join(FIX, 'jpeg-everything.jpg'))));
     check(`${tag} lists every detail the engine finds`, meta.rows.length === src.items.length, [meta.rows.length, src.items.length]);
     check(`${tag} sections are red, amber, green, in that order`, meta.tiers.join() === 'red,amber,green', meta.tiers);
-    check(`${tag} each detail sits in its own tier's section; red and amber name their group, green (all Technical) does not repeat it`, meta.rows.every((r) => r.section === r.tier && (r.tier === 'green' ? r.group === undefined : ['Where', 'Who', 'When', 'Device', 'Hidden extras'].includes(r.group))), meta.rows.filter((r) => r.section !== r.tier || (r.tier === 'green') === !!r.group).map((r) => [r.id, r.group]));
+    check(`${tag} each detail sits in its own tier's section; red and amber name their group, green (all Technical) does not repeat it`, meta.rows.every((r: Json) => r.section === r.tier && (r.tier === 'green' ? r.group === undefined : ['Where', 'Who', 'When', 'Device', 'Hidden extras'].includes(r.group))), meta.rows.filter((r: Json) => r.section !== r.tier || (r.tier === 'green') === !!r.group).map((r: Json) => [r.id, r.group]));
     check(`${tag} the separate colour legend is gone`, !meta.legend);
-    check(`${tag} red details are ticked to start with, amber and green details are not`, meta.rows.every((r) => r.checked === (r.tier === 'red')), meta.rows.filter((r) => r.checked !== (r.tier === 'red')).map((r) => r.id));
-    check(`${tag} every tier is shown in words`, meta.rows.every((r) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier]));
+    check(`${tag} red details are ticked to start with, amber and green details are not`, meta.rows.every((r: Json) => r.checked === (r.tier === 'red')), meta.rows.filter((r: Json) => r.checked !== (r.tier === 'red')).map((r: Json) => r.id));
+    check(`${tag} every tier is shown in words`, meta.rows.every((r: Json) => r.badge === { red: 'Red', amber: 'Amber', green: 'Green' }[r.tier as Tier]));
 
     // The colour note above the button: hidden with the default red-only choice, shown with
     // its exact text while Green (and so the colour profile) is ticked, hidden again after.
@@ -376,7 +405,7 @@ try {
     })()`);
     let cn = await colourNote();
     check(`${tag} colour note: hidden with the default red-only choice`, cn.hidden && !cn.shown && cn.text === '' && cn.live === 'polite' && cn.aboveButton, cn);
-    check(`${tag} colour note: the photo has a colour profile (green)`, meta.rows.some((r) => r.id === 'icc:profile' && r.tier === 'green'), meta.rows.map((r) => r.id));
+    check(`${tag} colour note: the photo has a colour profile (green)`, meta.rows.some((r: Json) => r.id === 'icc:profile' && r.tier === 'green'), meta.rows.map((r: Json) => r.id));
     await p.tick({ red: true, green: true });
     cn = await colourNote();
     check(`${tag} colour note: shown with its exact text when Green is ticked, next to the mode box`, !cn.hidden && cn.shown && cn.amber && cn.mode && cn.text === COLOUR_NOTE, cn);
@@ -406,7 +435,7 @@ try {
       const boxes = [...list.querySelectorAll('.ms-check')];
       return [sec.dataset.tier, { checked: all.checked, mixed: all.indeterminate, expanded: btn.getAttribute('aria-expanded'), hidden: list.hidden, shown: list.getBoundingClientRect().height > 0, n: boxes.length, ticked: boxes.filter((b) => b.checked).length, count: sec.querySelector('.ms-tier-count').textContent }];
     }))`);
-    const closed = (x) => ['red', 'amber', 'green'].every((k) => x[k].expanded === 'false' && x[k].hidden && !x[k].shown);
+    const closed = (x: Json): boolean => ['red', 'amber', 'green'].every((k) => x[k].expanded === 'false' && x[k].hidden && !x[k].shown);
     const countLine = () => p.ev("document.getElementById('select-count').textContent");
     let t = await tiers();
     check(`${tag} every section starts closed`, closed(t), t);
@@ -442,8 +471,8 @@ try {
     check(`${tag} and tick everything`, t.red.checked && t.amber.checked && t.green.checked, t);
 
     // Prepare removes exactly the ticked details: proved by the engine and the page read-back.
-    const ofTier = (...ts) => src.items.filter((i) => ts.includes(i.tier)).map((i) => i.id);
-    const exactly = async (label, want) => {
+    const ofTier = (...ts: Tier[]): string[] => src.items.filter((i) => ts.includes(i.tier)).map((i) => i.id);
+    const exactly = async (label: string, want: string[]): Promise<void> => {
       const ticked = await p.ev("[...document.querySelectorAll('#meta-groups .ms-check')].filter((b) => b.checked).map((b) => b.dataset.id).sort()");
       check(`${tag} ${label}: ticked details as meant`, ticked.join() === [...want].sort().join(), ticked);
       await p.press();
@@ -581,7 +610,7 @@ try {
     check(`${tag} keyboard moves and resizes the crop`, before !== after, [before, after]);
     // Drag the bottom-right corner inwards with the mouse, then move the frame by touch.
     // Input events use screen coordinates, so the frame is scrolled into view first.
-    const centre = (sel) => p.ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el.scrollIntoView({ block: 'center', behavior: 'instant' }); const b = el.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
+    const centre = (sel: string): Promise<Json> => p.ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); el.scrollIntoView({ block: 'center', behavior: 'instant' }); const b = el.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`);
     const handle = await centre('[data-handle=se]');
     await p.s('Input.dispatchMouseEvent', { type: 'mousePressed', x: handle[0], y: handle[1], button: 'left', clickCount: 1 });
     await p.s('Input.dispatchMouseEvent', { type: 'mouseMoved', x: handle[0] - 40, y: handle[1] - 10, button: 'left' });
@@ -622,7 +651,7 @@ try {
     check(`${tag} converted file is a .jpg`, /^image\.\w+\.jpg$/.test(name || ''), name);
     if (name && python) {
       const r = pil(CORNER_PY, tmpFile(name, files[name]));
-      check(`${tag} see-through corner is white`, r.mode === 'JPEG' && r.corner.every((c) => c > 245), r);
+      check(`${tag} see-through corner is white`, r.mode === 'JPEG' && r.corner.every((c: number) => c > 245), r);
     }
 
     // Size limit on a large JPEG.
@@ -682,7 +711,7 @@ try {
     // An HDR photo: amber starts unticked, the gain map and its details with it, and the
     // amber tick box then ticks every amber detail, the gain map included.
     await p.load(['jpeg-ultrahdr-like.jpg']);
-    const gm = () => p.ev("['jpeg:trailing:gain-map', 'xmp:gainmap'].map((id) => document.querySelector(`#meta-groups .ms-check[data-id=\"${id}\"]`).checked)");
+    const gm = (): Promise<Json> => p.ev("['jpeg:trailing:gain-map', 'xmp:gainmap'].map((id) => document.querySelector(`#meta-groups .ms-check[data-id=\"${id}\"]`).checked)");
     t = await tiers();
     check(`${tag} HDR photo: amber starts unticked, the gain map and its details with it; red is ticked`, !t.amber.mixed && !t.amber.checked && t.amber.ticked === 0 && JSON.stringify(await gm()) === '[false,false]' && t.red.checked, t);
     await p.ev("document.getElementById('m-tier-amber-all').click()");
@@ -846,7 +875,7 @@ try {
       const n = a.querySelector('.ms-share-note');
       return { text: b && b.textContent, copy: !!a.querySelector('.ms-copy-btn'), note: n && n.textContent, own: !!b && !!n && b.getAttribute('aria-describedby') === n.id && document.getElementById(n.id) === n };
     })`);
-    check(`${tag} several files: a Share, a Copy and a warning for each, each Share pointing to its own warning`, multi.length === 2 && multi.every((m) => m.text === SHARE_TEXT.button && m.copy && m.note === SHARE_TEXT.note && m.own), multi);
+    check(`${tag} several files: a Share, a Copy and a warning for each, each Share pointing to its own warning`, multi.length === 2 && multi.every((m: Json) => m.text === SHARE_TEXT.button && m.copy && m.note === SHARE_TEXT.note && m.own), multi);
     const before = await p.ev('window.__share.calls.length');
     await p.ev("document.querySelectorAll('#results-list .ms-share-btn')[1].click()");
     await p.waitFor(`window.__share.calls.length === ${before + 1}`, 10000);
@@ -865,7 +894,7 @@ try {
     ['no canShare', { share: false, clipboard: true }, { share: false, copy: true }],
     ['no canShare, no ClipboardItem', { share: false, clipboard: false }, { share: false, copy: false }],
     ['canShare, no ClipboardItem', { share: true, clipboard: false }, { share: true, copy: false }],
-  ]) {
+  ] as const) {
     const p = await openPage(360, 780, { init: shareStub(opts) });
     await p.load(['jpeg-everything.jpg']);
     await p.press();
@@ -906,7 +935,7 @@ try {
     const begin = (await p.ev("window.__msPosted.find((m) => m.t === 'out-begin')")) || {};
     check(`${tag} Save is caught by the bridge and handed to the app as a save, not downloaded by the browser`, begin.action === 'save' && begin.name === 'image.public.jpg' && begin.mime === 'image/jpeg' && begin.size > 0 && begin.chunks >= 1 && p.completed.length === before, { begin, downloads: p.completed.length - before });
     // Pull the chunks the way the app does and check the file that arrives.
-    const parts = [];
+    const parts: Buffer[] = [];
     for (let i = 0; i < begin.chunks; i++) {
       await p.ev(`window.__msListen({ data: JSON.stringify({ t: 'out-pull', id: ${begin.id}, index: ${i} }) })`);
       const c = await p.ev(`window.__msPosted.filter((m) => m.t === 'out-chunk' && m.id === ${begin.id} && m.index === ${i}).pop()`);
@@ -949,7 +978,7 @@ try {
       ];
       return { results: r, posted: window.__ms.posted.length - before };
     })()`);
-    check(`${tag} MSAndroid refuses anything but a non-empty Blob (a PNG for Copy): no address, no path, nothing posted`, junk.results.every((x) => x === false) && junk.posted === 0, junk);
+    check(`${tag} MSAndroid refuses anything but a non-empty Blob (a PNG for Copy): no address, no path, nothing posted`, junk.results.every((x: Json) => x === false) && junk.posted === 0, junk);
     await p.load(['jpeg-everything.jpg']);
     await p.press();
     let st = await p.ev(SHARE_STATE);
@@ -991,8 +1020,8 @@ try {
     // (copyLife) instead of 2 minutes, and SKIP_CLOCK moves Date.now on and fires
     // 'visibilitychange', as when Android shows the app again after freezing it.
     {
-      const is = (t) => `document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(t)}`;
-      const copyNow = async (life) => {
+      const is = (t: string): string => `document.querySelector('#results-list .ms-share-status').textContent === ${JSON.stringify(t)}`;
+      const copyNow = async (life: number): Promise<boolean> => {
         await p.ev(`window.__ms.copyLife = ${life}; document.querySelector('#results-list .ms-share-status').textContent = ''; document.querySelector('#results-list .ms-copy-btn').click()`);
         return p.waitFor(is(SHARE_TEXT.copiedApp), 20000);
       };
@@ -1064,7 +1093,7 @@ try {
     check(`${tag} MSAndroid's keys are copyImage, share and takePhoto, and takePhoto takes no arguments`, api.keys === 'copyImage,share,takePhoto' && api.takes === 0, api);
 
     // Closed without a photo: nothing changes, the focus is back on the button.
-    const opens = () => p.ev("window.__ms.posted.filter((m) => m.t === 'camera-open').length");
+    const opens = (): Promise<Json> => p.ev("window.__ms.posted.filter((m) => m.t === 'camera-open').length");
     await p.ev("window.__ms.camera.mode = 'hold'; document.getElementById('camera-btn').click()");
     await p.waitFor('window.__ms.camera.opens === 1', 5000);
     cam = await p.ev(CAMERA_STATE);
@@ -1132,7 +1161,7 @@ try {
     await p.waitFor("document.querySelectorAll('#meta-groups .ms-check').length > 0", 20000);
     await sleep(300);
     cam = await p.ev(CAMERA_STATE);
-    check(`${tag} a photo with metadata goes through the normal steps: details listed, red ticked, no result yet, no line`, cam.workspace && !cam.results && cam.detailCount > 0 && cam.ticked.length > 0 && cam.ticked.every((t) => t === 'red') && cam.lines === 0, cam);
+    check(`${tag} a photo with metadata goes through the normal steps: details listed, red ticked, no result yet, no line`, cam.workspace && !cam.results && cam.detailCount > 0 && cam.ticked.length > 0 && cam.ticked.every((t: Json) => t === 'red') && cam.lines === 0, cam);
     await p.press();
     cam = await p.ev(CAMERA_STATE);
     check(`${tag} and its result has no camera line`, cam.results && cam.note === 0 && cam.lines === 0 && cam.word === 'public', cam);
@@ -1170,15 +1199,15 @@ try {
     const end = Date.now() + 5000;
     while (!p.log.choosers.length && Date.now() < end) await sleep(50);
     const chooser = p.log.choosers[0];
-    let node = null;
+    let node: Json = null;
     if (chooser) node = (await p.s('DOM.describeNode', { backendNodeId: chooser.backendNodeId })).node;
-    const attrs = node ? Object.fromEntries(node.attributes.reduce((a, v, i, arr) => (i % 2 ? a : [...a, [v, arr[i + 1]]]), [])) : {};
+    const attrs = node ? Object.fromEntries(node.attributes.reduce((a: string[][], v: string, i: number, arr: string[]) => (i % 2 ? a : [...a, [v, arr[i + 1]]]), [])) : {};
     check(`${tag} a tap opens a file chooser for the capture input (accept image/*, capture environment), one file`, !!chooser && chooser.mode === 'selectSingle' && attrs.id === 'camera-input' && attrs.accept === 'image/*' && attrs.capture === 'environment', { chooser, attrs });
     if (chooser) await p.s('DOM.setFileInputFiles', { backendNodeId: chooser.backendNodeId, files: [join(FIX, 'jpeg-everything.jpg')] });
     await p.waitFor("document.querySelectorAll('#meta-groups .ms-check').length > 0", 20000);
     await sleep(300);
     cam = await p.ev(CAMERA_STATE);
-    check(`${tag} the photo from the camera app goes through the normal steps: details listed, red ticked, no result yet`, cam.workspace && !cam.results && cam.detailCount > 0 && cam.ticked.every((t) => t === 'red') && cam.lines === 0, cam);
+    check(`${tag} the photo from the camera app goes through the normal steps: details listed, red ticked, no result yet`, cam.workspace && !cam.results && cam.detailCount > 0 && cam.ticked.every((t: Json) => t === 'red') && cam.lines === 0, cam);
     await p.press();
     cam = await p.ev(CAMERA_STATE);
     check(`${tag} its result is a normal one, with no camera line`, cam.results && cam.word === 'public' && cam.note === 0 && cam.lines === 0, cam);
@@ -1196,7 +1225,7 @@ try {
   // must load with the app's own policy, no errors, nothing from elsewhere, and lead back.
   {
     const tag = 'privacy';
-    const metaCsp = (file) => (/<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(readFileSync(join(ROOT, file), 'utf8')) || [])[1];
+    const metaCsp = (file: string): string | undefined => (/<meta http-equiv="Content-Security-Policy" content="([^"]*)"/.exec(readFileSync(join(ROOT, file), 'utf8')) || [])[1];
     check(`${tag} privacy.html carries exactly the policy of index.html`, !!metaCsp('privacy.html') && metaCsp('privacy.html') === metaCsp('index.html'), { privacy: metaCsp('privacy.html'), index: metaCsp('index.html') });
     const html = readFileSync(join(ROOT, 'privacy.html'), 'utf8');
     const local = [...html.matchAll(/(?:src|href)="([^"]*)"/g)].map((m) => m[1]).filter((r) => !/^([a-z][a-z0-9+.-]*:|#|\/\/)/i.test(r));
@@ -1211,7 +1240,7 @@ try {
     })()`);
     check(`${tag} the app's footer has one Privacy link, to privacy.html, opening in place`, link.length === 1 && link[0].href === 'privacy.html' && link[0].target === null && link[0].footer, link);
     // A click starts a navigation, during which evaluation can fail; ask again until the new page answers.
-    const until = async (expression, ms = 10000) => {
+    const until = async (expression: string, ms = 10000): Promise<boolean> => {
       const end = Date.now() + ms;
       while (Date.now() < end) {
         try { if (await p.ev(expression)) return true; } catch { /* the page is changing */ }
@@ -1255,7 +1284,7 @@ try {
   }
 } catch (err) {
   failures += 1;
-  console.log(`FAIL harness: ${err.stack || err}`);
+  console.log(`FAIL harness: ${(err as Error).stack || err}`);
 } finally {
   ws.close();
   chrome.kill();
