@@ -887,7 +887,7 @@ describe('buildExif and insertExif', () => {
 
 // ======================================================================================
 // Hardening: data hidden where a scrubber may not look. Hand-built inputs, so these run
-// in a moment; tests/audit.mjs covers the same ground far more widely.
+// in a moment; tests/audit.ts covers the same ground far more widely.
 
 describe('Hardening', () => {
   const H = (s: string): string => `HARD-${s}-PLANT`;

@@ -7,7 +7,7 @@
 // python3 with Pillow.
 //
 // Usage, from the repository root:
-//   MS_AUDIT_DIR=<scratch>/audit MS_FIXTURE_DIR=<scratch>/core-fixtures node tests/audit.mjs
+//   MS_AUDIT_DIR=<scratch>/audit MS_FIXTURE_DIR=<scratch>/core-fixtures node tests/audit.ts
 // Options:
 //   --sections=registry,core,adversarial,reencode,hostile   run only these sections (default: all)
 //   --fuzz=N            mutations per fixture in the hostile section (default 120)
@@ -53,6 +53,14 @@
 // os.tmpdir()/metadatascrubber-audit). Exit status 1 when a critical or high finding exists.
 // Everything here is synthetic: no real photo is used, names and serials are invented and
 // GPS positions are public landmarks.
+//
+// TypeScript (TS-STEP-1, 1 November 2026): Node 24 runs this file directly (npm run audit), and
+// tests/tsconfig.json type-checks it (strict) when tools/build-ts.sh runs. The engine is still
+// loaded from the served ./src/ by file URL, as before (the worker of the hostile section and
+// the reproduce lines need that URL); the type of each loaded module is the type of its source.
+// Only types were added to the JavaScript it was: a non-null assertion (!) marks a value the
+// audit has just made sure of, or one whose absence stops the audit anyway, and a caught value
+// is read as an Error, the only thing the engine and Node throw here.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -62,16 +70,19 @@ import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import zlib from 'node:zlib';
+import type { Format, InspectResult } from '#src/scrub-core.js';
+import type { Item, Tier } from '#src/core/taxonomy.js';
+import type { HeifItem, HeifModel } from '#src/core/heic.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 const CORE_URL = pathToFileURL(join(ROOT, 'src', 'scrub-core.js')).href;
-const core = await import(CORE_URL);
-const { canonicalXmp, parseXmp } = await import(pathToFileURL(join(ROOT, 'src', 'core', 'xmp.js')).href);
-const { parseHeif } = await import(pathToFileURL(join(ROOT, 'src', 'core', 'heic.js')).href);
+const core: typeof import('#src/scrub-core.js') = await import(CORE_URL);
+const { canonicalXmp, parseXmp }: typeof import('#src/core/xmp.js') = await import(pathToFileURL(join(ROOT, 'src', 'core', 'xmp.js')).href);
+const { parseHeif }: typeof import('#src/core/heic.js') = await import(pathToFileURL(join(ROOT, 'src', 'core', 'heic.js')).href);
 
 const argv = process.argv.slice(2);
-const opt = (name, dflt) => {
+const opt = <T>(name: string, dflt: T): T | string | true => {
   const a = argv.find((x) => x === `--${name}` || x.startsWith(`--${name}=`));
   if (!a) return dflt;
   return a.includes('=') ? a.slice(a.indexOf('=') + 1) : true;
@@ -87,27 +98,30 @@ for (const d of ['outputs', 'adversarial', 'hostile', 'exiftool']) mkdirSync(joi
 // ======================================================================================
 // Small helpers
 
-const sh = (cmd, args, { binary = false, input } = {}) => execFileSync(cmd, args, {
+/** Bytes, or text taken as Latin-1 (one byte per character). */
+type Part = string | Uint8Array;
+
+const sh = (cmd: string, args: string[], { binary = false, input }: { binary?: boolean; input?: string | Uint8Array } = {}) => execFileSync(cmd, args, {
   encoding: binary ? 'buffer' : 'utf8', maxBuffer: 512 << 20, stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe'], input,
 });
-const tryRun = (cmd, args) => {
+const tryRun = (cmd: string, args: string[]): { ok: boolean; status: number | null; out: string; err: string } => {
   const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 256 << 20 });
   return { ok: r.status === 0, status: r.status, out: r.stdout || '', err: r.stderr || '' };
 };
-const B = (x) => (Buffer.isBuffer(x) ? x : typeof x === 'string' ? Buffer.from(x, 'latin1') : Buffer.from(x));
-const cat = (...parts) => Buffer.concat(parts.flat().map(B));
-const be16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16BE(v & 0xffff); return b; };
-const be32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
-const le16 = (v) => { const b = Buffer.alloc(2); b.writeUInt16LE(v & 0xffff); return b; };
-const le32 = (v) => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
-const sha = (b) => createHash('sha256').update(b).digest('hex');
-const u8 = (b) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-const extOf = (fmt) => ({ jpeg: 'jpg', png: 'png', webp: 'webp', heic: 'heic' }[fmt] || 'bin');
-const log = (...a) => console.log(...a);
-const hexAt = (n) => `0x${n.toString(16)}`;
+const B = (x: Part): Buffer => (Buffer.isBuffer(x) ? x : typeof x === 'string' ? Buffer.from(x, 'latin1') : Buffer.from(x));
+const cat = (...parts: (Part | Part[])[]): Buffer => Buffer.concat(parts.flat().map(B));
+const be16 = (v: number): Buffer => { const b = Buffer.alloc(2); b.writeUInt16BE(v & 0xffff); return b; };
+const be32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32BE(v >>> 0); return b; };
+const le16 = (v: number): Buffer => { const b = Buffer.alloc(2); b.writeUInt16LE(v & 0xffff); return b; };
+const le32 = (v: number): Buffer => { const b = Buffer.alloc(4); b.writeUInt32LE(v >>> 0); return b; };
+const sha = (b: Uint8Array | string): string => createHash('sha256').update(b).digest('hex');
+const u8 = (b: Uint8Array): Uint8Array => new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+const extOf = (fmt: string): string => (({ jpeg: 'jpg', png: 'png', webp: 'webp', heic: 'heic' } as Partial<Record<string, string>>)[fmt] || 'bin');
+const log = (...a: unknown[]): void => console.log(...a);
+const hexAt = (n: number): string => `0x${n.toString(16)}`;
 
 // Deterministic pseudo-random numbers for fuzzing and planted IDs.
-function rng(seed) {
+function rng(seed: number): () => number {
   let s = seed >>> 0 || 1;
   return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
 }
@@ -115,24 +129,46 @@ function rng(seed) {
 // ======================================================================================
 // Findings
 
-const findings = [];
-const passed = [];
-const findingKeys = new Set();
-function finding(severity, fixture, location, detail, reproduce, key) {
+type Severity = 'critical' | 'high' | 'medium' | 'low';
+/** One finding of the report: how bad, in which picture, where in it, what, and how to see it. */
+interface Finding {
+  severity: Severity;
+  fixture: string;
+  location: string;
+  detail: string;
+  reproduce: string;
+}
+
+const findings: Finding[] = [];
+const passed: string[] = [];
+const findingKeys = new Set<string>();
+function finding(severity: Severity, fixture: string, location: string, detail: string, reproduce: string, key?: string): void {
   const k = key || `${severity}|${fixture}|${location}|${detail}`;
   if (findingKeys.has(k)) return;
   findingKeys.add(k);
   findings.push({ severity, fixture, location, detail, reproduce });
 }
-const pass = (text) => passed.push(text);
+const pass = (text: string): number => passed.push(text);
 
 // ======================================================================================
 // Deep search: raw bytes, UTF-16 either way, and the inside of every zlib stream, hex run
 // and base64 run (one level deep, plus zlib inside decoded hex).
 
-function haystacks(bytes, depth = 0) {
+/** A place to search: the raw bytes or something decoded from them, and what it is. */
+interface Hay {
+  kind: string;
+  b: Buffer;
+}
+/** Where a string was found: in which haystack, in which encoding, at which offset. */
+interface Hit {
+  kind: string;
+  form: string;
+  offset: number;
+}
+
+function haystacks(bytes: Uint8Array, depth = 0): Hay[] {
   const raw = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const out = [{ kind: 'raw', b: raw }];
+  const out: Hay[] = [{ kind: 'raw', b: raw }];
   // Every zlib stream, wherever it starts.
   for (let i = 0; i + 2 < raw.length; i++) {
     if (raw[i] !== 0x78) continue;
@@ -159,14 +195,14 @@ function haystacks(bytes, depth = 0) {
   return out;
 }
 
-const forms = (s) => [
+const forms = (s: string): [string, Buffer][] => [
   ['plain', Buffer.from(s, 'utf8')],
   ['utf16le', Buffer.from(s, 'utf16le')],
   ['utf16be', Buffer.from(s, 'utf16le').swap16()],
 ];
 // Where a string is found: [{ kind, form, offset }], empty when absent.
-function locate(hays, s) {
-  const hits = [];
+function locate(hays: Hay[], s: string): Hit[] {
+  const hits: Hit[] = [];
   for (const h of hays) {
     for (const [form, needle] of forms(s)) {
       const at = h.b.indexOf(needle);
@@ -176,7 +212,7 @@ function locate(hays, s) {
   return hits;
 }
 // How many times a string occurs in all haystacks and forms.
-function countIn(hays, s) {
+function countIn(hays: Hay[], s: string): number {
   let n = 0;
   for (const h of hays) {
     for (const [, needle] of forms(s)) {
@@ -186,14 +222,33 @@ function countIn(hays, s) {
   }
   return n;
 }
-const describeHits = (hits) => hits.map((h) => `${h.form} in ${h.kind}${h.kind === 'raw' ? ` at ${hexAt(h.offset)}` : ` (+${hexAt(h.offset)})`}`).join('; ');
+const describeHits = (hits: Hit[]): string => hits.map((h) => `${h.form} in ${h.kind}${h.kind === 'raw' ? ` at ${hexAt(h.offset)}` : ` (+${hexAt(h.offset)})`}`).join('; ');
 
 // ======================================================================================
 // Independent readers (never the engine's code): JPEG segments, PNG chunks, RIFF chunks,
 // ISO boxes, and the raw GPS rationals of every TIFF block, for the zeroing check.
 
-function jpegSegments(b) {
-  const segs = [];
+/** A JPEG marker segment. SOS and EOI end the walk and have no data or end. */
+interface JpegSeg {
+  marker: number;
+  start: number;
+  data?: number;
+  end?: number;
+}
+interface PngChunk {
+  type: string;
+  start: number;
+  data: number;
+  end: number;
+}
+interface IsoBox {
+  path: string;
+  start: number;
+  size: number;
+}
+
+function jpegSegments(b: Buffer): JpegSeg[] {
+  const segs: JpegSeg[] = [];
   let p = 2;
   while (p + 4 <= b.length && b[p] === 0xff) {
     const m = b[p + 1];
@@ -204,8 +259,8 @@ function jpegSegments(b) {
   }
   return segs;
 }
-function pngChunks(b) {
-  const out = [];
+function pngChunks(b: Buffer): PngChunk[] {
+  const out: PngChunk[] = [];
   let p = 8;
   while (p + 12 <= b.length) {
     const n = b.readUInt32BE(p);
@@ -215,8 +270,8 @@ function pngChunks(b) {
   }
   return out;
 }
-function isoBoxes(b, s = 0, e = b.length, depth = 0, prefix = '') {
-  const out = [];
+function isoBoxes(b: Buffer, s = 0, e = b.length, depth = 0, prefix = ''): IsoBox[] {
+  const out: IsoBox[] = [];
   let p = s;
   const containers = new Set(['meta', 'iprp', 'ipco', 'iinf', 'iref', 'dinf', 'moov', 'trak', 'mdia', 'minf', 'stbl']);
   while (p + 8 <= e) {
@@ -238,19 +293,19 @@ function isoBoxes(b, s = 0, e = b.length, depth = 0, prefix = '') {
   return out;
 }
 // Raw bytes of GPSLatitude and GPSLongitude in every TIFF block of a file.
-function gpsRationals(buf) {
-  const res = [];
-  const seen = new Set();
-  const heads = [];
+function gpsRationals(buf: Buffer): { label: string; bytes: Buffer }[] {
+  const res: { label: string; bytes: Buffer }[] = [];
+  const seen = new Set<string>();
+  const heads: number[] = [];
   for (let i = 0; i + 8 <= buf.length; i++) {
     if ((buf[i] === 0x49 && buf[i + 1] === 0x49 && buf[i + 2] === 42 && buf[i + 3] === 0)
       || (buf[i] === 0x4d && buf[i + 1] === 0x4d && buf[i + 2] === 0 && buf[i + 3] === 42)) heads.push(i);
   }
   for (const t of heads) {
     const le = buf[t] === 0x49;
-    const r16 = (p) => (p + 2 <= buf.length ? (le ? buf.readUInt16LE(p) : buf.readUInt16BE(p)) : 0);
-    const r32 = (p) => (p + 4 <= buf.length ? (le ? buf.readUInt32LE(p) : buf.readUInt32BE(p)) : 0);
-    const dir = (off) => {
+    const r16 = (p: number): number => (p + 2 <= buf.length ? (le ? buf.readUInt16LE(p) : buf.readUInt16BE(p)) : 0);
+    const r32 = (p: number): number => (p + 4 <= buf.length ? (le ? buf.readUInt32LE(p) : buf.readUInt32BE(p)) : 0);
+    const dir = (off: number): { tag: number; type: number; count: number; val: number }[] => {
       const at = t + off;
       if (off < 8 || at + 2 > buf.length) return [];
       const n = r16(at);
@@ -291,20 +346,23 @@ for f in sys.argv[1:]:
         out[f] = {'ok': False, 'error': type(e).__name__ + ': ' + str(e)[:200]}
 print(json.dumps(out))
 `;
-function pilHashes(files) {
+/** What Pillow (or magick) makes of a file: the decoded pixels' hash, or the error. */
+type Decoded = { ok: true; hash: string } | { ok: false; error: string };
+
+function pilHashes(files: string[]): Record<string, Decoded> {
   if (!files.length) return {};
-  const res = {};
+  const res: Record<string, Decoded> = {};
   for (let i = 0; i < files.length; i += 200) {
     const r = spawnSync('python3', ['-c', PY_HASH, ...files.slice(i, i + 200)], { encoding: 'utf8', maxBuffer: 64 << 20 });
     try { Object.assign(res, JSON.parse(r.stdout)); } catch { for (const f of files.slice(i, i + 200)) res[f] = { ok: false, error: r.stderr.slice(0, 300) }; }
   }
   return res;
 }
-function magickHash(file) {
+function magickHash(file: string): (Decoded & { warn?: string }) {
   const r = spawnSync('magick', [`${file}[0]`, '-depth', '8', 'rgba:-'], { maxBuffer: 1 << 30 });
   return r.status === 0 ? { ok: true, hash: sha(r.stdout), warn: String(r.stderr).trim() } : { ok: false, error: String(r.stderr).trim().slice(0, 300) };
 }
-function magickIdentify(file) {
+function magickIdentify(file: string): { ok: true } | { ok: false; error: string } {
   const r = tryRun('magick', ['identify', '-regard-warnings', file]);
   return r.ok ? { ok: true } : { ok: false, error: (r.err || r.out).trim().slice(0, 300) };
 }
@@ -320,16 +378,23 @@ const STRUCTURAL_TAGS = new Set([
 const QT_STRUCTURAL = /^(MajorBrand|MinorVersion|CompatibleBrands|HandlerType|PrimaryItemReference|MetaImageSize|HEVC.*|GeneralProfile.*|GeneralTier.*|GeneralLevel.*|MinSpatialSegmentation.*|ParallelismType|ChromaFormat|BitDepth.*|AverageFrameRate|ConstantFrameRate|NumTemporalLayers|TemporalIDNested|ImageSpatialExtent|ImagePixelDepth|Rotation|MediaDataSize|MediaDataOffset|ColorRepresentation|ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag|ItemInfo|AuxiliaryImageType|ImageWidth|ImageHeight)$/;
 const RED_TAG = /GPS|Artist|Creator|Author|By-?line|Owner|Serial|City|Country|Location|Sub-?location|Province|DocumentID|InstanceID|UniqueID|PreservedFileName|PersonInImage|Region|Copyright|Rights|Contact|E-?mail|Address|Phone|Ancestors|ThumbnailImage|PreviewImage|MakerNote|Comment|HostComputer/i;
 
-function exiftoolList(file) {
+/** One line of an exiftool listing: [group] tag: value. */
+interface EtRow {
+  group: string;
+  tag: string;
+  value: string;
+}
+
+function exiftoolList(file: string): EtRow[] {
   const r = tryRun('exiftool', ['-a', '-u', '-U', '-G1', '-ee3', '-s', '-m', file]);
-  const rows = [];
+  const rows: EtRow[] = [];
   for (const line of r.out.split('\n')) {
     const m = /^\[([^\]]+)\]\s+(\S+)\s*:\s?(.*)$/.exec(line);
     if (m) rows.push({ group: m[1], tag: m[2], value: m[3] });
   }
   return rows;
 }
-function nonStructural(rows) {
+function nonStructural(rows: EtRow[]): EtRow[] {
   return rows.filter((r) => {
     if (STRUCTURAL_GROUPS.has(r.group)) return false;
     if (STRUCTURAL_TAGS.has(`${r.group}:${r.tag}`)) return false;
@@ -338,7 +403,7 @@ function nonStructural(rows) {
     return true;
   });
 }
-function exiftoolValidate(file) {
+function exiftoolValidate(file: string): string[] {
   const r = tryRun('exiftool', ['-validate', '-warning', '-error', '-a', '-G1', '-s', '-m', file]);
   return r.out.split('\n')
     .filter((l) => /^\[ExifTool\]\s+(Warning|Error)\b/.test(l))
@@ -355,7 +420,92 @@ function exiftoolValidate(file) {
 // canaries: [{ string, tier, basis, location, group }]
 // Returns a record kept in the report and adds findings.
 
-const outputsForTools = []; // { fixture, label, inFile, outFile, format }
+/** A planted string: its tier (red, amber or green), why, and where it is hidden. */
+interface AuditCanary {
+  string: string;
+  tier: string;
+  basis?: string;
+  location?: string;
+  group?: string;
+}
+/** What the audit found for one planted string of one picture. */
+interface CanaryRow {
+  string: string;
+  expected: string;
+  removedBy: string[];
+  touchedBy: string[];
+  tiers: string[];
+  leftAfterDefault: string;
+  leftAfterStart: string;
+  leftAfterMin: string;
+  leftAfterAll: string;
+}
+/** A survival in the hostile section: the case, the strings left, and what the engine said. */
+interface Survival {
+  c: HostileCase;
+  left: string[];
+  warned: boolean;
+  file: string;
+  r: RunResult;
+}
+/**
+ * A record of the report: one picture (evaluate fills it, and the sections and the tool checks
+ * add to it), or the summary of the reencode or the hostile section.
+ */
+interface AuditRecord {
+  section?: string;
+  label?: string;
+  file?: string;
+  size?: number;
+  format?: Format | null;
+  unsupported?: boolean;
+  error?: string;
+  items?: Item[];
+  inspectWarnings?: string[];
+  missingInInput?: string[];
+  hdrKept?: boolean;
+  startIds?: string[];
+  startWarnings?: string[];
+  minWarnings?: string[];
+  redWarnings?: string[];
+  allWarnings?: string[];
+  startFile?: string;
+  redFile?: string;
+  allFile?: string;
+  canaries?: CanaryRow[];
+  hdrFellBack?: boolean;
+  gpsRationals?: number;
+  readbackDefault?: string[];
+  wordDefault?: string;
+  readbackStart?: string[];
+  wordStart?: string;
+  readbackMin?: string[];
+  wordMin?: string;
+  readbackAll?: string[];
+  wordAll?: string;
+  xmpPackets?: number;
+  note?: string;
+  heicHdr?: string | null;
+  inputDecodes?: { magick: boolean; pil: boolean | null | undefined };
+  exiftoolShows?: string[];
+  integrity?: Record<string, string | string[]>;
+  results?: { file: string; fmt: string; items: string[] }[];
+  stats?: { cases: number; errors: number; hangs: number; crashes: number; slow: number; silentKeeps: number };
+  survivals?: { name: string; left: string[]; warned: boolean; file: string }[];
+}
+/** A prepared picture whose outputs the tool checks decode, list and validate. */
+interface ToolOutput {
+  fixture: string;
+  inFile: string;
+  redFile: string;
+  allFile: string;
+  startFile: string;
+  format: Format;
+  hdrKept: boolean;
+  rec: AuditRecord;
+}
+
+const outputsForTools: ToolOutput[] = []; // { fixture, label, inFile, outFile, format }
 
 // The HDR gain map (JPEG or HEIC), its XMP description and Apple HDR brightness: amber, and
 // unticked in the red-and-amber selection (step 2b), as app.js GAIN_MAP_OWN.
@@ -368,9 +518,9 @@ const GAIN_MAP_IDS = new Set(['jpeg:trailing:gain-map', 'heic:gain-map']);
 // with a wrapper is checked in that form, one without in the compact form; an emptied HEIC
 // packet is the one fixed empty packet. Returns { packets, problems }.
 const EMPTY_PACKET = '<x:xmpmeta xmlns:x="adobe:ns:meta/"/>';
-function xmpLayout(bytes) {
+function xmpLayout(bytes: Uint8Array): { packets: number; problems: string[] } {
   const b = Buffer.from(bytes);
-  const texts = [];
+  const texts: string[] = [];
   const fmt = core.detectFormat(u8(b));
   if (fmt === 'jpeg') {
     // Every APP1 XMP segment anywhere in the file: the photo's and those of a gain map or
@@ -387,7 +537,7 @@ function xmpLayout(bytes) {
       const d = b.subarray(c.data, c.end - 4);
       const z = d.indexOf(0);
       const kw = d.toString('latin1', 0, z);
-      let raw;
+      let raw: Buffer;
       try {
         if (c.type === 'tEXt') raw = d.subarray(z + 1);
         else if (c.type === 'zTXt') raw = zlib.inflateSync(d.subarray(z + 2));
@@ -418,7 +568,7 @@ function xmpLayout(bytes) {
       if (!t.every((x) => x === 0)) texts.push(t.toString('utf8'));
     }
   }
-  const problems = [];
+  const problems: string[] = [];
   for (const t of texts) {
     if (t === EMPTY_PACKET) continue;
     const canon = canonicalXmp(parseXmp(t), !t.startsWith('<?xpacket'));
@@ -427,15 +577,15 @@ function xmpLayout(bytes) {
   return { packets: texts.length, problems };
 }
 
-async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = true } = {}) {
-  const rec = { label, file, section, size: bytesIn.length };
+async function evaluate(label: string, file: string, bytesIn: Uint8Array, canaries: AuditCanary[], { section, gpsCheck = true }: { section?: string; gpsCheck?: boolean } = {}): Promise<AuditRecord> {
+  const rec: AuditRecord = { label, file, section, size: bytesIn.length };
   const inBuf = Buffer.from(bytesIn);
   const fmt = core.detectFormat(u8(inBuf));
   rec.format = fmt;
   if (!fmt) { rec.unsupported = true; return rec; }
-  let ins;
+  let ins: InspectResult;
   try { ins = await core.inspect(u8(inBuf)); } catch (e) {
-    rec.error = `${e.name}: ${e.message}`;
+    rec.error = `${(e as Error).name}: ${(e as Error).message}`;
     finding('medium', label, 'inspect()', `inspect() threw ${rec.error}, so nothing in this file can be offered for removal.`, `node -e "import('${CORE_URL}').then(async c=>console.log(await c.inspect(new Uint8Array(require('fs').readFileSync('${file}')))))"`);
     return rec;
   }
@@ -448,19 +598,19 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
   rec.missingInInput = canaries.filter((c) => !present.includes(c)).map((c) => c.string);
 
   // 1. attribution: which single detail removes each planted string
-  const removedBy = new Map(present.map((c) => [c.string, []]));
-  const touchedBy = new Map(present.map((c) => [c.string, []]));
-  const countsIn = new Map(present.map((c) => [c.string, countIn(hayIn, c.string)]));
+  const removedBy = new Map(present.map((c): [string, string[]] => [c.string, []]));
+  const touchedBy = new Map(present.map((c): [string, string[]] => [c.string, []]));
+  const countsIn = new Map(present.map((c): [string, number] => [c.string, countIn(hayIn, c.string)]));
   for (const id of ids) {
     const r = await core.scrub(u8(inBuf), [id]);
     const hay = haystacks(r.bytes);
     for (const c of present) {
       const n = countIn(hay, c.string);
-      if (!n) removedBy.get(c.string).push(id);
-      if (n < countsIn.get(c.string)) touchedBy.get(c.string).push(id);
+      if (!n) removedBy.get(c.string)!.push(id);
+      if (n < countsIn.get(c.string)!) touchedBy.get(c.string)!.push(id);
     }
   }
-  const itemOf = (id) => ins.items.find((i) => i.id === id);
+  const itemOf = (id: string): Item => ins.items.find((i) => i.id === id)!;
 
   // 2, 2b, 2b-min and 3. red only (the page's starting selection), red and amber with the
   // gain map kept, every red and amber detail, and every detail ticked
@@ -501,25 +651,25 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
   rec.redFile = redFile;
   rec.allFile = allFile;
 
-  const repro = (which) => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${file}')); const i=await c.inspect(b); const h=i.items.some(x=>['jpeg:trailing:gain-map','heic:gain-map'].includes(x.id)&&x.tier==='amber'); const r=await c.scrub(b, i.items${which === 'red' ? ".filter(x=>x.tier==='red')" : which === 'start' ? ".filter(x=>x.tier!=='green'&&!(h&&x.tier==='amber'&&['jpeg:trailing:gain-map','heic:gain-map','xmp:gainmap','exif:apple-hdr'].includes(x.id)))" : which === 'min' ? ".filter(x=>x.tier!=='green')" : ''}.map(x=>x.id)); fs.writeFileSync('/tmp/out.${ext}', r.bytes)"; then grep -c (or tests/fixtures/fixturekit.py scan) /tmp/out.${ext}`;
+  const repro = (which: string): string => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${file}')); const i=await c.inspect(b); const h=i.items.some(x=>['jpeg:trailing:gain-map','heic:gain-map'].includes(x.id)&&x.tier==='amber'); const r=await c.scrub(b, i.items${which === 'red' ? ".filter(x=>x.tier==='red')" : which === 'start' ? ".filter(x=>x.tier!=='green'&&!(h&&x.tier==='amber'&&['jpeg:trailing:gain-map','heic:gain-map','xmp:gainmap','exif:apple-hdr'].includes(x.id)))" : which === 'min' ? ".filter(x=>x.tier!=='green')" : ''}.map(x=>x.id)); fs.writeFileSync('/tmp/out.${ext}', r.bytes)"; then grep -c (or tests/fixtures/fixturekit.py scan) /tmp/out.${ext}`;
 
   rec.canaries = [];
   for (const c of present) {
-    const by = removedBy.get(c.string);
-    const touched = touchedBy.get(c.string);
+    const by = removedBy.get(c.string)!;
+    const touched = touchedBy.get(c.string)!;
     const byItems = (by.length ? by : touched).map(itemOf);
-    const tiers = [...new Set(byItems.map((i) => i.tier))];
+    const tiers: string[] = [...new Set(byItems.map((i) => i.tier))];
     const leftRed = locate(hayRed, c.string);
     const leftAll = locate(hayAll, c.string);
     const visible = byItems.some((i) => i.value.includes(c.string.slice(0, Math.min(24, c.string.length))));
     const leftStart = locate(hayStart, c.string);
     const leftMin = hdrKept ? locate(hayMin, c.string) : leftStart;
-    const row = { string: c.string, expected: c.tier, removedBy: by, touchedBy: touched, tiers, leftAfterDefault: describeHits(leftRed), leftAfterStart: describeHits(leftStart), leftAfterMin: describeHits(leftMin), leftAfterAll: describeHits(leftAll) };
+    const row: CanaryRow = { string: c.string, expected: c.tier, removedBy: by, touchedBy: touched, tiers, leftAfterDefault: describeHits(leftRed), leftAfterStart: describeHits(leftStart), leftAfterMin: describeHits(leftMin), leftAfterAll: describeHits(leftAll) };
     rec.canaries.push(row);
     const where = c.location || '';
     if (c.tier === 'red' && leftRed.length) {
-      let sev;
-      let why;
+      let sev: Severity;
+      let why: string;
       if (by.some((id) => itemOf(id).tier === 'red')) { sev = 'critical'; why = `a red detail (${by.filter((id) => itemOf(id).tier === 'red').join(', ')}) removes it on its own, yet it survives the red-only scrub`; }
       else if (touched.some((id) => itemOf(id).tier === 'red')) { sev = 'critical'; why = `red detail(s) ${touched.filter((id) => itemOf(id).tier === 'red').join(', ')} remove some copies but not all`; }
       else if (!by.length && !touched.length) { sev = 'critical'; why = leftAll.length ? 'no detail removes it, not even ticking every detail: the user is never offered its removal' : 'no single detail removes it; only ticking every detail does'; }
@@ -540,7 +690,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
       finding('medium', label, where, `Planted ${c.tier} string ${JSON.stringify(c.string)} has no detail of its own; only ticking every detail removes it, so the user cannot remove it selectively.`, repro('all'));
     }
     if (by.length && !tiers.includes(c.tier)) {
-      const order = { red: 0, amber: 1, green: 2 };
+      const order: Record<string, number> = { red: 0, amber: 1, green: 2 };
       const strictest = tiers.sort((a, b) => order[a] - order[b])[0];
       if (c.tier !== 'red' && order[strictest] < order[c.tier]) {
         finding('low', label, where, `Planted ${c.tier} string ${JSON.stringify(c.string)} is only removable through ${by.join(', ')} (${tiers.join('/')}), so the default selection removes it too (over-removal, not a leak).`, repro('red'));
@@ -559,17 +709,17 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
 
   // 6. partial overwrites: fragments of removed strings
   const others = canaries.map((c) => c.string);
-  for (const [which, hay, sel] of [['red-only', hayRed, (c) => c.tier === 'red'], ['red-and-amber', hayStart, (c) => c.tier === 'red' || c.tier === 'amber'], ...(hdrKept ? [['minimal-selection', hayMin, (c) => c.tier === 'red' || c.tier === 'amber']] : []), ['every-detail', hayAll, () => true]]) {
+  for (const [which, hay, sel] of [['red-only', hayRed, (c) => c.tier === 'red'], ['red-and-amber', hayStart, (c) => c.tier === 'red' || c.tier === 'amber'], ...(hdrKept ? [['minimal-selection', hayMin, (c: AuditCanary) => c.tier === 'red' || c.tier === 'amber']] : []), ['every-detail', hayAll, () => true]] as [string, Hay[], (c: AuditCanary) => boolean][]) {
     for (const c of present.filter(sel)) {
       if (locate(hay, c.string).length || c.string.length < 14 || !/^CANARY|^[A-Z]{3,}-/.test(c.string)) continue;
-      const frags = [];
+      const frags: string[] = [];
       for (let i = 0; i + 10 <= c.string.length; i++) {
         const w = c.string.slice(i, i + 10);
         if (others.some((o) => o !== c.string && o.includes(w))) continue;
         const h = locate(hay, w);
         if (h.length) frags.push(`${JSON.stringify(w)} ${describeHits(h)}`);
       }
-      if (frags.length) finding(which === 'red-only' ? 'critical' : 'high', label, c.location || '', `Fragments of removed string ${JSON.stringify(c.string)} remain after the ${which} scrub (partial overwrite): ${frags.slice(0, 3).join(' | ')}.`, repro({ 'red-only': 'red', 'red-and-amber': 'start', 'minimal-selection': 'min' }[which] || 'all'));
+      if (frags.length) finding(which === 'red-only' ? 'critical' : 'high', label, c.location || '', `Fragments of removed string ${JSON.stringify(c.string)} remain after the ${which} scrub (partial overwrite): ${frags.slice(0, 3).join(' | ')}.`, repro(({ 'red-only': 'red', 'red-and-amber': 'start', 'minimal-selection': 'min' } as Partial<Record<string, string>>)[which] || 'all'));
     }
   }
   // 6b. raw GPS rationals of the input must be gone after the red-only scrub
@@ -577,7 +727,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     const gps = gpsRationals(inBuf);
     rec.gpsRationals = gps.length;
     for (const g of gps) {
-      for (const [which, out] of [['red-only', red.bytes], ['every-detail', all.bytes]]) {
+      for (const [which, out] of [['red-only', red.bytes], ['every-detail', all.bytes]] as const) {
         const at = Buffer.from(out).indexOf(g.bytes);
         if (at >= 0) finding('critical', label, `EXIF GPS ${g.label}`, `The raw ${g.label} rational (${g.bytes.toString('hex')}) is still in the bytes after the ${which} scrub, at offset ${hexAt(at)}: the GPS value was unlinked, not erased.`, repro(which === 'red-only' ? 'red' : 'all'));
       }
@@ -591,7 +741,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     rec.wordDefault = core.privacyWord(rbRed.items);
     const stillRed = rbRed.items.filter((i) => i.tier === 'red');
     if (stillRed.length) finding('high', label, 'read-back', `After the red-only scrub, the read-back still lists red details: ${stillRed.map((i) => `${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordDefault}".`, repro('red'));
-  } catch (e) { finding('high', label, 'read-back', `inspect() of the red-only output throws ${e.name}: ${e.message}`, repro('red')); }
+  } catch (e) { finding('high', label, 'read-back', `inspect() of the red-only output throws ${(e as Error).name}: ${(e as Error).message}`, repro('red')); }
   try {
     const rbStart = await core.inspect(start.bytes);
     rec.readbackStart = rbStart.items.map((i) => `${i.tier}:${i.id}`);
@@ -599,7 +749,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     const notGreen = rbStart.items.filter((i) => i.tier !== 'green' && !(hdrKept && i.tier === 'amber' && GAIN_MAP_OWN.has(i.id)));
     if (notGreen.length) finding('high', label, 'read-back', `After the red-and-amber selection (red and amber ticked${hdrKept ? ', the HDR gain map kept' : ''}), the read-back still lists red or amber details: ${notGreen.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordStart}".`, repro('start'));
     if (hdrKept && !rec.hdrFellBack && !rbStart.items.some((i) => GAIN_MAP_IDS.has(i.id))) finding('medium', label, 'read-back', 'The red-and-amber selection was meant to keep the HDR gain map, but the read-back no longer lists it, and the scrub did not say why.', repro('start'));
-  } catch (e) { finding('high', label, 'read-back', `inspect() of the red-and-amber output throws ${e.name}: ${e.message}`, repro('start')); }
+  } catch (e) { finding('high', label, 'read-back', `inspect() of the red-and-amber output throws ${(e as Error).name}: ${(e as Error).message}`, repro('start')); }
   if (hdrKept) {
     try {
       const rbMin = await core.inspect(min.bytes);
@@ -607,18 +757,18 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
       rec.wordMin = core.privacyWord(rbMin.items);
       const notGreen = rbMin.items.filter((i) => i.tier !== 'green');
       if (notGreen.length) finding('high', label, 'read-back', `With every red and amber detail ticked, the HDR gain map included, the read-back still lists red or amber details: ${notGreen.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word would be "${rec.wordMin}".`, repro('min'));
-    } catch (e) { finding('high', label, 'read-back', `inspect() of the minimal-selection output throws ${e.name}: ${e.message}`, repro('min')); }
+    } catch (e) { finding('high', label, 'read-back', `inspect() of the minimal-selection output throws ${(e as Error).name}: ${(e as Error).message}`, repro('min')); }
   }
   try {
     const rbAll = await core.inspect(all.bytes);
     rec.readbackAll = rbAll.items.map((i) => `${i.tier}:${i.id}`);
     rec.wordAll = core.privacyWord(rbAll.items);
     if (rbAll.items.length) finding('medium', label, 'read-back', `After the every-detail scrub, the read-back still lists details: ${rbAll.items.map((i) => `${i.tier}:${i.id} (${i.value})`).join('; ')}. The word is "${rec.wordAll}", not "clean".`, repro('all'));
-  } catch (e) { finding('high', label, 'read-back', `inspect() of the every-detail output throws ${e.name}: ${e.message}`, repro('all')); }
+  } catch (e) { finding('high', label, 'read-back', `inspect() of the every-detail output throws ${(e as Error).name}: ${(e as Error).message}`, repro('all')); }
 
   // 0.0.3, decision 4: every XMP packet left in a prepared file is in the canonical form.
   rec.xmpPackets = 0;
-  for (const [which, out] of [['red-only', red.bytes], ['red-and-amber', start.bytes], ['every-detail', all.bytes]]) {
+  for (const [which, out] of [['red-only', red.bytes], ['red-and-amber', start.bytes], ['every-detail', all.bytes]] as const) {
     const lay = xmpLayout(out);
     rec.xmpPackets += lay.packets;
     if (lay.problems.length) finding('high', label, 'XMP layout', `After the ${which} scrub, ${lay.problems.length} XMP packet(s) are not in the canonical form, so their layout (white space, padding, order) can carry data: ${lay.problems.slice(0, 3).join('; ')}.`, repro(which === 'red-only' ? 'red' : which === 'every-detail' ? 'all' : 'start'));
@@ -628,13 +778,13 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     // Only XMP may change length (it is written in the canonical form); the boxes stay the
     // same and in the same order, and every other item keeps its length.
     const hin = parseHeif(u8(inBuf));
-    for (const [which, out] of [['red-only', red.bytes], ['every-detail', all.bytes]]) {
+    for (const [which, out] of [['red-only', red.bytes], ['every-detail', all.bytes]] as const) {
       const ho = parseHeif(u8(Buffer.from(out)));
       const newWarn = ho.warnings.filter((w) => !hin.warnings.includes(w));
-      const types = (m) => `${m.top.map((x) => x.type).join(',')} / ${m.metaKids.map((x) => x.type).join(',')}`;
+      const types = (m: HeifModel): string => `${m.top.map((x) => x.type).join(',')} / ${m.metaKids.map((x) => x.type).join(',')}`;
       const resized = [...hin.items.values()].filter((it) => it.ranges && !(it.type === 'mime' && /rdf\+xml|xmp/i.test(it.contentType))).filter((it) => {
         const o = ho.items.get(it.id);
-        const len = (x) => (x && x.ranges ? x.ranges.reduce((n, [a, e]) => n + e - a, 0) : -1);
+        const len = (x: HeifItem | undefined): number => (x && x.ranges ? x.ranges.reduce((n, [a, e]) => n + e - a, 0) : -1);
         return len(o) !== len(it);
       });
       if (newWarn.length) finding('medium', label, 'HEIC structure', `The ${which} output reads with new warnings: ${newWarn.join(' / ')}`, repro(which === 'red-only' ? 'red' : 'all'));
@@ -644,7 +794,7 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
     }
     // A removed image must not turn into a picture of its own that a viewer offers (review of
     // 4 October 2026): libheif counts no more top-level images than in the input.
-    const outFiles = [['red-only', rec.redFile], ['every-detail', rec.allFile]].filter(([, f]) => f);
+    const outFiles = ([['red-only', rec.redFile!], ['every-detail', rec.allFile!]] as [string, string][]).filter(([, f]) => f);
     const heif = heifInfo([file, ...outFiles.map(([, f]) => f)]);
     if (heif && heif[file] && !heif[file].error) {
       for (const [which, f] of outFiles) {
@@ -659,25 +809,29 @@ async function evaluate(label, file, bytesIn, canaries, { section, gpsCheck = tr
 // ======================================================================================
 // Section 1: registry fixtures
 
-function loadRegistry() {
+// A row of out/canaries.tsv, by the names in its header line (file, string, tier, basis,
+// location, group).
+type RegRow = Record<string, string>;
+
+function loadRegistry(): RegRow[] {
   const p = join(FIXTURES, 'canaries.tsv');
   if (!existsSync(p)) {
     log(`Fixtures missing; running tests/fixtures/make-fixtures.sh`);
     sh('bash', [join(ROOT, 'tests', 'fixtures', 'make-fixtures.sh')]);
   }
   const lines = readFileSync(p, 'utf8').split('\n').filter(Boolean);
-  const head = lines.shift().split('\t');
+  const head = lines.shift()!.split('\t');
   return lines.map((l) => Object.fromEntries(l.split('\t').map((v, i) => [head[i], v])));
 }
 
-async function sectionRegistry(records) {
+async function sectionRegistry(records: AuditRecord[]): Promise<void> {
   const reg = loadRegistry();
-  const byFile = new Map();
-  for (const r of reg) { if (!byFile.has(r.file)) byFile.set(r.file, []); byFile.get(r.file).push(r); }
+  const byFile = new Map<string, RegRow[]>();
+  for (const r of reg) { if (!byFile.has(r.file)) byFile.set(r.file, []); byFile.get(r.file)!.push(r); }
   for (const name of readdirSync(FIXTURES).filter((n) => /\.(jpe?g|png|webp|heic|pdf)$/i.test(n)).sort()) {
     const file = join(FIXTURES, name);
     const bytes = readFileSync(file);
-    const rows = (byFile.get(name) || []).map((r) => ({ string: r.string, tier: r.tier, basis: r.basis, location: r.location, group: r.group }));
+    const rows = (byFile.get(name) || []).map((r): AuditCanary => ({ string: r.string, tier: r.tier, basis: r.basis, location: r.location, group: r.group }));
     log(`[registry] ${name} (${rows.length} planted)`);
     if (core.detectFormat(u8(bytes)) === null) {
       if (/\.pdf$/.test(name)) pass(`${name}: detectFormat() returns null, as it must for a PDF`);
@@ -692,14 +846,14 @@ async function sectionRegistry(records) {
 // ======================================================================================
 // Section 2: pictures generated by the engine tests
 
-async function sectionCore(records) {
+async function sectionCore(records: AuditRecord[]): Promise<void> {
   if (!existsSync(CORE_FIX) || !readdirSync(CORE_FIX).length) {
     log(`[core] ${CORE_FIX} is empty; run the engine tests first (MS_FIXTURE_DIR=${CORE_FIX} npm test)`);
     return;
   }
   const prev = process.env.MS_FIXTURE_DIR;
   process.env.MS_FIXTURE_DIR = CORE_FIX;
-  const { PLANT } = await import(pathToFileURL(join(HERE, 'core-fixtures.ts')).href);
+  const { PLANT }: typeof import('./core-fixtures.ts') = await import(pathToFileURL(join(HERE, 'core-fixtures.ts')).href);
   if (prev === undefined) delete process.env.MS_FIXTURE_DIR;
   // Copyright is red: it names the photographer (decision of 2026-10-01, see README).
   // The computer name is red: it often names the owner (decision of 2026-10-02).
@@ -708,7 +862,7 @@ async function sectionCore(records) {
   // its old name), and so is the rest of Apple's MakerNote next to the HDR numbers.
   // Descriptions and comments are free text, red since 0.0.3 (decision of 2026-10-04).
   const redKeys = ['description', 'comment', 'artist', 'owner', 'serial', 'lensSerial', 'uniqueId', 'xmpCreator', 'xmpCity', 'xmpDocId', 'xmpAuxSerial', 'iptcByline', 'iptcCity', 'iptcContact', 'unknownApp', 'trailing', 'copyright', 'computer', 'hdr', 'hdr2', 'hdrAmber', 'green', 'appleNote'];
-  const canaries = [
+  const canaries: AuditCanary[] = [
     ...Object.entries(PLANT).map(([k, v]) => ({ string: v, tier: redKeys.includes(k) ? 'red' : 'amber', basis: 'core PLANT', location: `PLANT.${k}` })),
     { string: 'GPS-AREA-PLANT', tier: 'red', basis: 'core', location: 'GPSAreaInformation' },
     { string: 'MAKERNOTE-OWNER-PLANT', tier: 'red', basis: 'core', location: 'MakerNote owner' },
@@ -734,30 +888,56 @@ async function sectionCore(records) {
 // places, serials, IDs and previews are red.
 
 const ADV = join(OUT, 'adversarial');
-const advPath = (n) => join(ADV, n);
+const advPath = (n: string): string => join(ADV, n);
 
-function magickTo(file, args) { sh('magick', [...args, file]); return readFileSync(file); }
-function baseJpeg(name, w = 96, h = 64, seed = 7, comment) {
+/** An adversarial picture: its file name, bytes, planted strings and a note for the report. */
+interface AdvCase {
+  name: string;
+  bytes: Buffer;
+  canaries: AuditCanary[];
+  note: string;
+  /** An iPhone-style HDR HEIC whose gain map must stay attached (heicHdrCheck). */
+  appleHdr?: boolean;
+  /** A HEIC whose auxiliary image must be gone (heicHdrCheck). */
+  auxGone?: boolean;
+}
+
+function magickTo(file: string, args: string[]): Buffer { sh('magick', [...args, file]); return readFileSync(file); }
+function baseJpeg(name: string, w = 96, h = 64, seed = 7, comment?: string): Buffer {
   const args = ['-seed', String(seed), '-size', `${w}x${h}`, 'plasma:fractal', '-strip', '-quality', '88'];
   if (comment) args.push('-set', 'comment', comment);
   return magickTo(advPath(name), args);
 }
-const seg = (marker, payload) => cat(Buffer.from([0xff, marker]), be16(B(payload).length + 2), payload);
+const seg = (marker: number, payload: Part): Buffer => cat(Buffer.from([0xff, marker]), be16(B(payload).length + 2), payload);
 // Inserts segments after SOI and any APP0.
-function jpegInsert(jpeg, ...segs) {
+function jpegInsert(jpeg: Buffer, ...segs: Buffer[]): Buffer {
   let p = 2;
   while (jpeg[p] === 0xff && jpeg[p + 1] === 0xe0) p += 2 + jpeg.readUInt16BE(p + 2);
   return cat(jpeg.subarray(0, p), ...segs, jpeg.subarray(p));
 }
-const exifSeg = (tiff) => seg(0xe1, cat('Exif\0\0', tiff));
+const exifSeg = (tiff: Part): Buffer => seg(0xe1, cat('Exif\0\0', tiff));
 
 // Little-endian TIFF writer with free layout: dirs is [{ name, entries, next }], each entry
 // { tag, type, count?, data?: Buffer|string, ptr?: dirName, blob?: blobName, raw?: number }.
 // Directories come first in order, each followed by its out-of-line values, then the blobs.
-function tiffLE(dirs, blobs = {}) {
-  const unit = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8, 129: 1 };
-  const dataOf = (e) => (e.data === undefined ? null : typeof e.data === 'string' ? Buffer.from(`${e.data}\0`, 'utf8') : B(e.data));
-  const at = {};
+interface TiffEntry {
+  tag: number;
+  type: number;
+  count?: number;
+  data?: Part;
+  ptr?: string;
+  blob?: string;
+  raw?: number;
+}
+interface TiffDir {
+  name: string;
+  entries: TiffEntry[];
+  next?: string | number;
+}
+function tiffLE(dirs: TiffDir[], blobs: Record<string, Buffer> = {}): Buffer {
+  const unit: Record<number, number> = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8, 129: 1 };
+  const dataOf = (e: TiffEntry): Buffer | null => (e.data === undefined ? null : typeof e.data === 'string' ? Buffer.from(`${e.data}\0`, 'utf8') : B(e.data));
+  const at: Record<string, number> = {};
   let p = 8;
   for (const d of dirs) {
     at[d.name] = p;
@@ -779,8 +959,8 @@ function tiffLE(dirs, blobs = {}) {
       if (e.ptr) out.writeUInt32LE(at[e.ptr], q + 8);
       else if (e.blob) out.writeUInt32LE(at[`blob:${e.blob}`], q + 8);
       else if (e.raw !== undefined) out.writeUInt32LE(e.raw >>> 0, q + 8);
-      else if (v.length <= 4) v.copy(out, q + 8);
-      else { out.writeUInt32LE(data, q + 8); v.copy(out, data); data += v.length + (v.length & 1); }
+      else if (v!.length <= 4) v!.copy(out, q + 8);
+      else { out.writeUInt32LE(data, q + 8); v!.copy(out, data); data += v!.length + (v!.length & 1); }
       q += 12;
     }
     const nx = d.next === undefined ? 0 : typeof d.next === 'number' ? d.next : at[d.next];
@@ -789,9 +969,9 @@ function tiffLE(dirs, blobs = {}) {
   for (const [k, v] of Object.entries(blobs)) B(v).copy(out, at[`blob:${k}`]);
   return out;
 }
-const rational = (...pairs) => cat(...pairs.map((v) => le32(v)));
+const rational = (...pairs: number[]): Buffer => cat(...pairs.map((v) => le32(v)));
 // GPS 59° 54' 50.08" N, 10° 45' 7.92" E (Oslo, the Opera House area; public landmark)
-const GPS_ENTRIES = (area) => [
+const GPS_ENTRIES = (area?: string): TiffEntry[] => [
   { tag: 0x0000, type: 1, count: 4, data: Buffer.from([2, 3, 0, 0]) },
   { tag: 0x0001, type: 2, data: 'N' },
   { tag: 0x0002, type: 5, count: 3, data: rational(59, 1, 54, 1, 5008, 100) },
@@ -799,7 +979,7 @@ const GPS_ENTRIES = (area) => [
   { tag: 0x0004, type: 5, count: 3, data: rational(10, 1, 45, 1, 792, 100) },
   ...(area ? [{ tag: 0x001c, type: 7, data: cat('ASCII\0\0\0', area) }] : []),
 ];
-const XMP = (body, ns = '', extra = '') => `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+const XMP = (body: string, ns = '', extra = ''): string => `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">${extra}
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about="" ${ns}>
@@ -808,18 +988,18 @@ ${body}
  </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>`;
-const xmpSeg = (text) => seg(0xe1, cat('http://ns.adobe.com/xap/1.0/\0', Buffer.from(text, 'utf8')));
-const C = (tag) => `CANARY-ADV-${tag}`;
+const xmpSeg = (text: string): Buffer => seg(0xe1, cat('http://ns.adobe.com/xap/1.0/\0', Buffer.from(text, 'utf8')));
+const C = (tag: string): string => `CANARY-ADV-${tag}`;
 // A message spelt in white space: each bit a space or a tab, each byte ended by a newline.
-const WS_SPELL = (text) => [...Buffer.from(text, 'latin1')].map((c) => `${[...c.toString(2).padStart(8, '0')].map((x) => (x === '1' ? '\t' : ' ')).join('')}\n`).join('');
+const WS_SPELL = (text: string): string => [...Buffer.from(text, 'latin1')].map((c) => `${[...c.toString(2).padStart(8, '0')].map((x) => (x === '1' ? '\t' : ' ')).join('')}\n`).join('');
 // Apple's MakerNote ("Apple iOS", big-endian, offsets from its own start) with the two HDR
 // numbers (tags 33 and 48) and a text tag.
-function appleNote(text) {
+function appleNote(text: string): Buffer {
   const t = Buffer.from(`${text}\0`, 'latin1');
-  const entries = [[0x0001, 9, 1, be32(14)], [0x000b, 2, t.length, t], [0x0021, 10, 1, cat(be32(10200), be32(10000))], [0x0030, 10, 1, cat(be32(64), be32(10000))]];
+  const entries: [number, number, number, Buffer][] = [[0x0001, 9, 1, be32(14)], [0x000b, 2, t.length, t], [0x0021, 10, 1, cat(be32(10200), be32(10000))], [0x0030, 10, 1, cat(be32(64), be32(10000))]];
   const head = 14 + 2 + 12 * entries.length + 4;
   const parts = [Buffer.from('Apple iOS\0\0\x01MM', 'latin1'), be16(entries.length)];
-  const values = [];
+  const values: Buffer[] = [];
   let at = head;
   for (const [tag, type, count, data] of entries) {
     parts.push(be16(tag), be16(type), be32(count));
@@ -830,9 +1010,9 @@ function appleNote(text) {
   return cat(...parts, ...values);
 }
 
-function buildAdversarial() {
-  const list = [];
-  const add = (name, bytes, canaries, note, extra = {}) => { writeFileSync(advPath(name), bytes); list.push({ name, bytes, canaries, note, ...extra }); };
+function buildAdversarial(): AdvCase[] {
+  const list: AdvCase[] = [];
+  const add = (name: string, bytes: Buffer, canaries: AuditCanary[], note: string, extra: { appleHdr?: boolean; auxGone?: boolean } = {}): void => { writeFileSync(advPath(name), bytes); list.push({ name, bytes, canaries, note, ...extra }); };
 
   // A1. A second preview in IFD2, chained after the IFD1 thumbnail.
   {
@@ -882,7 +1062,7 @@ function buildAdversarial() {
   }
   // A5. IPTC (0x83BB) and XMP (0x02BC) stored as tags inside EXIF IFD0.
   {
-    const ds = (rec, n, v) => cat(Buffer.from([0x1c, rec, n]), be16(Buffer.byteLength(v)), v);
+    const ds = (rec: number, n: number, v: string): Buffer => cat(Buffer.from([0x1c, rec, n]), be16(Buffer.byteLength(v)), v);
     const iptc = cat(ds(1, 90, '\x1b%G'), ds(2, 0, '\0\x04'), ds(2, 80, C('EXIFIPTC-BYLINE-66ff')), ds(2, 90, C('EXIFIPTC-CITY-7701')));
     const xmp = XMP(`   <dc:creator><rdf:Seq><rdf:li>${C('EXIFXMP-CREATOR-8812')}</rdf:li></rdf:Seq></dc:creator>`, 'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="59,54.8346N" exif:GPSLongitude="10,45.1320E"');
     const tiff = tiffLE([
@@ -950,7 +1130,7 @@ function buildAdversarial() {
     const segs = jpegSegments(base);
     const dqt = segs.find((s) => s.marker === 0xdb);
     const junk = Buffer.from(`\x00\x00 Owner: Astrid Holmvik ${C('JUNK-BETWEEN-SEGMENTS-12ab')} \x00`, 'latin1');
-    add('adv-junk-between-segments.jpg', cat(base.subarray(0, dqt.start), junk, base.subarray(dqt.start)), [
+    add('adv-junk-between-segments.jpg', cat(base.subarray(0, dqt!.start), junk, base.subarray(dqt!.start)), [
       { string: C('JUNK-BETWEEN-SEGMENTS-12ab'), tier: 'red', location: 'stray bytes between APP0 and DQT' },
     ], 'Garbage bytes between segments. libjpeg reports "extraneous bytes" and decodes.');
   }
@@ -959,7 +1139,7 @@ function buildAdversarial() {
     const base = baseJpeg('b9.jpg');
     const segs = jpegSegments(base);
     const dqt = segs.find((s) => s.marker === 0xdb);
-    add('adv-dnl-segment.jpg', cat(base.subarray(0, dqt.start), seg(0xdc, `\0\0 ${C('DNL-SEGMENT-23bc')} `), base.subarray(dqt.start)), [
+    add('adv-dnl-segment.jpg', cat(base.subarray(0, dqt!.start), seg(0xdc, `\0\0 ${C('DNL-SEGMENT-23bc')} `), base.subarray(dqt!.start)), [
       { string: C('DNL-SEGMENT-23bc'), tier: 'red', location: 'FF DC (DNL) segment with a long payload, before DQT' },
     ], 'A DNL marker segment carrying text.');
   }
@@ -968,15 +1148,15 @@ function buildAdversarial() {
     const base = baseJpeg('b10.jpg');
     const segs = jpegSegments(base);
     const app0 = segs.find((s) => s.marker === 0xe0);
-    const payload = cat(base.subarray(app0.data, app0.data + 14), ` ${C('JFIF-TRAILING-34cd')} `);
+    const payload = cat(base.subarray(app0!.data, app0!.data! + 14), ` ${C('JFIF-TRAILING-34cd')} `);
     payload[12] = 0; payload[13] = 0;
-    add('adv-jfif-extra-bytes.jpg', cat(base.subarray(0, app0.start), seg(0xe0, payload), base.subarray(app0.end)), [
+    add('adv-jfif-extra-bytes.jpg', cat(base.subarray(0, app0!.start), seg(0xe0, payload), base.subarray(app0!.end)), [
       { string: C('JFIF-TRAILING-34cd'), tier: 'red', location: 'extra bytes at the end of the JFIF APP0 segment' },
     ], 'JFIF segment longer than its 14-byte header, with no thumbnail declared.');
   }
   // A11. Photoshop APP13 whose IPTC block starts with a stray byte.
   {
-    const ds = (rec, n, v) => cat(Buffer.from([0x1c, rec, n]), be16(Buffer.byteLength(v)), v);
+    const ds = (rec: number, n: number, v: string): Buffer => cat(Buffer.from([0x1c, rec, n]), be16(Buffer.byteLength(v)), v);
     const iptc = cat(Buffer.from([0x20]), ds(2, 80, C('IRB-IPTC-BYLINE-45de')), ds(2, 90, C('IRB-IPTC-CITY-56ef')));
     const res = cat('8BIM', be16(0x0404), Buffer.from([0, 0]), be32(iptc.length), iptc, iptc.length & 1 ? Buffer.from([0]) : Buffer.alloc(0));
     add('adv-app13-unparsed-iptc.jpg', jpegInsert(baseJpeg('b11.jpg'), seg(0xed, cat('Photoshop 3.0\0', res))), [
@@ -985,9 +1165,9 @@ function buildAdversarial() {
     ], 'APP13 Photoshop resource 0x0404 whose IPTC data begins with a stray byte.');
   }
   // A12 and A13. A full-size extra image in MPF (disparity type) and a gain map, each with EXIF.
-  const mpfFile = (name, second, type, hints, canaries, note) => {
+  const mpfFile = (name: string, second: Buffer, type: number, hints: string | null, canaries: AuditCanary[], note: string): void => {
     const primBase = baseJpeg(`mpfbase-${name}`, 96, 64, 21);
-    const mpfPayload = (primLen, secLen, secOff) => {
+    const mpfPayload = (primLen: number, secLen: number, secOff: number): Buffer => {
       const entries = cat(le32(0x20030000), le32(primLen), le32(0), le16(0), le16(0), le32(type), le32(secLen), le32(secOff), le16(0), le16(0));
       return cat('MPF\0', tiffLE([{ name: 'ifd0', entries: [
         { tag: 0xb000, type: 7, count: 4, data: Buffer.from('0100') },
@@ -995,13 +1175,13 @@ function buildAdversarial() {
         { tag: 0xb002, type: 7, data: entries },
       ] }]));
     };
-    const segs = [];
+    const segs: Buffer[] = [];
     if (hints) segs.push(xmpSeg(hints));
     const tiffP = tiffLE([{ name: 'ifd0', entries: [{ tag: 0x010f, type: 2, data: 'Advcam' }] }]);
     segs.push(exifSeg(tiffP));
-    const build = (primLen, secOff) => jpegInsert(primBase, ...segs, seg(0xe2, mpfPayload(primLen, second.length, secOff)));
+    const build = (primLen: number, secOff: number): Buffer => jpegInsert(primBase, ...segs, seg(0xe2, mpfPayload(primLen, second.length, secOff)));
     let prim = build(0, 0);
-    const mpfBase = (() => { const s = jpegSegments(prim).find((x) => x.marker === 0xe2 && prim.toString('latin1', x.data, x.data + 4) === 'MPF\0'); return s.data + 4; })();
+    const mpfBase = (() => { const s = jpegSegments(prim).find((x) => x.marker === 0xe2 && prim.toString('latin1', x.data, x.data! + 4) === 'MPF\0'); return s!.data! + 4; })();
     prim = build(prim.length, prim.length - mpfBase);
     add(name, cat(prim, second), canaries, note);
   };
@@ -1048,8 +1228,8 @@ function buildAdversarial() {
   }
   // A15. C2PA manifest with a stds.exif assertion holding a GPS position and a creator.
   {
-    const box = (type, ...parts) => { const body = cat(...parts); return cat(be32(8 + body.length), type, body); };
-    const jumd = (label, uuidHex = '6332706100110010800000aa00389b71') => box('jumd', Buffer.from(uuidHex, 'hex'), Buffer.from([3]), `${label}\0`);
+    const box = (type: string, ...parts: Part[]): Buffer => { const body = cat(...parts); return cat(be32(8 + body.length), type, body); };
+    const jumd = (label: string, uuidHex = '6332706100110010800000aa00389b71') => box('jumd', Buffer.from(uuidHex, 'hex'), Buffer.from([3]), `${label}\0`);
     const json = JSON.stringify({ '@context': { exif: 'http://ns.adobe.com/exif/1.0/' }, 'exif:GPSLatitude': '59,54.8346N', 'exif:GPSLongitude': '10,45.1320E', 'exif:BodySerialNumber': C('C2PA-STDSEXIF-SERIAL-bc45') });
     const assertion = box('jumb', jumd('stds.exif', '6a736f6e00110010800000aa00389b71'), box('json', json));
     const store = box('jumb', jumd('c2pa.assertions', '63326173001100108000' + '00aa00389b71'), assertion);
@@ -1123,11 +1303,11 @@ function buildAdversarial() {
   // Unicode part of a desc tag), a private tag, bytes no tag uses, a profile ID that is not
   // its checksum, and technical XMP fields holding names. Each must be offered as red and go
   // with the red-and-amber selection while the colours stay.
-  const icc = ({ tags = [], gap = '', id = null, reserved = null } = {}) => {
-    const pad = (d) => cat(d, Buffer.alloc((4 - (d.length % 4)) % 4));
+  const icc = ({ tags = [], gap = '', id = null, reserved = null }: { tags?: [string, Buffer][]; gap?: string; id?: string | null; reserved?: string | null } = {}): Buffer => {
+    const pad = (d: Buffer): Buffer => cat(d, Buffer.alloc((4 - (d.length % 4)) % 4));
     const xyz = cat('XYZ ', Buffer.alloc(4), be32(0xf6d6), be32(0x10000), be32(0xd32d));
-    const all = [...tags, ['wtpt', xyz]];
-    const body = [];
+    const all: [string, Buffer][] = [...tags, ['wtpt', xyz]];
+    const body: Buffer[] = [];
     const table = [be32(all.length)];
     let at = 128 + 4 + 12 * all.length;
     for (const [sig, d] of all) {
@@ -1143,19 +1323,19 @@ function buildAdversarial() {
     if (reserved) B(reserved).copy(head, 100);
     return cat(head, ...table, ...body);
   };
-  const textTag = (t) => cat('text', Buffer.alloc(4), t, Buffer.from([0]));
-  const mlucTag = (records) => {
+  const textTag = (t: string): Buffer => cat('text', Buffer.alloc(4), t, Buffer.from([0]));
+  const mlucTag = (records: [string, string][]): Buffer => {
     const strs = records.map(([, t]) => Buffer.from(t, 'utf16le').swap16());
     let off = 16 + 12 * records.length;
     const head = [Buffer.from('mluc'), Buffer.alloc(4), be32(records.length), be32(12)];
     records.forEach(([lang], i) => { head.push(Buffer.from(lang, 'latin1'), be32(strs[i].length), be32(off)); off += strs[i].length; });
     return cat(...head, ...strs);
   };
-  const descTag = (ascii, unicode = '') => {
+  const descTag = (ascii: string, unicode = ''): Buffer => {
     const u = Buffer.from(unicode, 'utf16le').swap16();
     return cat('desc', Buffer.alloc(4), be32(ascii.length + 1), ascii, Buffer.from([0]), be32(unicode ? 0x656e5553 : 0), be32(unicode ? unicode.length : 0), u, Buffer.alloc(3 + 67));
   };
-  const iccSeg = (profile) => seg(0xe2, cat('ICC_PROFILE\0', Buffer.from([1, 1]), profile));
+  const iccSeg = (profile: Buffer): Buffer => seg(0xe2, cat('ICC_PROFILE\0', Buffer.from([1, 1]), profile));
   {
     add('adv-icc-copyright-name.jpg', jpegInsert(baseJpeg('b20.jpg'), iccSeg(icc({ tags: [['desc', descTag('sRGB IEC61966-2.1')], ['cprt', textTag(`Copyright Astrid Holmvik ${C('ICC-CPRT-67a0')}`)], ['dmnd', textTag(`Astrid Holmvik ${C('ICC-DMND-78b1')}`)]] }))), [
       { string: C('ICC-CPRT-67a0'), tier: 'red', location: "the photo's colour profile, copyright text tag" },
@@ -1208,9 +1388,9 @@ function buildAdversarial() {
   }
 
   // PNG ---------------------------------------------------------------------------------
-  const pngChunk = (type, data) => { const d = B(data); const tc = cat(type, d); return cat(be32(d.length), tc, be32(zlib.crc32(tc))); };
-  const pngBase = (name, seed) => { sh('magick', ['-seed', String(seed), '-size', '64x48', 'plasma:fractal', '-strip', `PNG24:${advPath(name)}`]); return readFileSync(advPath(name)); };
-  const pngSplit = (png) => { const ch = pngChunks(png); const iend = ch.find((c) => c.type === 'IEND'); return { head: png.subarray(0, iend.start), iend: png.subarray(iend.start, iend.end) }; };
+  const pngChunk = (type: string, data: Part): Buffer => { const d = B(data); const tc = cat(type, d); return cat(be32(d.length), tc, be32(zlib.crc32(tc))); };
+  const pngBase = (name: string, seed: number): Buffer => { sh('magick', ['-seed', String(seed), '-size', '64x48', 'plasma:fractal', '-strip', `PNG24:${advPath(name)}`]); return readFileSync(advPath(name)); };
+  const pngSplit = (png: Buffer): { head: Buffer; iend: Buffer } => { const ch = pngChunks(png); const iend = ch.find((c) => c.type === 'IEND')!; return { head: png.subarray(0, iend.start), iend: png.subarray(iend.start, iend.end) }; };
   {
     const { head } = pngSplit(pngBase('p1.png', 31));
     const data = Buffer.from(`Author: ${C('PNG-IEND-DATA-cd56')}`);
@@ -1249,7 +1429,7 @@ function buildAdversarial() {
     // An iCCP chunk before the picture data whose profile name is a name, and whose profile
     // holds one in its copyright (compressed, so only an inflate finds it).
     const png = pngBase('p8.png', 41);
-    const ihdr = pngChunks(png).find((c) => c.type === 'IHDR');
+    const ihdr = pngChunks(png).find((c) => c.type === 'IHDR')!;
     const prof = icc({ tags: [['desc', descTag('sRGB IEC61966-2.1')], ['cprt', textTag(`Copyright Astrid Holmvik ${C('PNG-ICCP-CPRT-45be')}`)]] });
     const iccp = pngChunk('iCCP', cat(`Astrid ${C('PNG-ICCP-NAME-56cf')}`, Buffer.from([0, 0]), zlib.deflateSync(prof)));
     add('adv-png-iccp-name.png', cat(png.subarray(0, ihdr.end), iccp, png.subarray(ihdr.end)), [
@@ -1261,7 +1441,7 @@ function buildAdversarial() {
     // Colour and display chunks are green: one longer than its size with a name after the
     // numbers, a pCAL whose calibration name is a name, and an exif: text copy holding text.
     const png = pngBase('p9.png', 43);
-    const ihdr = pngChunks(png).find((c) => c.type === 'IHDR');
+    const ihdr = pngChunks(png).find((c) => c.type === 'IHDR')!;
     const extra = cat(pngChunk('gAMA', cat(Buffer.from([0, 0, 0xb1, 0x8f]), `Astrid ${C('PNG-GAMA-TAIL-89f2')}`)),
       pngChunk('pCAL', cat(`Astrid ${C('PNG-PCAL-NAME-9a03')}`, Buffer.alloc(13))),
       pngChunk('tEXt', cat('exif:ExposureTime\0', `Holmvik ${C('PNG-EXIFTEXT-EXPOSURE-ab14')}`)));
@@ -1315,8 +1495,8 @@ function buildAdversarial() {
   {
     sh('magick', ['-seed', '51', '-size', '64x48', 'plasma:fractal', '-strip', '-depth', '8', advPath('h-base.heic')]);
     const prim = extractHeic(readFileSync(advPath('h-base.heic')));
-    const box = (type, ...parts) => { const body = cat(...parts); return cat(be32(8 + body.length), type, body); };
-    const fullbox = (type, v, flags, ...parts) => box(type, Buffer.from([v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
+    const box = (type: string, ...parts: Part[]): Buffer => { const body = cat(...parts); return cat(be32(8 + body.length), type, body); };
+    const fullbox = (type: string, v: number, flags: number, ...parts: Part[]): Buffer => box(type, Buffer.from([v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
     const xmpText = XMP(`   <dc:creator><rdf:Seq><rdf:li>${C('HEIC-UUIDXMP-CREATOR-56e0')}</rdf:li></rdf:Seq></dc:creator>`, 'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="59,54.8346N"');
     const xmpUuid = box('uuid', Buffer.from('be7acfcb97a942e89c71999491e3afac', 'hex'), Buffer.from(xmpText, 'utf8'));
     const cmt1 = tiffLE([{ name: 'ifd0', entries: [{ tag: 0x010f, type: 2, data: 'Canon' }, { tag: 0x013b, type: 2, data: C('HEIC-CANON-CMT1-ARTIST-67f1') }] }]);
@@ -1346,7 +1526,7 @@ function buildAdversarial() {
     sh('magick', ['-size', '32x24', 'gradient:gray20-gray90', '-depth', '8', advPath('h-gain.heic')]);
     const gainPic = extractHeic(readFileSync(advPath('h-gain.heic')));
     const APPLE_AUX = 'urn:com:apple:photo:2020:aux:hdrgainmap';
-    const appleHeic = (auxName, auxTail = Buffer.alloc(0), gainExtra = '') => {
+    const appleHeic = (auxName: string, auxTail: Buffer = Buffer.alloc(0), gainExtra = ''): Buffer => {
       const mn = appleNote(C('HEIC-APPLE-NOTE-b6c7'));
       const exifTiff = tiffLE([
         { name: 'ifd0', entries: [{ tag: 0x010f, type: 2, data: 'Apple' }, { tag: 0x8769, type: 4, ptr: 'exif' }] },
@@ -1367,7 +1547,7 @@ function buildAdversarial() {
         refs: [['auxl', 4, 1], ['cdsc', 2, 1], ['cdsc', 3, 1], ['cdsc', 5, 4]],
       });
     };
-    const appleRows = [
+    const appleRows: AuditCanary[] = [
       { string: C('HEIC-APPLE-NOTE-b6c7'), tier: 'red', location: "text in Apple's MakerNote next to the two HDR numbers (EXIF item)" },
       { string: C('HEIC-PHOTO-CREATOR-c7d8'), tier: 'red', location: "dc:creator in the photo's XMP item" },
     ];
@@ -1395,14 +1575,14 @@ function buildAdversarial() {
     const srcFile = join(FIXTURES, 'jpeg-ultrahdr-like.jpg');
     if (existsSync(srcFile)) {
       const ultra = readFileSync(srcFile);
-      const isXmp = (b, s) => s.marker === 0xe1 && b.toString('latin1', s.data, s.data + 29) === 'http://ns.adobe.com/xap/1.0/\0';
-      const isMpf = (b, s) => s.marker === 0xe2 && b.toString('latin1', s.data, s.data + 4) === 'MPF\0';
-      const mpfOf = (b) => {
-        const s = jpegSegments(b).find((x) => isMpf(b, x));
-        const t = s.data + 4;
+      const isXmp = (b: Buffer, s: JpegSeg): boolean => s.marker === 0xe1 && b.toString('latin1', s.data, s.data! + 29) === 'http://ns.adobe.com/xap/1.0/\0';
+      const isMpf = (b: Buffer, s: JpegSeg): boolean => s.marker === 0xe2 && b.toString('latin1', s.data, s.data! + 4) === 'MPF\0';
+      const mpfOf = (b: Buffer): { base: number; le: boolean; table: number; r32: (o: number) => number } => {
+        const s = jpegSegments(b).find((x) => isMpf(b, x))!;
+        const t = s.data! + 4;
         const le = b.toString('latin1', t, t + 2) === 'II';
-        const r16 = (o) => (le ? b.readUInt16LE(o) : b.readUInt16BE(o));
-        const r32 = (o) => (le ? b.readUInt32LE(o) : b.readUInt32BE(o));
+        const r16 = (o: number): number => (le ? b.readUInt16LE(o) : b.readUInt16BE(o));
+        const r32 = (o: number): number => (le ? b.readUInt32LE(o) : b.readUInt32BE(o));
         const ifd = t + r32(t + 4);
         for (let i = 0; i < r16(ifd); i++) {
           const e = ifd + 2 + i * 12;
@@ -1411,11 +1591,11 @@ function buildAdversarial() {
         throw new Error('no MP entry table');
       };
       // Rewrites one segment's payload.
-      const editSeg = (b, pick, fn) => {
-        const s = jpegSegments(b).find((x) => pick(b, x));
+      const editSeg = (b: Buffer, pick: (b: Buffer, s: JpegSeg) => boolean, fn: (payload: Buffer) => Buffer): Buffer => {
+        const s = jpegSegments(b).find((x) => pick(b, x))!;
         return cat(b.subarray(0, s.start), seg(s.marker, fn(b.subarray(s.data, s.end))), b.subarray(s.end));
       };
-      const swap = (old, neu) => (payload) => {
+      const swap = (old: string, neu: string) => (payload: Buffer): Buffer => {
         const t = payload.toString('latin1');
         if (!t.includes(old)) throw new Error(`not found: ${old}`);
         return Buffer.from(t.replace(old, neu), 'latin1');
@@ -1425,10 +1605,10 @@ function buildAdversarial() {
       const gmAt = m0.base + m0.r32(m0.table + 16 + 8);
       const prim0 = ultra.subarray(0, gmAt);
       const gm0 = ultra.subarray(gmAt);
-      const join2 = (prim, gm, tail = '') => {
+      const join2 = (prim: Buffer, gm: Buffer, tail: Part = ''): Buffer => {
         const out = Buffer.from(prim);
         const m = mpfOf(out);
-        const w32 = (o, v) => (m.le ? out.writeUInt32LE(v, o) : out.writeUInt32BE(v, o));
+        const w32 = (o: number, v: number): number => (m.le ? out.writeUInt32LE(v, o) : out.writeUInt32BE(v, o));
         w32(m.table + 4, out.length);
         w32(m.table + 16 + 4, gm.length + B(tail).length);
         w32(m.table + 16 + 8, out.length - m.base);
@@ -1456,7 +1636,7 @@ function buildAdversarial() {
         { string: C('INNER-HDRGM-SERIAL-2738'), tier: 'red', location: 'unknown hdrgm:CameraSerialNumber in the gain map XMP' },
       ], 'A gain map whose own XMP has an extra, non-standard hdrgm field.');
       {
-        const mpfSeg = jpegSegments(prim0).find((x) => isMpf(prim0, x));
+        const mpfSeg = jpegSegments(prim0).find((x) => isMpf(prim0, x))!;
         const iso = seg(0xe2, cat('urn:iso:std:iso:ts:21496:-1\0', Buffer.from([0, 0, 0, 0]), C('ISO-GAIN-SEG-3849')));
         add('adv-gainmap-iso-segment.jpg', join2(cat(prim0.subarray(0, mpfSeg.start), iso, prim0.subarray(mpfSeg.start)), gm0), [
           { string: C('ISO-GAIN-SEG-3849'), tier: 'red', location: 'surplus bytes in an ISO 21496-1 APP2 segment of the photo' },
@@ -1529,9 +1709,9 @@ function buildAdversarial() {
         { string: C('INNER-RATING-8d9e'), tier: 'red', location: 'xmp:Rating with text, in the gain map XMP' },
       ], 'Text in a field of the gain map XMP that is normally a number.');
       {
-        const text = (t) => { const d = cat('text', Buffer.alloc(4), t, Buffer.from([0])); return cat(d, Buffer.alloc((4 - (d.length % 4)) % 4)); };
+        const text = (t: string): Buffer => { const d = cat('text', Buffer.alloc(4), t, Buffer.from([0])); return cat(d, Buffer.alloc((4 - (d.length % 4)) % 4)); };
         const desc = (() => { const t = 'sRGB gain'; const d = cat('desc', Buffer.alloc(4), be32(t.length + 1), t, Buffer.alloc(1 + 8 + 3 + 67)); return cat(d, Buffer.alloc((4 - (d.length % 4)) % 4)); })();
-        const tags = [['desc', desc], ['cprt', text(`Copyright Astrid Holmvik ${C('GAINMAP-ICC-CPRT-9eaf')}`)]];
+        const tags: [string, Buffer][] = [['desc', desc], ['cprt', text(`Copyright Astrid Holmvik ${C('GAINMAP-ICC-CPRT-9eaf')}`)]];
         let at = 128 + 4 + 12 * tags.length;
         const table = [be32(tags.length)];
         for (const [sig, d] of tags) { table.push(Buffer.from(sig, 'latin1'), be32(at), be32(d.length)); at += d.length; }
@@ -1564,7 +1744,7 @@ function buildAdversarial() {
       // after every scrub, while the gain map stays and renders.
       {
         const ws = WS_SPELL('Astrid Holmvik');
-        const spread = (p) => Buffer.from(p.toString('latin1').replace(/></g, `>${ws}<`).replace(/(<\/x:xmpmeta>)/, `$1${' '.repeat(4000)}`), 'latin1');
+        const spread = (p: Buffer): Buffer => Buffer.from(p.toString('latin1').replace(/></g, `>${ws}<`).replace(/(<\/x:xmpmeta>)/, `$1${' '.repeat(4000)}`), 'latin1');
         add('adv-ws-gainmap.jpg', join2(editSeg(prim0, isXmp, spread), editSeg(gmPlain, isXmp, spread)), [], 'An Ultra HDR picture whose two XMP packets carry a message in white space and padding.');
       }
     }
@@ -1573,14 +1753,14 @@ function buildAdversarial() {
   // the profile header, in the count of an EXIF number, in XMP prefixes, declarations, the
   // packet wrapper and xml attributes, and in a decoder table no scan uses.
   {
-    const iccWith = ({ extra = [], rTRC = null, header = {} }) => {
-      const text = (t) => cat('text', Buffer.alloc(4), t, Buffer.from([0]));
+    const iccWith = ({ extra = [], rTRC = null, header = {} }: { extra?: [string, Buffer][]; rTRC?: Buffer | null; header?: Record<string, string> }): Buffer => {
+      const text = (t: string): Buffer => cat('text', Buffer.alloc(4), t, Buffer.from([0]));
       const desc = cat('desc', Buffer.alloc(4), be32(5), 'sRGB', Buffer.alloc(1 + 8 + 3 + 67));
       const xyz = cat('XYZ ', Buffer.alloc(4), be32(0xf6d6), be32(0x10000), be32(0xd32d));
-      const tags = [['desc', desc], ['cprt', text('No copyright, use freely')], ['wtpt', xyz], ...(rTRC ? [['rTRC', rTRC]] : []), ...extra];
+      const tags: [string, Buffer][] = [['desc', desc], ['cprt', text('No copyright, use freely')], ['wtpt', xyz], ...(rTRC ? [['rTRC', rTRC] as [string, Buffer]] : []), ...extra];
       let at = 128 + 4 + 12 * tags.length;
       const table = [be32(tags.length)];
-      const data = [];
+      const data: Buffer[] = [];
       for (const [sig, d] of tags) { const pd = cat(d, Buffer.alloc((4 - (d.length % 4)) % 4)); table.push(Buffer.from(sig, 'latin1'), be32(at), be32(d.length)); data.push(pd); at += pd.length; }
       const head = Buffer.alloc(128);
       head.writeUInt32BE(at, 0); head.writeUInt32BE(0x02100000, 8); head.write('mntrRGB XYZ ', 12, 'latin1'); head.write('acsp', 36, 'latin1');
@@ -1588,7 +1768,7 @@ function buildAdversarial() {
       for (const [o, v] of Object.entries(header)) Buffer.from(v, 'latin1').copy(head, Number(o));
       return cat(head, ...table, ...data);
     };
-    const iccSegOf = (p) => seg(0xe2, cat('ICC_PROFILE\0', Buffer.from([1, 1]), p));
+    const iccSegOf = (p: Buffer): Buffer => seg(0xe2, cat('ICC_PROFILE\0', Buffer.from([1, 1]), p));
     add('adv-icc-curv-tail.jpg', jpegInsert(baseJpeg('b52.jpg', 96, 64, 52), iccSegOf(iccWith({ rTRC: cat('curv', Buffer.alloc(4), be32(1), Buffer.from([2, 0x33]), C('ICC-CURV-TAIL-f809')) }))), [
       { string: C('ICC-CURV-TAIL-f809'), tier: 'red', location: 'bytes after the one value of an rTRC curve in the colour profile' },
     ], 'A colour curve with text after its values.');
@@ -1629,21 +1809,21 @@ function buildAdversarial() {
   // scrub; the planted creator goes as usual.
   {
     const ws = WS_SPELL('Fjordveien 12, Bergen');
-    const packet = (tag) => XMP(`${ws}<xmp:CreateDate>${ws}2025-03-04T05:06:07${ws}</xmp:CreateDate>${ws}<dc:creator>${ws}<rdf:Seq><rdf:li>${C(tag)}</rdf:li></rdf:Seq>${ws}</dc:creator>${ws}`,
+    const packet = (tag: string): string => XMP(`${ws}<xmp:CreateDate>${ws}2025-03-04T05:06:07${ws}</xmp:CreateDate>${ws}<dc:creator>${ws}<rdf:Seq><rdf:li>${C(tag)}</rdf:li></rdf:Seq>${ws}</dc:creator>${ws}`,
       `${ws}xmlns:xmp="http://ns.adobe.com/xap/1.0/"${ws}xmlns:dc="http://purl.org/dc/elements/1.1/"${ws}xmp:Rating="3"${ws}`).replace('</x:xmpmeta>', `</x:xmpmeta>${' '.repeat(4000)}`);
     add('adv-ws-photo.jpg', jpegInsert(baseJpeg('b64.jpg', 96, 64, 64), xmpSeg(packet('WS-JPEG-CREATOR-0b1c'))), [
       { string: C('WS-JPEG-CREATOR-0b1c'), tier: 'red', location: 'dc:creator in an XMP packet laid out with a message in white space' },
     ], 'An XMP packet whose white space and padding spell a message.');
     const png = magickTo(advPath('b66.png'), ['-seed', '66', '-size', '96x64', 'plasma:fractal', '-strip']);
     const iend = png.length - 12;
-    const itxt = (kw, text) => { const body = cat(kw, Buffer.from([0, 0, 0, 0, 0]), Buffer.from(text, 'utf8')); const d = cat('iTXt', body); return cat(be32(body.length), d, be32(zlib.crc32(d))); };
+    const itxt = (kw: string, text: string): Buffer => { const body = cat(kw, Buffer.from([0, 0, 0, 0, 0]), Buffer.from(text, 'utf8')); const d = cat('iTXt', body); return cat(be32(body.length), d, be32(zlib.crc32(d))); };
     add('adv-ws.png', cat(png.subarray(0, iend), itxt('XML:com.adobe.xmp', packet('WS-PNG-CREATOR-1c2d')), png.subarray(iend)), [
       { string: C('WS-PNG-CREATOR-1c2d'), tier: 'red', location: 'dc:creator in an iTXt XMP packet laid out with a message in white space' },
     ], 'A PNG XMP packet whose white space and padding spell a message.');
     sh('magick', ['-seed', '67', '-size', '96x64', 'plasma:fractal', '-quality', '80', advPath('b67.webp')]);
     tryRun('exiftool', ['-q', '-overwrite_original', '-XMP-xmp:Rating=1', advPath('b67.webp')]);
     const wb = readFileSync(advPath('b67.webp'));
-    const chunks = [];
+    const chunks: Buffer[] = [];
     for (let q = 12; q + 8 <= wb.length;) {
       const n = wb.readUInt32LE(q + 4);
       if (wb.toString('latin1', q, q + 4) === 'XMP ') { const x = Buffer.from(packet('WS-WEBP-CREATOR-2d3e'), 'utf8'); chunks.push(cat('XMP ', le32(x.length), x, x.length & 1 ? Buffer.alloc(1) : Buffer.alloc(0))); }
@@ -1658,62 +1838,97 @@ function buildAdversarial() {
   return list;
 }
 
+/** An item property box and whether it is essential. */
+interface HeicProp {
+  box: Buffer;
+  essential: boolean;
+}
+/** A coded picture and its properties (extractHeic). */
+interface HeicPicture {
+  data: Buffer;
+  props: HeicProp[];
+}
+/** An item heicBuild writes after the primary picture. */
+interface HeicBuildItem {
+  id: number;
+  type: string;
+  data: Buffer;
+  contentType?: string;
+  hidden?: boolean;
+}
+interface HeicBuildOptions {
+  prim: HeicPicture;
+  items?: HeicBuildItem[];
+  /** A property for item 1 (the primary picture) unless item says otherwise. */
+  extraProps?: (HeicProp & { item?: number })[];
+  top?: Buffer[];
+  /** [type, from item, to item] */
+  refs?: [string, number, number][];
+}
+
 // Pulls the coded picture and its properties out of a simple single-item HEIC from magick.
-function extractHeic(b) {
+function extractHeic(b: Buffer): HeicPicture {
   const top = isoBoxes(b, 0, b.length, 9);
-  const meta = top.find((x) => x.path === 'meta');
+  const meta = top.find((x) => x.path === 'meta')!;
   const kids = isoBoxes(b, meta.start + 12, meta.start + meta.size, 9);
-  const iloc = kids.find((x) => x.path === 'iloc');
+  const iloc = kids.find((x) => x.path === 'iloc')!;
   const d = iloc.start + 8;
   const ver = b[d];
   const offSize = b[d + 4] >> 4;
   const lenSize = b[d + 4] & 15;
   const baseSize = b[d + 5] >> 4;
   let p = d + 8 + 2 + (ver === 1 ? 2 : 0) + 2;
-  const readN = (n) => { const v = n === 4 ? b.readUInt32BE(p) : n === 8 ? Number(b.readBigUInt64BE(p)) : 0; p += n; return v; };
+  const readN = (n: number): number => { const v = n === 4 ? b.readUInt32BE(p) : n === 8 ? Number(b.readBigUInt64BE(p)) : 0; p += n; return v; };
   const base = readN(baseSize);
   const n = b.readUInt16BE(p); p += 2;
-  const parts = [];
+  const parts: Buffer[] = [];
   for (let i = 0; i < n; i++) { const off = readN(offSize); const len = readN(lenSize); parts.push(b.subarray(base + off, base + off + len)); }
-  const iprp = kids.find((x) => x.path === 'iprp');
+  const iprp = kids.find((x) => x.path === 'iprp')!;
   const ik = isoBoxes(b, iprp.start + 8, iprp.start + iprp.size, 9);
-  const ipco = ik.find((x) => x.path === 'ipco');
-  const ipma = ik.find((x) => x.path === 'ipma');
+  const ipco = ik.find((x) => x.path === 'ipco')!;
+  const ipma = ik.find((x) => x.path === 'ipma')!;
   const props = isoBoxes(b, ipco.start + 8, ipco.start + ipco.size, 9).map((x) => b.subarray(x.start, x.start + x.size));
   const flags = b[ipma.start + 11];
   let q = ipma.start + 12 + 4 + 2;
   const k = b[q++];
-  const assoc = [];
+  const assoc: number[] = [];
   for (let i = 0; i < k; i++) { if (flags & 1) { assoc.push(b.readUInt16BE(q)); q += 2; } else assoc.push(b[q++]); }
   return { data: Buffer.concat(parts), props: assoc.map((a) => ({ box: props[(a & 0x7fff & (flags & 1 ? 0x7fff : 0x7f)) - 1], essential: !!(a & (flags & 1 ? 0x8000 : 0x80)) })) };
 }
-function heicBuild({ prim, items = [], extraProps = [], top = [], refs = [] }) {
-  const box = (type, ...parts) => { const body = cat(...parts); return cat(be32(8 + body.length), type, body); };
-  const fullbox = (type, v, flags, ...parts) => box(type, Buffer.from([v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
-  const all = [{ id: 1, type: 'hvc1', data: prim.data }, ...items];
+function heicBuild({ prim, items = [], extraProps = [], top = [], refs = [] }: HeicBuildOptions): Buffer {
+  const box = (type: string, ...parts: Part[]): Buffer => { const body = cat(...parts); return cat(be32(8 + body.length), type, body); };
+  const fullbox = (type: string, v: number, flags: number, ...parts: Part[]): Buffer => box(type, Buffer.from([v, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
+  const all: HeicBuildItem[] = [{ id: 1, type: 'hvc1', data: prim.data }, ...items];
   const ftyp = box('ftyp', 'heic', be32(0), 'mif1', 'heic', 'miaf');
-  const metaFor = (offsets) => {
+  const metaFor = (offsets: Record<number, number>): Buffer => {
     const hdlr = fullbox('hdlr', 0, 0, be32(0), 'pict', Buffer.alloc(12), Buffer.from([0]));
     const pitm = fullbox('pitm', 0, 0, be16(1));
-    const infe = (it) => fullbox('infe', 2, it.hidden ? 1 : 0, be16(it.id), be16(0), it.type, Buffer.from([0]), ...(it.type === 'mime' ? [`${it.contentType}\0`] : []));
+    const infe = (it: HeicBuildItem): Buffer => fullbox('infe', 2, it.hidden ? 1 : 0, be16(it.id), be16(0), it.type, Buffer.from([0]), ...(it.type === 'mime' ? [`${it.contentType}\0`] : []));
     const iinf = fullbox('iinf', 0, 0, be16(all.length), ...all.map(infe));
     const iref = refs.length ? [fullbox('iref', 0, 0, ...refs.map(([type, from, to]) => box(type, be16(from), be16(1), be16(to))))] : [];
     const ipco = box('ipco', ...prim.props.map((x) => x.box), ...extraProps.map((x) => x.box));
     const assocOf = new Map([[1, prim.props.map((x, i) => (x.essential ? 0x80 : 0) | (i + 1))]]);
-    extraProps.forEach((x, i) => { const id = x.item || 1; if (!assocOf.has(id)) assocOf.set(id, []); assocOf.get(id).push((x.essential ? 0x80 : 0) | (prim.props.length + 1 + i)); });
+    extraProps.forEach((x, i) => { const id = x.item || 1; if (!assocOf.has(id)) assocOf.set(id, []); assocOf.get(id)!.push((x.essential ? 0x80 : 0) | (prim.props.length + 1 + i)); });
     const ipma = fullbox('ipma', 0, 0, be32(assocOf.size), ...[...assocOf].map(([id, a]) => cat(be16(id), Buffer.from([a.length]), Buffer.from(a))));
     const iprp = box('iprp', ipco, ipma);
     const iloc = fullbox('iloc', 1, 0, Buffer.from([0x44, 0x00]), be16(all.length), ...all.map((it) => cat(be16(it.id), be16(0), be16(0), be16(1), be32(offsets[it.id] || 0), be32(it.data.length))));
     return fullbox('meta', 0, 0, hdlr, pitm, iinf, ...iref, iprp, iloc);
   };
-  const layout = (metaLen) => { const o = {}; let p = ftyp.length + metaLen + 8; for (const it of all) { o[it.id] = p; p += it.data.length; } return o; };
+  const layout = (metaLen: number): Record<number, number> => { const o: Record<number, number> = {}; let p = ftyp.length + metaLen + 8; for (const it of all) { o[it.id] = p; p += it.data.length; } return o; };
   const meta = metaFor(layout(metaFor({}).length));
   return cat(ftyp, meta, box('mdat', ...all.map((it) => it.data)), ...top);
 }
 
 // libheif's view of HEIC files (python3 ctypes over libheif.so.1): the primary picture's
 // pixels and the auxiliary images attached to it, with their names and pixels.
-function heifInfo(files) {
+/** libheif's view of one file (heif-info.py), or why it could not read it. */
+interface HeifInfo {
+  error?: string;
+  primary?: string | null;
+  aux: { type: string; pixels: string | null }[];
+  top: number;
+}
+function heifInfo(files: string[]): Record<string, HeifInfo> | null {
   const script = join(OUT, 'heif-info.py');
   if (!existsSync(script)) {
     writeFileSync(script, `import ctypes, sys, hashlib, json
@@ -1778,18 +1993,18 @@ print(json.dumps(out))
 // red-and-amber selection keeps its gain map attached under Apple's exact name, decoding to the
 // same pixels, and the photo keeps Apple's two HDR numbers (exiftool HDRHeadroom and
 // HDRGain read the same). A layer whose name is not exactly a known one must be gone.
-function heicHdrCheck(label, inFile, rec, keep) {
+function heicHdrCheck(label: string, inFile: string, rec: AuditRecord, keep: boolean): string | null {
   const APPLE_AUX = 'urn:com:apple:photo:2020:aux:hdrgainmap';
   const repro = `python3 ${join(OUT, 'heif-info.py')} ${inFile} ${rec.redFile}; exiftool -s -n -AuxiliaryImageType -Apple:HDRHeadroom -Apple:HDRGain ${rec.redFile}`;
   // The red-and-amber selection is checked too when it keeps the gain map (it ticks amber
   // details unless they belong to an HDR gain map).
-  const outs = [['red-only', rec.redFile], ...(keep && (rec.startIds || []).includes('heic:gain-map') ? [] : [['red-and-amber', rec.startFile]])];
+  const outs: [string, string][] = [['red-only', rec.redFile!], ...(keep && (rec.startIds || []).includes('heic:gain-map') ? [] : [['red-and-amber', rec.startFile!] as [string, string]])];
   const heif = heifInfo([inFile, ...outs.map((x) => x[1])]);
   if (!heif) { finding('medium', label, 'libheif', 'libheif could not be run through python3 ctypes, so the HDR gain map was not checked.', repro); return null; }
-  const rows = (f) => Object.fromEntries(tryRun('exiftool', ['-s', '-n', '-AuxiliaryImageType', '-Apple:HDRHeadroom', '-Apple:HDRGain', f]).out.split('\n').filter(Boolean).map((l) => l.split(/\s+:\s?/)));
+  const rows = (f: string): Record<string, string> => Object.fromEntries(tryRun('exiftool', ['-s', '-n', '-AuxiliaryImageType', '-Apple:HDRHeadroom', '-Apple:HDRGain', f]).out.split('\n').filter(Boolean).map((l) => l.split(/\s+:\s?/)));
   const rin = rows(inFile);
   const hin = heif[inFile];
-  const notes = [];
+  const notes: string[] = [];
   for (const [which, f] of outs) {
     const h = heif[f];
     if (!h || h.error) { finding('high', label, 'libheif', `libheif cannot read the ${which} output: ${h && h.error}`, repro); continue; }
@@ -1812,15 +2027,15 @@ function heicHdrCheck(label, inFile, rec, keep) {
   return text;
 }
 
-async function sectionAdversarial(records) {
+async function sectionAdversarial(records: AuditRecord[]): Promise<void> {
   const list = buildAdversarial();
   // A72 onwards (review of 4 October 2026): the hidden-channel probes the engine tests use
   // (tests/probes.ts), built into the core fixture folder.
   {
     const prev = process.env.MS_FIXTURE_DIR;
     process.env.MS_FIXTURE_DIR = CORE_FIX;
-    const F = await import(pathToFileURL(join(HERE, 'core-fixtures.ts')).href);
-    const { privacyProbes } = await import(pathToFileURL(join(HERE, 'probes.ts')).href);
+    const F: typeof import('./core-fixtures.ts') = await import(pathToFileURL(join(HERE, 'core-fixtures.ts')).href);
+    const { privacyProbes }: typeof import('./probes.ts') = await import(pathToFileURL(join(HERE, 'probes.ts')).href);
     if (prev === undefined) delete process.env.MS_FIXTURE_DIR; else process.env.MS_FIXTURE_DIR = prev;
     for (const p of privacyProbes(F)) {
       writeFileSync(advPath(p.name), p.bytes);
@@ -1848,30 +2063,30 @@ async function sectionAdversarial(records) {
 // non-red detail kept (red only, as the page's starting selection since 0.0.3), inserted into
 // freshly encoded pictures; no red string may follow.
 
-async function sectionReencode(records) {
+async function sectionReencode(records: AuditRecord[]): Promise<void> {
   const reg = loadRegistry();
-  const fresh = {};
-  for (const [fmt, ext, extra] of [['jpeg', 'jpg', ['-quality', '85']], ['png', 'png', []], ['webp', 'webp', ['-quality', '80']]]) {
+  const fresh: Record<string, Buffer> = {};
+  for (const [fmt, ext, extra] of [['jpeg', 'jpg', ['-quality', '85']], ['png', 'png', []], ['webp', 'webp', ['-quality', '80']]] as [string, string, string[]][]) {
     const f = join(ADV, `fresh.${ext}`);
     sh('magick', ['-seed', '61', '-size', '64x48', 'plasma:fractal', '-strip', ...extra, f]);
     fresh[fmt] = readFileSync(f);
   }
   const files = [...new Set(reg.map((r) => r.file))].filter((n) => /\.(jpe?g|png|webp|heic)$/.test(n));
   const adv = existsSync(ADV) ? readdirSync(ADV).filter((n) => /^adv-.*\.(jpe?g|png|webp|heic)$/.test(n)).map((n) => join(ADV, n)) : [];
-  const out = [];
+  const out: { file: string; fmt: string; items: string[] }[] = [];
   for (const file of [...files.map((n) => join(FIXTURES, n)), ...adv]) {
     const b = u8(readFileSync(file));
     if (!core.detectFormat(b)) continue;
-    let ins;
+    let ins: InspectResult;
     try { ins = await core.inspect(b); } catch { continue; }
     const keep = ins.items.filter((i) => i.tier !== 'red').map((i) => i.id);
-    let payload;
-    try { payload = core.buildExif(b, keep); } catch (e) { finding('medium', basename(file), 'buildExif', `buildExif() throws ${e.name}: ${e.message}`, `buildExif(readFileSync('${file}'), keptIds)`); continue; }
+    let payload: Uint8Array | null;
+    try { payload = core.buildExif(b, keep); } catch (e) { finding('medium', basename(file), 'buildExif', `buildExif() throws ${(e as Error).name}: ${(e as Error).message}`, `buildExif(readFileSync('${file}'), keptIds)`); continue; }
     if (!payload) continue;
     const red = reg.filter((r) => r.file === basename(file) && r.tier === 'red').map((r) => r.string);
     for (const fmt of ['jpeg', 'png', 'webp']) {
-      let res;
-      try { res = core.insertExif(u8(fresh[fmt]), fmt, payload); } catch (e) { finding('medium', basename(file), `insertExif ${fmt}`, `insertExif() throws ${e.name}: ${e.message}`, `insertExif(fresh ${fmt}, '${fmt}', buildExif(...))`); continue; }
+      let res: Uint8Array;
+      try { res = core.insertExif(u8(fresh[fmt]), fmt, payload); } catch (e) { finding('medium', basename(file), `insertExif ${fmt}`, `insertExif() throws ${(e as Error).name}: ${(e as Error).message}`, `insertExif(fresh ${fmt}, '${fmt}', buildExif(...))`); continue; }
       const f = join(OUT, 'outputs', `reencode-${basename(file)}.${extOf(fmt)}`);
       writeFileSync(f, res);
       const hay = haystacks(res);
@@ -1928,36 +2143,68 @@ parentPort.on('message', async (m) => {
   parentPort.postMessage(res);
 });`;
 
+/**
+ * What run() resolves to: the worker's reply for one input (id, ms and what the engine did), or
+ * hang when it ran out of time, or crash when the worker died.
+ */
+interface RunResult {
+  id?: number;
+  format?: Format | null;
+  items?: string[];
+  warnings?: string[];
+  allWarnings?: string[];
+  redWarnings?: string[];
+  all?: Uint8Array;
+  red?: Uint8Array;
+  readbackError?: string;
+  error?: string;
+  stack?: string;
+  ms?: number;
+  hang?: boolean;
+  crash?: string;
+}
+
 class Runner {
+  declare w: Worker;
   constructor() { this.spawn(); }
-  spawn() { this.w = new Worker(WORKER, { eval: true, workerData: { coreUrl: CORE_URL }, resourceLimits: { maxOldGenerationSizeMb: 2048 } }); this.w.unref(); }
-  run(buf, timeoutMs = 20000) {
+  spawn(): void { this.w = new Worker(WORKER, { eval: true, workerData: { coreUrl: CORE_URL }, resourceLimits: { maxOldGenerationSizeMb: 2048 } }); this.w.unref(); }
+  run(buf: Uint8Array, timeoutMs = 20000): Promise<RunResult> {
     return new Promise((resolve) => {
       const id = Math.random();
       let done = false;
-      const finish = (r) => { if (done) return; done = true; clearTimeout(timer); this.w.off('message', onMsg); this.w.off('error', onErr); this.w.off('exit', onExit); resolve(r); };
-      const onMsg = (r) => { if (r.id === id) finish(r); };
-      const onErr = (e) => { finish({ crash: `${e.name}: ${e.message}` }); this.spawn(); };
-      const onExit = (code) => { finish({ crash: `worker exited with code ${code}` }); this.spawn(); };
+      const finish = (r: RunResult): void => { if (done) return; done = true; clearTimeout(timer); this.w.off('message', onMsg); this.w.off('error', onErr); this.w.off('exit', onExit); resolve(r); };
+      const onMsg = (r: RunResult): void => { if (r.id === id) finish(r); };
+      const onErr = (e: Error): void => { finish({ crash: `${e.name}: ${e.message}` }); this.spawn(); };
+      const onExit = (code: number): void => { finish({ crash: `worker exited with code ${code}` }); this.spawn(); };
       const timer = setTimeout(() => { finish({ hang: true }); this.w.terminate(); this.spawn(); }, timeoutMs);
       this.w.on('message', onMsg); this.w.on('error', onErr); this.w.on('exit', onExit);
       this.w.postMessage({ id, buf: Uint8Array.from(buf) });
     });
   }
-  close() { this.w.terminate(); }
+  close(): void { this.w.terminate(); }
 }
 
-function hostileCases(reg) {
-  const cases = [];
-  const addCase = (name, bytes, canaries = []) => cases.push({ name, bytes: Buffer.from(bytes), canaries });
+/** A damaged or malicious input, and the planted strings it may still hold. */
+interface HostileCase {
+  name: string;
+  bytes: Buffer;
+  canaries: string[];
+  mutated?: boolean;
+  file?: string;
+  edits?: string[];
+}
+
+function hostileCases(reg: RegRow[]): HostileCase[] {
+  const cases: HostileCase[] = [];
+  const addCase = (name: string, bytes: Uint8Array, canaries: string[] = []): number => cases.push({ name, bytes: Buffer.from(bytes), canaries });
   addCase('empty file (0 bytes)', Buffer.alloc(0));
   for (const sig of [[0xff, 0xd8], [0xff, 0xd8, 0xff], [0xff, 0xd8, 0xff, 0xe1], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], Buffer.from('RIFF\0\0\0\0WEBPVP8X'), cat(be32(16), 'ftypheic', be32(0))]) addCase(`signature only (${Buffer.from(sig).toString('hex')})`, Buffer.from(sig));
-  const tiny = (name) => readFileSync(join(FIXTURES, name));
-  const regFor = (name) => reg.filter((r) => r.file === name).map((r) => r.string);
+  const tiny = (name: string): Buffer => readFileSync(join(FIXTURES, name));
+  const regFor = (name: string): string[] => reg.filter((r) => r.file === name).map((r) => r.string);
   // Truncations of every small fixture.
   for (const name of ['jpeg-everything.jpg', 'jpeg-ultrahdr-like.jpg', 'jpeg-motion-photo.jpg', 'jpeg-samsung-trailer.jpg', 'jpeg-extended-xmp.jpg', 'png-everything.png', 'webp-everything.webp', 'heic-everything.heic', 'jpeg-double-exif.jpg']) {
     const b = tiny(name);
-    const cuts = new Set();
+    const cuts = new Set<number>();
     for (let i = 1; i < 48; i++) cuts.add(Math.floor((b.length * i) / 48));
     for (const c of [3, 10, 20, 40, 100, 300, 1000]) if (c < b.length) cuts.add(c);
     for (const c of cuts) addCase(`${name} cut at ${c}`, b.subarray(0, c), regFor(name));
@@ -1992,31 +2239,31 @@ function hostileCases(reg) {
     ['attribute with < inside', '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" dc:creator="<' + C('HOSTILE-XMP-LT-67f1') + '"/></rdf:RDF></x:xmpmeta>'],
   ]) {
     const xs = xmpSeg(x);
-    addCase(`malformed XMP: ${n}`, xs.length < 65535 ? jpegInsert(base, xs) : base, [x.match(/CANARY-[A-Z0-9-]+/)[0]]);
+    addCase(`malformed XMP: ${n}`, xs.length < 65535 ? jpegInsert(base, xs) : base, [x.match(/CANARY-[A-Z0-9-]+/)![0]]);
   }
   {
     const deep = '<x:xmpmeta xmlns:x="adobe:ns:meta/">' + '<a>'.repeat(200000) + C('HOSTILE-XMP-DEEPER-7802') + '</a>'.repeat(200000) + '</x:xmpmeta>';
     const png = readFileSync(join(FIXTURES, 'png-transparent.png'));
     const ihdr = pngChunks(png)[0];
-    const chunk = (type, data) => { const tc = cat(type, data); return cat(be32(B(data).length), tc, be32(zlib.crc32(tc))); };
+    const chunk = (type: string, data: Part): Buffer => { const tc = cat(type, data); return cat(be32(B(data).length), tc, be32(zlib.crc32(tc))); };
     addCase('PNG XMP with 200,000 nested elements', cat(png.subarray(0, ihdr.end), chunk('iTXt', cat('XML:com.adobe.xmp\0', Buffer.from([0, 0, 0, 0]), deep)), png.subarray(ihdr.end)), [C('HOSTILE-XMP-DEEPER-7802')]);
     const bad = Buffer.from(png);
-    const t = pngChunks(bad).find((c) => c.type === 'tEXt');
+    const t = pngChunks(bad).find((c) => c.type === 'tEXt')!;
     bad.writeUInt32BE((bad.readUInt32BE(t.end - 4) ^ 0xdeadbeef) >>> 0, t.end - 4);
     addCase('PNG text chunk with a bad CRC', bad, regFor('png-transparent.png'));
     const badIdat = Buffer.from(png);
-    const idat = pngChunks(badIdat).find((c) => c.type === 'IDAT');
+    const idat = pngChunks(badIdat).find((c) => c.type === 'IDAT')!;
     badIdat.writeUInt32BE((badIdat.readUInt32BE(idat.end - 4) ^ 1) >>> 0, idat.end - 4);
     addCase('PNG IDAT chunk with a bad CRC', badIdat, regFor('png-transparent.png'));
     // Many chunks with distinct types and bad CRCs (warning list grows with each one).
     const r = rng(7);
-    const parts = [png.subarray(0, ihdr.end)];
+    const parts: Buffer[] = [png.subarray(0, ihdr.end)];
     for (let i = 0; i < 30000; i++) { let ty = ''; for (let k = 0; k < 4; k++) ty += String.fromCharCode(97 + Math.floor(r() * 26)); parts.push(cat(be32(1), ty, 'x', be32(0))); }
     parts.push(png.subarray(ihdr.end));
     addCase('PNG with 30,000 private chunks with distinct types and bad CRCs', cat(...parts));
   }
   {
-    const segs = [];
+    const segs: Buffer[] = [];
     for (let i = 0; i < 12000; i++) segs.push(exifSeg(tiffLE([{ name: 'ifd0', entries: [{ tag: 0x013b, type: 2, data: 'Dup' }] }])));
     addCase('JPEG with 12,000 EXIF segments', jpegInsert(base, ...segs));
   }
@@ -2030,9 +2277,9 @@ function hostileCases(reg) {
   {
     const h = readFileSync(join(FIXTURES, 'heic-everything.heic'));
     const boxes = isoBoxes(h, 0, h.length, 0);
-    const meta = boxes.find((x) => x.path === 'meta');
+    const meta = boxes.find((x) => x.path === 'meta')!;
     const kids = isoBoxes(h, meta.start + 12, meta.start + meta.size, 9);
-    const iloc = kids.find((x) => x.path === 'iloc');
+    const iloc = kids.find((x) => x.path === 'iloc')!;
     const b1 = Buffer.from(h); b1.writeUInt32BE(0xffffffff, iloc.start + 8 + 4 + 2);
     addCase('HEIC iloc with a huge item count', b1, regFor('heic-everything.heic'));
     const b2 = Buffer.from(h); b2.writeUInt32BE(0, meta.start);
@@ -2056,8 +2303,8 @@ function hostileCases(reg) {
   return cases;
 }
 
-function mutations(reg, perFile) {
-  const out = [];
+function mutations(reg: RegRow[], perFile: number): HostileCase[] {
+  const out: HostileCase[] = [];
   const names = ['jpeg-everything.jpg', 'jpeg-ultrahdr-like.jpg', 'jpeg-motion-photo.jpg', 'png-everything.png', 'webp-everything.webp', 'heic-everything.heic', 'jpeg-extended-xmp.jpg', 'jpeg-orientation-6.jpg'];
   for (const name of names) {
     const b = readFileSync(join(FIXTURES, name));
@@ -2071,7 +2318,7 @@ function mutations(reg, perFile) {
     for (let k = 0; k < perFile; k++) {
       const m = Buffer.from(b);
       const n = 1 + Math.floor(r() * 6);
-      const edits = [];
+      const edits: string[] = [];
       for (let j = 0; j < n; j++) {
         const pos = Math.floor(r() * limit);
         const kind = r();
@@ -2085,13 +2332,13 @@ function mutations(reg, perFile) {
   return out;
 }
 
-async function sectionHostile(records) {
+async function sectionHostile(records: AuditRecord[]): Promise<void> {
   const reg = loadRegistry();
   if (!existsSync(advPath('b1.jpg'))) baseJpeg('b1.jpg');
   const cases = [...hostileCases(reg), ...mutations(reg, FUZZ)];
   const runner = new Runner();
   const stats = { cases: cases.length, errors: 0, hangs: 0, crashes: 0, slow: 0, silentKeeps: 0 };
-  const silent = new Map();
+  const silent = new Map<string, Survival>();
   let i = 0;
   for (const c of cases) {
     i++;
@@ -2099,10 +2346,10 @@ async function sectionHostile(records) {
     const r = await runner.run(c.bytes, /12,000|30,000|200,000/.test(c.name) ? 60000 : 20000);
     const file = join(OUT, 'hostile', `case-${i}.bin`);
     const save = () => { writeFileSync(file, c.bytes); return file; };
-    const rep = (f) => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${f}')); const i=await c.inspect(b); console.log(i.warnings, i.items.map(x=>x.id)); const r=await c.scrub(b, i.items.map(x=>x.id)); console.log(r.warnings, r.bytes.length)"`;
+    const rep = (f: string): string => `node --input-type=module -e "import * as c from '${CORE_URL}'; import fs from 'node:fs'; const b=new Uint8Array(fs.readFileSync('${f}')); const i=await c.inspect(b); console.log(i.warnings, i.items.map(x=>x.id)); const r=await c.scrub(b, i.items.map(x=>x.id)); console.log(r.warnings, r.bytes.length)"`;
     if (r.hang) { stats.hangs++; finding('high', c.name, 'hostile input', 'inspect() or scrub() did not finish within the time limit (hang or extreme slowness).', rep(save())); continue; }
     if (r.crash) { stats.crashes++; finding('high', c.name, 'hostile input', `The worker running the engine died: ${r.crash}.`, rep(save())); continue; }
-    if (r.ms > 3000) { stats.slow++; finding('medium', c.name, 'hostile input', `inspect plus two scrubs took ${Math.round(r.ms)} ms; a crafted file can freeze the page.`, rep(save())); }
+    if (r.ms! > 3000) { stats.slow++; finding('medium', c.name, 'hostile input', `inspect plus two scrubs took ${Math.round(r.ms!)} ms; a crafted file can freeze the page.`, rep(save())); }
     if (r.error) {
       stats.errors++;
       const expected = /not supported/.test(r.error);
@@ -2132,12 +2379,12 @@ async function sectionHostile(records) {
   }
   // Mutations: summarise per fixture rather than one finding per mutation.
   const mut = [...silent.values()].filter((x) => x.c.mutated);
-  const byFile = new Map();
-  for (const x of mut) { const k = x.c.file; if (!byFile.has(k)) byFile.set(k, []); byFile.get(k).push(x); }
+  const byFile = new Map<string | undefined, Survival[]>();
+  for (const x of mut) { const k = x.c.file; if (!byFile.has(k)) byFile.set(k, []); byFile.get(k)!.push(x); }
   for (const [f, xs] of byFile) {
     const silentOnes = xs.filter((x) => !x.warned);
     const sample = (silentOnes[0] || xs[0]);
-    finding(silentOnes.length ? 'high' : 'medium', f, 'mutated input', `${xs.length} distinct survivals after the every-detail scrub across ${FUZZ} random mutations of the metadata region; ${silentOnes.length} of them with no warning. Example: ${sample.left.slice(0, 3).join(', ')} survive after edits ${sample.c.edits.join(', ')}.`, `${sample.file}: inspect, scrub with every id, grep the output.`);
+    finding(silentOnes.length ? 'high' : 'medium', f!, 'mutated input', `${xs.length} distinct survivals after the every-detail scrub across ${FUZZ} random mutations of the metadata region; ${silentOnes.length} of them with no warning. Example: ${sample.left.slice(0, 3).join(', ')} survive after edits ${sample.c.edits!.join(', ')}.`, `${sample.file}: inspect, scrub with every id, grep the output.`);
   }
   records.push({ section: 'hostile', stats, survivals: [...silent.values()].map((x) => ({ name: x.c.name, left: x.left, warned: x.warned, file: x.file })) });
   log(`[hostile] ${JSON.stringify(stats)}`);
@@ -2146,15 +2393,15 @@ async function sectionHostile(records) {
 // ======================================================================================
 // Tool checks over every output (4 and 5)
 
-function toolChecks(records) {
+function toolChecks(records: AuditRecord[]): void {
   if (!outputsForTools.length) return;
   log(`[tools] decoding, pixel hashes${USE_EXIFTOOL ? ', exiftool listing and validation' : ''} for ${outputsForTools.length} pictures`);
   const nonHeic = outputsForTools.filter((o) => o.format !== 'heic');
   const pil = pilHashes(nonHeic.flatMap((o) => [o.inFile, o.redFile, o.allFile]));
-  const exiftoolReport = [];
+  const exiftoolReport: { fixture: string; which: string; count: number; redLooking: string[]; all: string[] }[] = [];
   for (const o of outputsForTools) {
     const rec = records.find((r) => r.label === o.fixture);
-    const integ = {};
+    const integ: Record<string, string | string[]> = {};
     for (const [which, f] of [['red-only', o.redFile], ['every-detail', o.allFile]]) {
       const inOk = magickIdentify(o.inFile).ok;
       const id = magickIdentify(f);
@@ -2205,10 +2452,10 @@ function toolChecks(records) {
 // input gain map's pixels, the length the Container directory gives, and the input's
 // hdrgm values (no more, no other).
 const HDRGM_TAGS = new Set(['Version', 'GainMapMin', 'GainMapMax', 'Gamma', 'OffsetSDR', 'OffsetHDR', 'HDRCapacityMin', 'HDRCapacityMax', 'BaseRenditionIsHDR']);
-function gainMapCheck(o) {
+function gainMapCheck(o: ToolOutput): string {
   const repro = `exiftool -b -MPImage2 ${o.startFile} > gm.jpg; compare with exiftool -b -MPImage2 ${o.inFile}`;
-  const bad = (detail) => { finding('high', o.fixture, 'kept HDR gain map', detail, repro); return detail; };
-  const extract = (f, tag) => spawnSync('exiftool', ['-b', `-${tag}`, f], { maxBuffer: 256 << 20 }).stdout;
+  const bad = (detail: string): string => { finding('high', o.fixture, 'kept HDR gain map', detail, repro); return detail; };
+  const extract = (f: string, tag: string): Buffer => spawnSync('exiftool', ['-b', `-${tag}`, f], { maxBuffer: 256 << 20 }).stdout;
   const gIn = extract(o.inFile, 'MPImage2');
   const gOut = extract(o.startFile, 'MPImage2');
   if (!gOut || !gOut.length) return bad('The red-and-amber selection keeps the HDR gain map, but exiftool finds no second image through MPF.');
@@ -2225,10 +2472,10 @@ function gainMapCheck(o) {
   const item = /<Container:Item\b[^>]*Item:Semantic="GainMap"[^>]*>/.exec(text);
   const len = item && /Item:Length="(\d+)"/.exec(item[0]);
   if (len && Number(len[1]) !== gOut.length) return bad(`The Container directory gives the gain map ${len[1]} bytes, the MPF index ${gOut.length}.`);
-  const hdrgm = (f) => tryRun('exiftool', ['-s', '-n', '-XMP-hdrgm:all', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
+  const hdrgm = (f: string): string[] => tryRun('exiftool', ['-s', '-n', '-XMP-hdrgm:all', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
   // A number written with more digits than a single-precision value has is written again
   // rounded to nine significant digits, so that rounded form counts as the input's value.
-  const rounded = (x) => { const [k, v] = x.split('='); const n = Number(v); return v && Number.isFinite(n) && /\d/.test(v) ? `${k}=${String(Number(n.toPrecision(9)))}` : x; };
+  const rounded = (x: string): string => { const [k, v] = x.split('='); const n = Number(v); return v && Number.isFinite(n) && /\d/.test(v) ? `${k}=${String(Number(n.toPrecision(9)))}` : x; };
   const before = new Set(hdrgm(fIn).flatMap((x) => [x, rounded(x)]));
   const after = hdrgm(fOut);
   const odd = after.filter((x) => !before.has(x) || !HDRGM_TAGS.has(x.split('=')[0]));
@@ -2237,7 +2484,7 @@ function gainMapCheck(o) {
   // An Apple gain map keeps HDRGainMapVersion, the exact apdi:AuxiliaryImageType Chrome
   // requires, and the photo keeps the HDR numbers of its MakerNote (Apple tags 33 and 48).
   const APPLE_TYPE = 'urn:com:apple:photo:2020:aux:hdrgainmap';
-  const appleXmp = (f) => tryRun('exiftool', ['-s', '-n', '-XMP-HDRGainMap:all', '-XMP-apdi:all', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
+  const appleXmp = (f: string): string[] => tryRun('exiftool', ['-s', '-n', '-XMP-HDRGainMap:all', '-XMP-apdi:all', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
   const aIn = appleXmp(fIn);
   const aOut = appleXmp(fOut);
   let apple = '';
@@ -2245,11 +2492,11 @@ function gainMapCheck(o) {
     const oddA = aOut.filter((x) => !aIn.includes(x) || !['HDRGainMapVersion', 'HDRGainMapHeadroom', 'AuxiliaryImageType'].includes(x.split('=')[0]) || (x.startsWith('AuxiliaryImageType=') && x !== `AuxiliaryImageType=${APPLE_TYPE}`));
     if (oddA.length) return bad(`The kept Apple gain map holds fields a gain map does not need: ${oddA.join(', ')}.`);
     if (aIn.includes(`AuxiliaryImageType=${APPLE_TYPE}`) && !aOut.includes(`AuxiliaryImageType=${APPLE_TYPE}`)) return bad('The kept Apple gain map lost its apdi:AuxiliaryImageType.');
-    const head = (f) => tryRun('exiftool', ['-s', '-n', '-Apple:HDRHeadroom', '-Apple:HDRGain', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
+    const head = (f: string): string[] => tryRun('exiftool', ['-s', '-n', '-Apple:HDRHeadroom', '-Apple:HDRGain', f]).out.split('\n').filter(Boolean).map((l) => l.replace(/\s+:\s?/, '=').trim());
     const hIn = head(o.inFile);
     const hOut = head(o.startFile);
     // Only a number counts: a zero denominator (exiftool prints "undef") gives readers no headroom.
-    const num = (x) => /^HDRHeadroom=-?\d/.test(x);
+    const num = (x: string): boolean => /^HDRHeadroom=-?\d/.test(x);
     if (hIn.some(num) && !hOut.some(num)) return bad('The photo lost the Apple HDR headroom the gain map needs.');
     apple = `, Apple: ${[...aOut, ...hOut].join(', ')}`;
   }
@@ -2259,7 +2506,7 @@ function gainMapCheck(o) {
 // ======================================================================================
 // Main
 
-const records = [];
+const records: AuditRecord[] = [];
 const t0 = Date.now();
 if (SECTIONS.has('registry')) await sectionRegistry(records);
 if (SECTIONS.has('core')) await sectionCore(records);
@@ -2270,14 +2517,14 @@ if (SECTIONS.has('hostile')) await sectionHostile(records);
 
 // Things that held up, for the record.
 for (const r of records.filter((x) => x.canaries)) {
-  const leaksDefault = r.canaries.filter((c) => c.expected === 'red' && c.leftAfterDefault).length;
-  const leaksStart = r.canaries.filter((c) => (c.expected === 'red' || c.expected === 'amber') && c.leftAfterStart).length;
-  const leaksAll = r.canaries.filter((c) => c.leftAfterAll).length;
-  const leaksMin = r.canaries.filter((c) => (c.expected === 'red' || c.expected === 'amber') && c.leftAfterMin).length;
-  if (!leaksDefault && !leaksStart && !leaksMin && !leaksAll && r.canaries.length) pass(`${r.label}: all ${r.canaries.length} planted strings behave (no red left after the red-only scrub, no red or amber left after the red-and-amber selection${r.hdrKept ? ', which keeps the HDR gain map, or with the gain map ticked too' : ''}, nothing left with every detail ticked)`);
+  const leaksDefault = r.canaries!.filter((c) => c.expected === 'red' && c.leftAfterDefault).length;
+  const leaksStart = r.canaries!.filter((c) => (c.expected === 'red' || c.expected === 'amber') && c.leftAfterStart).length;
+  const leaksAll = r.canaries!.filter((c) => c.leftAfterAll).length;
+  const leaksMin = r.canaries!.filter((c) => (c.expected === 'red' || c.expected === 'amber') && c.leftAfterMin).length;
+  if (!leaksDefault && !leaksStart && !leaksMin && !leaksAll && r.canaries!.length) pass(`${r.label}: all ${r.canaries!.length} planted strings behave (no red left after the red-only scrub, no red or amber left after the red-and-amber selection${r.hdrKept ? ', which keeps the HDR gain map, or with the gain map ticked too' : ''}, nothing left with every detail ticked)`);
   if (r.hdrKept && r.integrity && typeof r.integrity.gainMap === 'string') pass(`${r.label}: the kept HDR gain map renders (${r.integrity.gainMap})`);
 }
-const order = { critical: 0, high: 1, medium: 2, low: 3 };
+const order: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 findings.sort((a, b) => order[a.severity] - order[b.severity] || a.fixture.localeCompare(b.fixture));
 const summary = Object.fromEntries(Object.keys(order).map((k) => [k, findings.filter((f) => f.severity === k).length]));
 writeFileSync(join(OUT, 'report.json'), JSON.stringify({ summary, findings, passed, records: records.map((r) => ({ ...r, items: r.items && r.items.map((i) => `${i.tier}:${i.id} ${i.label} = ${i.value}`) })) }, null, 1));
