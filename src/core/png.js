@@ -10,15 +10,15 @@ import {
   startsWith, u16be, u32be, utf8, w32be, zlibStored,
 } from './bytes.js?v=987761c7';
 import { describeC2pa } from './c2pa.js?v=02cf98cd';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=f690fd20';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=2ec75235';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc,
-} from './iptc.js?v=9c0d09fc';
+} from './iptc.js?v=4ba9398a';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import {
   TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation,
-} from './tiff.js?v=95b646c0';
-import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=c0855ddd';
+} from './tiff.js?v=11f4e710';
+import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?v=0607c521';
 
 /** @typedef {Taxonomy.ItemSet} ItemSet */
 /** @typedef {Taxonomy.ItemSpec} ItemSpec */

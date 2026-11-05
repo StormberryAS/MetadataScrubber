@@ -15,13 +15,13 @@ import {
   Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, u16be, u16le, u32be, u32le, u64be, w16be,
 } from './bytes.js?v=987761c7';
 import { describeC2pa } from './c2pa.js?v=02cf98cd';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=f690fd20';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc, md5 } from './icc.js?v=2ec75235';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb,
-} from './iptc.js?v=9c0d09fc';
+} from './iptc.js?v=4ba9398a';
 import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=c8d592f3';
-import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=95b646c0';
-import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=c0855ddd';
+import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=11f4e710';
+import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=0607c521';
 
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
 /** @typedef {Taxonomy.Tier} Tier */

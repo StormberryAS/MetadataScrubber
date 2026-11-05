@@ -7,7 +7,6 @@
 # TypeScript source; and on a listed app file that jsconfig.json does not type-check.
 #
 # Columns: the file today, what replaces it ("retire" means it is deleted, not converted), group.
-src/core/icc.js                         ts/src/core/icc.ts                      core
 src/core/tiff.js                        ts/src/core/tiff.ts                     core
 src/core/iptc.js                        ts/src/core/iptc.ts                     core
 src/core/xmp.js                         ts/src/core/xmp.ts                      core

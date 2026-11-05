@@ -13,8 +13,8 @@
 // packet is parsed again and checked before it is trusted.
 
 import { clip, encodeUtf8, utf8 } from './bytes.js?v=987761c7';
-import { iccNameAllowed } from './icc.js?v=f690fd20';
-import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=95b646c0';
+import { iccNameAllowed } from './icc.js?v=2ec75235';
+import { deviceNameOk, keyForTagName, technicalCount } from './tiff.js?v=11f4e710';
 
 /** @typedef {Taxonomy.ItemSet} ItemSet */
 /** @typedef {Taxonomy.ItemInternal} ItemInternal */

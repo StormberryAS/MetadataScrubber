@@ -21,3 +21,11 @@ declare namespace Taxonomy {
   type ItemInternal = import('ms-src/core/taxonomy.js').ItemInternal;
   type ItemSet = import('ms-src/core/taxonomy.js').ItemSet;
 }
+
+/** The types of ts/src/core/icc.ts. */
+declare namespace Icc {
+  type IccTag = import('ms-src/core/icc.js').IccTag;
+  type IccHeaderFix = import('ms-src/core/icc.js').IccHeaderFix;
+  type IccInfo = import('ms-src/core/icc.js').IccInfo;
+  type IccTextRead = import('ms-src/core/icc.js').IccTextRead;
+}

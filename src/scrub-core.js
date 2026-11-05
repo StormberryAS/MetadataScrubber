@@ -18,11 +18,11 @@
 
 import { latin1, toU8 } from './core/bytes.js?v=987761c7';
 import { GROUPS, ItemSet, TIERS } from './core/taxonomy.js?v=c8d592f3';
-import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=ed45a4c3';
-import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=50b99fe8';
-import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=8344e2a0';
-import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=baf7af55';
-import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=95b646c0';
+import { analyseJpeg, insertJpegExif, scrubJpeg, walkJpeg } from './core/jpeg.js?v=700e92e1';
+import { analysePng, firstPngTiff, insertPngExif, isPng, scrubPng, walkPng } from './core/png.js?v=c3776b13';
+import { analyseWebp, frameSize, insertWebpExif, isWebp, scrubWebp, walkWebp } from './core/webp.js?v=d23f93a0';
+import { analyseHeic, firstHeicTiff, isHeic, scrubHeic } from './core/heic.js?v=788cb3b4';
+import { buildTiff, findTiffStart, parseTiff, setTiffDimensions } from './core/tiff.js?v=11f4e710';
 
 export { GROUPS, TIERS };
 

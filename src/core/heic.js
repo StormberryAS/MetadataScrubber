@@ -22,10 +22,10 @@
 
 import { concat, encodeLatin1, encodeUtf8, formatBytes, indexOfAscii, latin1, startsWith, subtractRanges, u16be, u32be, u64be, w16be, w32be, w64be, zeroRanges } from './bytes.js?v=987761c7';
 import { describeC2pa } from './c2pa.js?v=02cf98cd';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=f690fd20';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=2ec75235';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
-import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=95b646c0';
-import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=c0855ddd';
+import { appleHdr, appleHdrAny, appleHdrValue, blankTiff, findTiffStart, isTiffHeader, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems } from './tiff.js?v=11f4e710';
+import { APPLE_GAIN_MAP_TYPE, addXmpItems, canonicalXmp, gainAllowed, gainFields, gainFixes, keepOnlyXmp, parseXmp, planXmp } from './xmp.js?v=0607c521';
 
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
 /** @typedef {Taxonomy.ItemSet} ItemSet */
@@ -1135,7 +1135,7 @@ export function analyseHeic(b, set) {
     if (good.length) {
       const desc = iccDescription(b.subarray(good[0].p.dataStart + 4, good[0].p.end));
       set.add({ id: 'icc:profile', group: 'technical', tier: 'green', label: 'Colour profile', value: desc, source: 'ICC profile', note: 'Keeps colours accurate on different screens.' }, { kind: 'boxes', boxes: good.map((x) => x.p) });
-      const dirty = /** @type {{ p: Box, info: import('./icc.js').IccInfo }[]} */ (good).filter((x) => !x.info.clean); // good holds only ok profiles
+      const dirty = /** @type {{ p: Box, info: Icc.IccInfo }[]} */ (good).filter((x) => !x.info.clean); // good holds only ok profiles
       if (dirty.length) set.add({ ...ICC_TEXT_ITEM, value: iccFreeText(dirty[0].info) }, { kind: 'icctext', boxes: dirty.map((x) => x.p) });
     }
   }

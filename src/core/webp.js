@@ -6,10 +6,10 @@
 
 import { Assembler, concat, encodeLatin1, encodeUtf8, formatBytes, latin1, u16le, u32le, w24le, w32le } from './bytes.js?v=987761c7';
 import { describeC2pa } from './c2pa.js?v=02cf98cd';
-import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=f690fd20';
+import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=2ec75235';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
-import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=95b646c0';
-import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=c0855ddd';
+import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=11f4e710';
+import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=0607c521';
 
 /** @typedef {Taxonomy.ItemSet} ItemSet */
 /** @typedef {Taxonomy.ItemSpec} ItemSpec */
