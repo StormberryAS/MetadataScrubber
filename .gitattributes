@@ -27,3 +27,5 @@
 /src/scrub-core.js linguist-generated=true
 # The interface, compiled from ts/app.ts.
 /app.js linguist-generated=true
+# The Android app's bridge script (only in the APK), compiled from android/web-overlay/android-bridge.ts.
+/android/web-overlay/android-bridge.js linguist-generated=true
