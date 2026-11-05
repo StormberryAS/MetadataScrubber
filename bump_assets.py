@@ -30,6 +30,10 @@ the engine changes the stamp of every module that imports it, all the way up to
 app.js and the page. Every importer of a module uses the same stamp, so each
 module is still loaded once.
 
+Since 5 November 2026 these modules are compiled from TypeScript (ts/) by
+tools/build-ts.sh, which runs this script after every compile. The TypeScript
+imports carry no stamp; the stamps live only in the compiled .js.
+
 What it does NOT touch, deliberately:
   * anything under switcher-icons/ - those bytes never change, and the marquee
     repeats them 180 times, so stamping them would bloat the HTML for nothing

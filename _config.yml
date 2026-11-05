@@ -25,14 +25,13 @@
 # app bundles the web files from this root at build time; nothing in those folders is
 # part of the website. (.github/ needs no entry: Jekyll never publishes dot folders.)
 #
-# jsconfig.json, types/, package.json and package-lock.json are the type-checking tooling
-# (2026-10-16): the TypeScript checker reads them, the site and the app never do.
-#
-# ts/, tools/, tsconfig.json and tsconfig.core.json are the TypeScript build (2026-11-01):
-# ts/ holds the sources that tools/build-ts.sh compiles into the .js files served from
-# this root, which are committed because Pages has no build step. The site and the app
-# load only the compiled .js. (.npmrc and .gitattributes need no entry: Jekyll never
-# publishes dot files.)
+# package.json, package-lock.json, ts/, tools/, tsconfig.json and tsconfig.core.json are
+# the TypeScript build (2026-11-01): ts/ holds the sources that tools/build-ts.sh compiles
+# into the .js files served from this root, which are committed because Pages has no
+# build step. The site and the app load only the compiled .js. (.npmrc and .gitattributes
+# need no entry: Jekyll never publishes dot files.) jsconfig.json and types/, the checker
+# of the JavaScript that was still hand-written, were deleted on 2026-11-05 when the last
+# file had moved to TypeScript.
 #
 # CHANGELOG.md is the Android app's release log (1.1.1), read on GitHub, not part of the
 # website or the app.
@@ -49,8 +48,6 @@ exclude:
   - android/
   - fastlane/
   - zapstore.yaml
-  - jsconfig.json
-  - types/
   - ts/
   - tools/
   - tsconfig.json

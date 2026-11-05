@@ -365,10 +365,10 @@ object WebAssets {
         "README*", "CHANGELOG*", "LICENSE", "NOTICE", "bump_assets.py", "node_modules/**",
         "**/__pycache__/**", "**/*.pyc", "**/*.bak*", "**/.DS_Store", "package.json",
         "package-lock.json", "Gemfile", "Gemfile.lock",
-        // Type-checking tooling (2026-10-16): read by the TypeScript checker, never by the app.
-        "jsconfig.json", "types/**",
         // The TypeScript build (2026-11-01): the sources and the compiler's settings. The app
         // bundles only the compiled .js; a .ts file in the web root would fail the build.
+        // (jsconfig.json and types/, the checker of the last hand-written JavaScript, were
+        // deleted on 2026-11-05.)
         "ts/**", "tools/**", "tsconfig.json", "tsconfig.core.json",
     )
 

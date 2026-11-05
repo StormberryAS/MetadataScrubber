@@ -1,9 +1,7 @@
-// The tests' program (strict, noEmit). Node 24 runs tests/*.ts directly; tools/build-ts.sh
-// type-checks them once the first one exists. Until the last module is TypeScript (TS-STEP-1),
-// allowJs, checkJs and paths let a test import "#src/x.js" and get the types of ts/src/x.ts when
-// that source exists, or of the hand-written src/x.js (unchecked here) when it does not. Node
-// itself maps "#src/*" to the served ./src/* through "imports" in package.json, so the tests
-// always run what ships. The closing commit of the move drops these three settings.
+// The tests' program (strict, noEmit). Node 24 runs tests/*.ts directly, and tools/build-ts.sh
+// type-checks them. A test imports the engine as "#src/x.js": "imports" in package.json gives
+// Node the served, compiled ./src/x.js, so the tests always run what ships, and gives the checker
+// the types of ./ts/src/x.ts (the "types" condition).
 {
   "compilerOptions": {
     "target": "ES2023",
@@ -21,15 +19,7 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "allowJs": true,
-    "checkJs": false,
-    "paths": {
-      "#src/*": [
-        "../ts/src/*",
-        "../src/*"
-      ]
-    }
+    "noEmit": true
   },
   "include": [
     "*.ts"

@@ -1,35 +1,31 @@
 #!/usr/bin/env bash
 # Compile MetadataScrubber's TypeScript (ts/ and the Android bridge script) into the JavaScript the
-# page and the app load, and type-check the JavaScript that is still hand-written.
+# page and the app load.
 #
 # Copied on 1 November 2026 from GDPRLetterBuilder's tools/build-ts.sh (itself from EclipseTracker's
-# and the Website's). Changed for MetadataScrubber: the files move to TypeScript one per commit
-# (TS-STEP-1), so for a while the repository holds both compiled and hand-written JavaScript. Every
-# program runs only when it has sources, and zero compiled files is a valid state. While
-# jsconfig.json exists, the hand-written JavaScript it lists is type-checked as before
-# (types/stamped-imports.mjs, then tsc on jsconfig.json), and the list of files still to convert,
-# tools/js-to-convert.txt, says which JavaScript may exist without a TypeScript source. There is no
-# golden-file step. gate.js is not compiled here: build-gates.py at the root of the GitHub folder
-# writes it, and it is allowed by name.
+# and the Website's). Changed for MetadataScrubber: the files moved to TypeScript one per commit
+# (TS-STEP-1, 1 to 5 November 2026), and since the closing commit of that move every JavaScript
+# file in the repository is compiled output, except gate.js. There is no golden-file step. gate.js
+# is not compiled here: build-gates.py at the root of the GitHub folder writes it, and it is
+# allowed by name.
 #
 #   tools/build-ts.sh           install the pinned compiler, compile every ts/**/*.ts into the .js
 #                               of the same path at the repository root (ts/app.ts -> app.js,
 #                               ts/src/x.ts -> src/x.js; ts/*.d.ts are types only and emit nothing),
 #                               compile the Android app's bridge script,
 #                               android/web-overlay/android-bridge.ts, into android-bridge.js beside
-#                               it (a classic script, never published) once that source exists, then
+#                               it (a classic script, never published), then
 #                               run bump_assets.py so every import and every page carries the
-#                               current ?v= stamp, and last type-check the hand-written JavaScript
+#                               current ?v= stamp
 #   tools/build-ts.sh --force   the same, but overwrite a compiled .js even when it holds a hand
-#                               edit (also how a conversion step replaces the old hand-written .js)
+#                               edit (each conversion step of TS-STEP-1 used it once, to replace
+#                               the old hand-written .js)
 #   tools/build-ts.sh --check   change nothing: fail when a compiled .js is missing, is not tracked
 #                               by git (in a git checkout), is not marked linguist-generated, or is
 #                               not (stamps aside) byte for byte what its source compiles to; when
-#                               the repository holds JavaScript that is neither compiled output,
-#                               nor gate.js, nor listed in tools/js-to-convert.txt; when that list
-#                               and jsconfig.json disagree with the tree; when a page or an import
-#                               carries a stale ?v=; or when the hand-written JavaScript does not
-#                               type-check
+#                               the repository holds JavaScript (.js, .mjs or .cjs) that is neither
+#                               compiled output nor gate.js; or when a page or an import carries a
+#                               stale ?v=
 #
 # Stamps. bump_assets.py stamps every relative import with the imported file's hash (?v=...), so a
 # compiled .js at the root differs from what tsc writes in exactly those stamps. Every comparison
@@ -39,15 +35,11 @@
 # Every mode first type-checks, and writes nothing when one fails:
 #   * ts/src/ with tsconfig.core.json, whose only library is ES2022 (plus ts/core-env.d.ts and
 #     ts/node-shim.d.ts): no DOM. The engine runs in the browser and under Node alike.
-#   * the tests (tests/*.ts, run by Node 24 directly) with tests/tsconfig.json, strict, once the
-#     first test is TypeScript.
+#   * the tests (tests/*.ts, run by Node 24 directly) with tests/tsconfig.json, strict.
 #   * ts/ with tsconfig.json, strict, which also emits.
-#   * the bridge script with android/web-overlay/tsconfig.json, once android-bridge.ts exists. That
+#   * the bridge script with android/web-overlay/tsconfig.json. That
 #     program is emitted into a scratch folder and only android-bridge.js is taken from it. It has
 #     no ?v= stamps.
-# The hand-written JavaScript is checked last, after the compiled files and the stamps are written,
-# because types/stamped-imports.d.ts follows the stamps. A failure there exits 1 with the compiled
-# files already written; they are exact compilations of their sources, so nothing wrong is left.
 #
 # The compiled .js files are committed on purpose: GitHub Pages publishes the repository's files as
 # they are, with no build step of its own, and the Android build bundles them as they are and never
@@ -96,17 +88,13 @@ trap 'rm -rf "$tmp"' EXIT
 normalise() { sed -E "s#(['\"]\\.{1,2}/[^'\"?]+\\.js)\\?v=[0-9a-f]{8}(['\"])#\\1\\2#g" "$1"; }
 nsha() { normalise "$1" | sha256sum | cut -d' ' -f1; }
 
-# The move to TypeScript is under way while jsconfig.json exists (TS-STEP-1).
-TRANSITION=0; [ -f jsconfig.json ] && TRANSITION=1
-LIST=tools/js-to-convert.txt
 BRIDGE=android/web-overlay/android-bridge.js
-HAS_BRIDGE_TS=0; [ -f "${BRIDGE%.js}.ts" ] && HAS_BRIDGE_TS=1
+[ -f "${BRIDGE%.js}.ts" ] || die "${BRIDGE%.js}.ts is missing: the Android bridge script is written in TypeScript"
+compgen -G "tests/*.ts" >/dev/null || die "tests/ holds no TypeScript: the tests are written in TypeScript"
 
 "${TSC[@]}" -p "$ROOT/tsconfig.core.json" \
   || die "ts/src/ uses something only a browser has, or does not type-check (see above): the engine stays free of the DOM; nothing was written"
-if compgen -G "tests/*.ts" >/dev/null; then
-  "${TSC[@]}" -p "$ROOT/tests/tsconfig.json" || die "the tests (tests/*.ts) do not type-check; nothing was written"
-fi
+"${TSC[@]}" -p "$ROOT/tests/tsconfig.json" || die "the tests (tests/*.ts) do not type-check; nothing was written"
 "${TSC[@]}" -p "$ROOT/tsconfig.json" --outDir "$tmp/out" || die "ts/ does not compile; nothing was written"
 mkdir -p "$tmp/out"
 
@@ -114,42 +102,21 @@ mapfile -t OUTPUTS < <(cd "$tmp/out" && find . -type f -printf '%P\n' | LC_ALL=C
 mapfile -t EXPECTED < <(cd ts && find . -type f -name '*.ts' ! -name '*.d.ts' -printf '%P\n' | sed 's/\.ts$/.js/' | LC_ALL=C sort)
 [ "${OUTPUTS[*]}" = "${EXPECTED[*]}" ] \
   || die "tsc emitted [${OUTPUTS[*]}] but ts/ holds sources for [${EXPECTED[*]}]; look at tsconfig.json"
-[ "${#OUTPUTS[@]}" -gt 0 ] || echo "build-ts: ts/ holds no source yet that emits JavaScript (types only)"
+[ "${#OUTPUTS[@]}" -gt 0 ] || die "tsc emitted nothing; ts/ must hold the page's sources (ts/app.ts and ts/src/)"
 
 # The Android bridge script: its own program, of which only android-bridge.js is kept.
-if [ "$HAS_BRIDGE_TS" = 1 ]; then
-  "${TSC[@]}" -p "$ROOT/android/web-overlay/tsconfig.json" --noEmit false --outDir "$tmp/bridge" \
-    || die "${BRIDGE%.js}.ts does not compile; nothing was written"
-  [ -f "$tmp/bridge/$BRIDGE" ] || die "tsc did not emit $BRIDGE; look at android/web-overlay/tsconfig.json"
-  mkdir -p "$tmp/out/$(dirname "$BRIDGE")"
-  cp "$tmp/bridge/$BRIDGE" "$tmp/out/$BRIDGE"
-  OUTPUTS+=("$BRIDGE")
-fi
+"${TSC[@]}" -p "$ROOT/android/web-overlay/tsconfig.json" --noEmit false --outDir "$tmp/bridge" \
+  || die "${BRIDGE%.js}.ts does not compile; nothing was written"
+[ -f "$tmp/bridge/$BRIDGE" ] || die "tsc did not emit $BRIDGE; look at android/web-overlay/tsconfig.json"
+mkdir -p "$tmp/out/$(dirname "$BRIDGE")"
+cp "$tmp/bridge/$BRIDGE" "$tmp/out/$BRIDGE"
+OUTPUTS+=("$BRIDGE")
 
 # Where each compiled file comes from, for the messages.
 source_of() { if [ "$1" = "$BRIDGE" ]; then echo "${BRIDGE%.js}.ts"; else echo "ts/${1%.js}.ts"; fi; }
 
 # "./$1": a path that git reads as a path, whatever it starts with.
 tracked() { [ "$GIT" = 1 ] && git ls-files --error-unmatch "./$1" >/dev/null 2>&1; }
-
-# The hand-written JavaScript still to convert: the first column of tools/js-to-convert.txt.
-LISTED=()
-if [ -f "$LIST" ]; then
-  mapfile -t LISTED < <(sed -e 's/#.*//' "$LIST" | awk 'NF { print $1 }')
-fi
-listed() { case " ${LISTED[*]} " in *" $1 "*) return 0 ;; esac; return 1; }
-
-# The hand-written JavaScript is type-checked as before the move, while jsconfig.json exists.
-check_js() {
-  [ "$TRANSITION" = 1 ] || return 0
-  if [ "$1" = check ]; then
-    node "$ROOT/types/stamped-imports.mjs" --check || return 1
-  else
-    node "$ROOT/types/stamped-imports.mjs" || return 1
-  fi
-  "${TSC[@]}" -p "$ROOT/jsconfig.json" || { echo "build-ts: the hand-written JavaScript (jsconfig.json) does not type-check" >&2; return 1; }
-  echo "build-ts: the hand-written JavaScript type-checks (jsconfig.json)"
-}
 
 if [ "$MODE" = check ]; then
   bad=0
@@ -169,8 +136,8 @@ if [ "$MODE" = check ]; then
   done
 
   # JavaScript with no source. Every JavaScript file git tracks, and every one on disk where the
-  # page and the app load from (the root, src/, android/web-overlay/), must be compiled output,
-  # gate.js (written by build-gates.py) or a hand-written file still listed in tools/js-to-convert.txt.
+  # page and the app load from (the root, src/, android/web-overlay/), must be compiled output or
+  # gate.js (written by build-gates.py). Hand-written JavaScript has no place here any more.
   mapfile -t PRESENT < <({
     if [ "$GIT" = 1 ]; then git ls-files -- '*.js' '*.mjs' '*.cjs'; fi
     find . -maxdepth 1 -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \) -printf '%P\n'
@@ -182,53 +149,14 @@ if [ "$MODE" = check ]; then
   for f in "${PRESENT[@]}"; do
     case " ${OUTPUTS[*]} " in *" $f "*) continue ;; esac
     [ "$f" = gate.js ] && continue
-    listed "$f" && continue
-    echo "build-ts: $f is JavaScript that no TypeScript source compiles to and that $LIST does not list: delete it, or restore its source" >&2; bad=1
+    echo "build-ts: $f is JavaScript that no TypeScript source compiles to: write it in TypeScript under ts/, or delete it" >&2; bad=1
   done
   [ -f gate.js ] || { echo "build-ts: gate.js is missing (build-gates.py writes it)" >&2; bad=1; }
   if [ "$GIT" = 1 ] && [ -f gate.js ] && [ "$(git check-attr linguist-generated -- gate.js | sed 's/.*: //')" != true ]; then
     echo "build-ts: .gitattributes does not mark gate.js linguist-generated" >&2; bad=1
   fi
 
-  # The list of files still to convert, against the tree and jsconfig.json.
-  if [ "$TRANSITION" = 1 ] && [ ! -f "$LIST" ]; then
-    echo "build-ts: jsconfig.json exists but $LIST does not: the move is either under way (both) or done (neither)" >&2; bad=1
-  fi
-  if [ -f "$LIST" ]; then
-    [ "$TRANSITION" = 1 ] || { echo "build-ts: $LIST exists but jsconfig.json does not" >&2; bad=1; }
-    CHECKED=()
-    if [ "$TRANSITION" = 1 ]; then
-      mapfile -t CHECKED < <("${TSC[@]}" -p "$ROOT/jsconfig.json" --showConfig \
-        | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const f of JSON.parse(s).files||[])console.log(f.replace(/^\.\//,""))})')
-    fi
-    while read -r path target group; do
-      if [ ! -f "$path" ]; then
-        echo "build-ts: $LIST lists $path, which does not exist: delete its line" >&2; bad=1; continue
-      fi
-      if [ "$GIT" = 1 ] && ! tracked "$path"; then
-        echo "build-ts: $LIST lists $path, which git does not track" >&2; bad=1
-      fi
-      if [ "$target" != retire ] && [ -f "$target" ]; then
-        echo "build-ts: $path is listed as hand-written, but $target exists: finish the conversion and delete its line in $LIST" >&2; bad=1
-      fi
-      case "$path" in
-        app.js|src/*)
-          case " ${CHECKED[*]} " in
-            *" $path "*) ;;
-            *) echo "build-ts: $path is hand-written ($group) but jsconfig.json does not type-check it" >&2; bad=1 ;;
-          esac ;;
-      esac
-    done < <(sed -e 's/#.*//' "$LIST" | awk 'NF')
-    for f in "${CHECKED[@]}"; do
-      case "$f" in
-        *.js|*.mjs) listed "$f" || { echo "build-ts: jsconfig.json type-checks $f, which is not hand-written any more: take it out of the include list" >&2; bad=1; } ;;
-      esac
-    done
-    echo "build-ts: $LIST lists ${#LISTED[@]} hand-written file(s) still to convert"
-  fi
-
   python3 -I "$ROOT/bump_assets.py" --check || bad=1
-  check_js check || bad=1
   [ "$bad" = 0 ] || exit 1
   echo "build-ts: check passed"
   exit 0
@@ -284,5 +212,3 @@ for f in "${OUTPUTS[@]}"; do printf '%s  %s\n' "$(nsha "$f")" "$f"; done > "$STA
 # Always: bump_assets.py changes nothing when every stamp is current, and repairs a stale one even
 # when the compiled output did not change.
 python3 -I "$ROOT/bump_assets.py"
-
-check_js build || exit 1

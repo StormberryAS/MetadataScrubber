@@ -61,18 +61,20 @@ jobs:
           "$SDKMANAGER" "platforms;android-37.1" "build-tools;36.0.0"
 
       # tools/build-ts.sh in check mode installs the pinned TypeScript with npm ci (frozen, no
-      # install scripts) and fails unless every compiled .js is byte for byte what its TypeScript
-      # source compiles to (stamps aside) and is marked generated, the only other JavaScript is
-      # gate.js and the hand-written files still listed in tools/js-to-convert.txt, every ?v=
-      # stamp is current (bump_assets.py check mode; python3 is on the runner) and the
-      # hand-written JavaScript still type-checks (jsconfig.json). The engine tests stay off CI:
-      # they need exiftool and ImageMagick.
+      # install scripts) and fails unless every program type-checks, every compiled .js is byte
+      # for byte what its TypeScript source compiles to (stamps aside) and is marked generated,
+      # the only other JavaScript is gate.js, and every ?v= stamp is current (bump_assets.py
+      # check mode; python3 is on the runner). tests/tooling.test.ts (2026-11-05) then proves the
+      # same rule from the test side: no hand-written JavaScript, .gitattributes marks exactly
+      # the generated files, the build and its sources are never published or bundled, and no
+      # .env is tracked. The engine tests stay off CI: they need exiftool and ImageMagick.
       - name: Check the compiled TypeScript
         working-directory: .
         run: |
           set -euo pipefail
           node --version
           tools/build-ts.sh --check
+          node --test tests/tooling.test.ts
 
       # Tests, the web asset checks and lint run with NO signing secrets in the
       # environment and no key on disk: test JVMs and lint load third-party code.

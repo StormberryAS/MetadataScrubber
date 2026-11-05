@@ -2,7 +2,7 @@
   "name": "metadatascrubber-dev",
   "private": true,
   "type": "module",
-  "description": "Build and test tooling only: compiles ts/ into the JavaScript the page loads (app.js and src/) and the Android bridge script, type-checks the JavaScript that is still hand-written, and runs the tests (Node 24). The published app has no runtime dependencies, and none of these files is published.",
+  "description": "Build and test tooling only: compiles ts/ into the JavaScript the page loads (app.js and src/) and the Android bridge script, and runs the tests (TypeScript, run by Node 24 directly). The published app has no runtime dependencies, and none of these files is published.",
   "license": "MIT",
   "engines": {
     "node": ">=24"
@@ -17,7 +17,10 @@
     "e2e": "node tests/e2e.ts"
   },
   "imports": {
-    "#src/*": "./src/*"
+    "#src/*.js": {
+      "types": "./ts/src/*.ts",
+      "default": "./src/*.js"
+    }
   },
   "devDependencies": {
     "@types/node": "24.19.2",
