@@ -25,3 +25,5 @@
 /src/core/png.js linguist-generated=true
 /src/core/jpeg.js linguist-generated=true
 /src/scrub-core.js linguist-generated=true
+# The interface, compiled from ts/app.ts.
+/app.js linguist-generated=true

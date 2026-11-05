@@ -22,7 +22,6 @@
   },
   // gate.js is left out: the estate's shared gate generator writes it.
   "include": [
-    "app.js",
     "types/stamped-imports.d.ts",
     "types/moved-types.d.ts",
     "ts/page.d.ts",
