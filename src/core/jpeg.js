@@ -21,7 +21,7 @@ import {
 } from './iptc.js?v=13ee17f2';
 import { ItemSet, UNREADABLE, cappedId, strictest } from './taxonomy.js?v=c8d592f3';
 import { appleHdr, appleHdrAny, appleHdrValue, parseTiff, removeTiffKeys, shrinkAppleNote, tiffItems, tiffOrientation } from './tiff.js?v=6db82cf4';
-import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=92dffd88';
+import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gainFields, gainFixes, keepOnlyXmp, hasGainVersion, offerDirectoryEntries, parseXmp, planXmp, versionFix } from './xmp.js?v=9a59d83b';
 
 /** @typedef {[number, number]} Range A [start, end) range of byte positions, as Range in ts/src/core/bytes.ts. */
 /** @typedef {Taxonomy.Tier} Tier */
@@ -33,8 +33,8 @@ import { addXmpItems, appleLabelFix, canonicalXmp, directoryOf, gainAllowed, gai
 /** @typedef {ReturnType<typeof parseXmp>} ParsedXmp */
 /** @typedef {ReturnType<typeof addXmpItems>} XmpPacketItems */
 /** @typedef {NonNullable<ReturnType<typeof directoryOf>>} XmpDirectory */
-/** @typedef {import('./xmp.js').XmpAdd} XmpAdd */
-/** @typedef {import('./xmp.js').XmpAttrProp | import('./xmp.js').XmpElemProp} XmpFieldProp */
+/** @typedef {Xmp.XmpAdd} XmpAdd */
+/** @typedef {Xmp.XmpAttrProp | Xmp.XmpElemProp} XmpFieldProp */
 
 /**
  * What appKind finds a marker segment to be.
@@ -1809,7 +1809,7 @@ export function scrubJpeg(b, model, set, removeIn, retry = true) {
     const segs = canon !== null ? extendedSegments(canon) : null;
     if (segs) {
       // segs is only set when field was found.
-      const name = /** @type {XmpFieldProp} */ (field).kind === 'attr' ? /** @type {import('./xmp.js').XmpAttrProp} */ (field).attr.name : /** @type {XmpFieldProp} */ (field).node.name;
+      const name = /** @type {XmpFieldProp} */ (field).kind === 'attr' ? /** @type {Xmp.XmpAttrProp} */ (field).attr.name : /** @type {XmpFieldProp} */ (field).node.name;
       extPlan = { segs: segs.segs, also: [fieldIdx], add: { key: /** @type {XmpFieldProp} */ (field).key, name, node: /** @type {XmpFieldProp} */ (field).node, value: segs.guid } };
     } else {
       remove.add(extItem.id);

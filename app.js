@@ -27,7 +27,7 @@
 // page's own read-back agrees (a JPEG with nothing listed and nothing to normalise), the
 // photo itself is the new file and is offered at once, without pressing Prepare picture.
 
-import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=b19387b2';
+import { GROUPS, TIERS, buildExif, detectFormat, insertExif, inspect, privacyWord, scrub } from './src/scrub-core.js?v=48c9f42d';
 
 // Types for the checker only (JSDoc); see README, Type checking.
 /** @typedef {Taxonomy.Item} Item */

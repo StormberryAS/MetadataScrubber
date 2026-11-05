@@ -9,7 +9,7 @@ import { describeC2pa } from './c2pa.js?v=02cf98cd';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, inspectIcc } from './icc.js?v=2ec75235';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import { findTiffStart, parseTiff, removeTiffKeys, tiffItems, tiffOrientation } from './tiff.js?v=6db82cf4';
-import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=92dffd88';
+import { addXmpItems, parseXmp, planXmp } from './xmp.js?v=9a59d83b';
 
 /** @typedef {Taxonomy.ItemSet} ItemSet */
 /** @typedef {Taxonomy.ItemSpec} ItemSpec */

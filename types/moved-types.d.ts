@@ -52,3 +52,39 @@ declare namespace Iptc {
   type IrbResource = import('ms-src/core/iptc.js').IrbResource;
   type ParsedIrb = import('ms-src/core/iptc.js').ParsedIrb;
 }
+
+/** The types of ts/src/core/xmp.ts. */
+declare namespace Xmp {
+  type XmlAttr = import('ms-src/core/xmp.js').XmlAttr;
+  type XmlText = import('ms-src/core/xmp.js').XmlText;
+  type XmlComment = import('ms-src/core/xmp.js').XmlComment;
+  type XmlPi = import('ms-src/core/xmp.js').XmlPi;
+  type XmlElement = import('ms-src/core/xmp.js').XmlElement;
+  type XmlNode = import('ms-src/core/xmp.js').XmlNode;
+  type XmlRoot = import('ms-src/core/xmp.js').XmlRoot;
+  type QName = import('ms-src/core/xmp.js').QName;
+  type DirFieldName = import('ms-src/core/xmp.js').DirFieldName;
+  type DirField = import('ms-src/core/xmp.js').DirField;
+  type DirEntry = import('ms-src/core/xmp.js').DirEntry;
+  type DirRef = import('ms-src/core/xmp.js').DirRef;
+  type DirExtra = import('ms-src/core/xmp.js').DirExtra;
+  type Directory = import('ms-src/core/xmp.js').Directory;
+  type XmpPropBase = import('ms-src/core/xmp.js').XmpPropBase;
+  type XmpAttrProp = import('ms-src/core/xmp.js').XmpAttrProp;
+  type XmpElemProp = import('ms-src/core/xmp.js').XmpElemProp;
+  type XmpAboutProp = import('ms-src/core/xmp.js').XmpAboutProp;
+  type XmpSubProp = import('ms-src/core/xmp.js').XmpSubProp;
+  type XmpHiddenProp = import('ms-src/core/xmp.js').XmpHiddenProp;
+  type XmpProp = import('ms-src/core/xmp.js').XmpProp;
+  type ParsedXmp = import('ms-src/core/xmp.js').ParsedXmp;
+  type CanonProp = import('ms-src/core/xmp.js').CanonProp;
+  type XmpAdd = import('ms-src/core/xmp.js').XmpAdd;
+  type GainFix = import('ms-src/core/xmp.js').GainFix;
+  type DirPatch = import('ms-src/core/xmp.js').DirPatch;
+  type XmpItemDef = import('ms-src/core/xmp.js').XmpItemDef;
+  type XmpItem = import('ms-src/core/xmp.js').XmpItem;
+  type XmpCtx = import('ms-src/core/xmp.js').XmpCtx;
+  type XmpAdded = import('ms-src/core/xmp.js').XmpAdded;
+  type PlanOpts = import('ms-src/core/xmp.js').PlanOpts;
+  type XmpPlan = import('ms-src/core/xmp.js').XmpPlan;
+}
