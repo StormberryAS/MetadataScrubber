@@ -13,7 +13,7 @@ import { describeC2pa } from './c2pa.js?v=02cf98cd';
 import { ICC_TEXT_ITEM, ICC_UNREADABLE_ITEM, cleanIcc, iccDescription, iccFreeText, iccNameAllowed, inspectIcc } from './icc.js?v=2ec75235';
 import {
   IRB_EXIF, IRB_IPTC, IRB_IPTC_DIGEST, IRB_OTHER_NOTE, IRB_THUMBS, IRB_XMP, canonicalIrb, iptcItems, irbOtherValue, parseIptc, parseIrb, rebuildIptc,
-} from './iptc.js?v=8484b294';
+} from './iptc.js?v=13ee17f2';
 import { UNREADABLE, cappedId } from './taxonomy.js?v=c8d592f3';
 import {
   TIFF_ITEMS, amberTextOk, deviceNameOk, findTiffStart, isAmberTextKey, keyForTagName, parseTiff, removeTiffKeys, tagNameOf, technicalTextOk, tiffItems, tiffOrientation,
@@ -24,9 +24,9 @@ import { addXmpItems, canonicalXmp, parseXmp, planXmp, xmpText } from './xmp.js?
 /** @typedef {Taxonomy.ItemSpec} ItemSpec */
 /** @typedef {Taxonomy.ItemInternal} ItemInternal */
 /** @typedef {Taxonomy.Tier} Tier */
-/** @typedef {import('./iptc.js').ParsedIptc} ParsedIptc */
-/** @typedef {import('./iptc.js').ParsedIrb} ParsedIrb */
-/** @typedef {import('./iptc.js').IrbResource} IrbResource */
+/** @typedef {Iptc.ParsedIptc} ParsedIptc */
+/** @typedef {Iptc.ParsedIrb} ParsedIrb */
+/** @typedef {Iptc.IrbResource} IrbResource */
 /** @typedef {NonNullable<ReturnType<typeof parseTiff>>} TiffModel */
 /**
  * One chunk. `bad` marks a damaged type name, `resynced` a chunk cut short where an

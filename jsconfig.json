@@ -25,7 +25,6 @@
     "app.js",
     "src/scrub-core.js",
     "src/core/heic.js",
-    "src/core/iptc.js",
     "src/core/jpeg.js",
     "src/core/png.js",
     "src/core/webp.js",

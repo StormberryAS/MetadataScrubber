@@ -42,3 +42,13 @@ declare namespace Tiff {
   type BytesCheck = import('ms-src/core/tiff.js').BytesCheck;
   type Placed = import('ms-src/core/tiff.js').Placed;
 }
+
+/** The types of ts/src/core/iptc.ts. */
+declare namespace Iptc {
+  type IptcDataset = import('ms-src/core/iptc.js').IptcDataset;
+  type ParsedIptc = import('ms-src/core/iptc.js').ParsedIptc;
+  type IptcItemDef = import('ms-src/core/iptc.js').IptcItemDef;
+  type IptcItem = import('ms-src/core/iptc.js').IptcItem;
+  type IrbResource = import('ms-src/core/iptc.js').IrbResource;
+  type ParsedIrb = import('ms-src/core/iptc.js').ParsedIrb;
+}
