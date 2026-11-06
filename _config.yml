@@ -15,9 +15,9 @@
 # disclaimer.html and privacy.html are deliberately NOT excluded: they are the published
 # pages the footer links to.
 #
-# DISCLAIMER.md is deliberately NOT excluded either, unlike in the apps without a gate:
-# gate.js links to it by name ("Read the full disclaimer"), and excluding a file that a
-# script references as a string turns that link into a 404.
+# DISCLAIMER.md is excluded (6 November 2026). It is the Markdown source of disclaimer.html.
+# The first-run notice (gate.js) and the footer link disclaimer.html, and no served file
+# links DISCLAIMER.md. The Android build reads this list too, so the APK leaves it out as well.
 #
 # src/ is NOT excluded: app.js imports the scrubbing engine from it at runtime.
 #
@@ -36,6 +36,7 @@
 # CHANGELOG.md is the Android app's release log (1.1.1), read on GitHub, not part of the
 # website or the app.
 exclude:
+  - DISCLAIMER.md
   - LICENSE
   - NOTICE
   - README.md

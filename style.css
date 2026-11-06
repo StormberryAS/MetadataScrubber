@@ -68,7 +68,7 @@
 
   /* Typography */
   --font-sans: 'InterVariable', 'Inter', system-ui, sans-serif;
-  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --font-mono: 'InterVariable', 'Inter', system-ui, sans-serif;
 
   /* Radii */
   --r-sm:   6px;
