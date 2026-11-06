@@ -131,6 +131,8 @@ a { color: var(--accent-primary); text-underline-offset: 2px; }
 a:hover { color: var(--text-primary); }
 
 button, input, select, textarea { font: inherit; color: inherit; }
+/* The "Choose File" part of a file input is a separate part; it does not inherit from the input. */
+::file-selector-button { font-family: inherit; }
 
 /* Visible keyboard focus (WCAG 2.4.7) */
 :focus-visible {
@@ -432,9 +434,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* The pause tick box (WCAG 2.2.2): ticked, the slide stops and the row
    scrolls by hand. Plain CSS, no script. `all: revert` keeps the page's
-   own form styles off it. */
+   own form styles off it, and it also reverts the font, so the Inter stack
+   is set again right after it. */
 .app-switcher-container input.switcher-pause {
   all: revert;
+  font-family: var(--font-sans);
   margin: 0 0.5rem 0.75rem 0;
   vertical-align: middle;
   accent-color: var(--accent-primary);

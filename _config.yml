@@ -35,6 +35,13 @@
 #
 # CHANGELOG.md is the Android app's release log (1.1.1), read on GitHub, not part of the
 # website or the app.
+#
+# GitHub Pages builds with its default theme (jekyll-theme-primer) unless this file names
+# none, and that theme adds /assets/css/style.css: a stylesheet no page links, in fonts that
+# are not Inter. theme: null turns the theme off (6 November 2026). Tested with the Pages
+# build image (github-pages 232): the only change to the site is that this file is gone.
+theme: null
+
 exclude:
   - DISCLAIMER.md
   - LICENSE
